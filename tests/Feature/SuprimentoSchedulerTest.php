@@ -8,12 +8,15 @@ use App\Models\FluxoSuprimento;
 use App\Models\ItemSuprimento;
 use App\Models\ItemSuprimentoEtapaData;
 use App\Models\Tenant;
+use App\Models\User;
 use App\Models\Work;
+use App\Notifications\AlertaPrazoSuprimentoNotification;
 use App\Services\SuprimentoScheduler;
 use App\Support\DiasUteisCalculator;
 use App\Support\TenantContext;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
 class SuprimentoSchedulerTest extends TestCase
@@ -213,5 +216,81 @@ class SuprimentoSchedulerTest extends TestCase
         $atividadeA->update(['inicio_planejado' => '2026-10-01']);
 
         $this->assertTrue($item->fresh(['atividades'])->necessidade()->isSameDay(Carbon::parse('2026-09-01')));
+    }
+
+    public function test_verificar_marco_de_alerta_dispara_notificacao_ao_cruzar_21_dias(): void
+    {
+        Notification::fake();
+
+        $fluxo = $this->criarFluxo([['Cotação', 5]]);
+        $atividade = $this->criarAtividade(Carbon::today()->addDays(20)->toDateString());
+        $item = $this->criarItem($fluxo, $atividade);
+        $responsavel = User::factory()->create(['tenant_id' => $this->tenant->id]);
+        $item->update(['responsavel_id' => $responsavel->id]);
+
+        $this->scheduler->verificarMarcoDeAlerta($item->fresh(['atividades']));
+
+        Notification::assertSentTo($responsavel, AlertaPrazoSuprimentoNotification::class);
+        Notification::assertCount(1);
+
+        $item = $item->fresh();
+        $this->assertNotNull($item->alerta_21d_enviado_em);
+        $this->assertNull($item->alerta_10d_enviado_em);
+    }
+
+    public function test_verificar_marco_de_alerta_nao_duplica_ao_rodar_de_novo_no_mesmo_dia(): void
+    {
+        Notification::fake();
+
+        $fluxo = $this->criarFluxo([['Cotação', 5]]);
+        $atividade = $this->criarAtividade(Carbon::today()->addDays(20)->toDateString());
+        $item = $this->criarItem($fluxo, $atividade);
+        $responsavel = User::factory()->create(['tenant_id' => $this->tenant->id]);
+        $item->update(['responsavel_id' => $responsavel->id]);
+
+        $this->scheduler->verificarMarcoDeAlerta($item->fresh(['atividades']));
+        $this->scheduler->verificarMarcoDeAlerta($item->fresh(['atividades']));
+
+        Notification::assertCount(1);
+    }
+
+    public function test_verificar_marco_de_alerta_dispara_segunda_notificacao_ao_cruzar_10_dias(): void
+    {
+        Notification::fake();
+
+        $fluxo = $this->criarFluxo([['Cotação', 5]]);
+        $atividade = $this->criarAtividade(Carbon::today()->addDays(20)->toDateString());
+        $item = $this->criarItem($fluxo, $atividade);
+        $responsavel = User::factory()->create(['tenant_id' => $this->tenant->id]);
+        $item->update(['responsavel_id' => $responsavel->id]);
+
+        $this->scheduler->verificarMarcoDeAlerta($item->fresh(['atividades']));
+        Notification::assertCount(1);
+
+        // Prazo se aproxima: agora faltam só 9 dias — cruza o segundo marco.
+        $atividade->update(['inicio_planejado' => Carbon::today()->addDays(9)->toDateString()]);
+        $this->scheduler->verificarMarcoDeAlerta($item->fresh(['atividades']));
+
+        Notification::assertCount(2);
+        Notification::assertSentTo($responsavel, AlertaPrazoSuprimentoNotification::class);
+
+        $item = $item->fresh();
+        $this->assertNotNull($item->alerta_21d_enviado_em);
+        $this->assertNotNull($item->alerta_10d_enviado_em);
+    }
+
+    public function test_verificar_marco_de_alerta_nao_dispara_para_item_concluido(): void
+    {
+        Notification::fake();
+
+        $fluxo = $this->criarFluxo([['Cotação', 5]]);
+        $atividade = $this->criarAtividade(Carbon::today()->addDays(5)->toDateString());
+        $item = $this->criarItem($fluxo, $atividade);
+        $responsavel = User::factory()->create(['tenant_id' => $this->tenant->id]);
+        $item->update(['responsavel_id' => $responsavel->id, 'status' => \App\Enums\StatusItemSuprimento::Concluido->value]);
+
+        $this->scheduler->verificarMarcoDeAlerta($item->fresh(['atividades']));
+
+        Notification::assertNothingSent();
     }
 }

@@ -66,6 +66,17 @@ ReportComentario (só em reports emitidos). Reaproveita
   vivo depois. Mesma filosofia de `AtividadeSnapshot`/`LinhaBase`: um
   report já emitido e mostrado ao cliente nunca muda sozinho após uma
   reimportação do cronograma.
+- **Alerta contratual de suprimento (21/10 dias)**: `App\Services\
+  SuprimentoScheduler::verificarMarcoDeAlerta()`, chamado a cada item
+  dentro do loop diário de `App\Console\Commands\
+  RecalcularStatusSuprimentos::handle()` (já agendado, 05:00). Compara
+  `ItemSuprimento::necessidade()` contra hoje em dias corridos; ao
+  cruzar 21 ou 10 dias restantes, dispara
+  `AlertaPrazoSuprimentoNotification` (mail+database+broadcast) pro
+  `responsavel_id` do item (fallback `created_by_id`) — cada marco só
+  uma vez por item, via as colunas `alerta_21d_enviado_em`/
+  `alerta_10d_enviado_em` (nunca setadas à mão). Item `Concluido` ou sem
+  atividade vinculada (sem `necessidade()`) nunca dispara.
 
 ## Papéis, permissões e clientes
 

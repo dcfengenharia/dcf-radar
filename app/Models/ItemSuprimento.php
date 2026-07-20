@@ -31,10 +31,14 @@ class ItemSuprimento extends Model
         'codigo',
         'status',
         'observacoes',
+        'alerta_21d_enviado_em',
+        'alerta_10d_enviado_em',
     ];
 
     protected $casts = [
         'status' => StatusItemSuprimento::class,
+        'alerta_21d_enviado_em' => 'datetime',
+        'alerta_10d_enviado_em' => 'datetime',
     ];
 
     public function obra(): BelongsTo

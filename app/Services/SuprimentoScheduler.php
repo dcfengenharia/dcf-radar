@@ -7,6 +7,7 @@ use App\Enums\StatusItemSuprimento;
 use App\Models\ItemSuprimento;
 use App\Models\ItemSuprimentoEtapa;
 use App\Models\ItemSuprimentoEtapaData;
+use App\Notifications\AlertaPrazoSuprimentoNotification;
 use App\Support\DiasUteisCalculator;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -142,6 +143,45 @@ class SuprimentoScheduler
         $item->update(['status' => $status->value]);
 
         return $status;
+    }
+
+    /**
+     * Alerta contratual: dispara quando o item cruza os marcos de 21 ou 10
+     * dias corridos antes da necessidade — cada marco só é enviado uma vez
+     * por item (colunas alerta_21d_enviado_em/alerta_10d_enviado_em),
+     * mesmo rodando este método todo dia. Chamado depois de statusDoItem()
+     * já ter persistido o status atual, então recarrega o item pra não
+     * confiar numa instância potencialmente desatualizada do chamador.
+     */
+    public function verificarMarcoDeAlerta(ItemSuprimento $item): void
+    {
+        $item = $item->fresh(['atividades', 'obra', 'responsavel', 'autor']);
+
+        if ($item->status === StatusItemSuprimento::Concluido) {
+            return;
+        }
+
+        $necessidade = $item->necessidade();
+        if (! $necessidade) {
+            return;
+        }
+
+        $destinatario = $item->responsavel ?? $item->autor;
+        if (! $destinatario) {
+            return;
+        }
+
+        $diasRestantes = Carbon::today()->diffInDays($necessidade, false);
+
+        if ($diasRestantes <= 21 && ! $item->alerta_21d_enviado_em) {
+            $destinatario->notify(new AlertaPrazoSuprimentoNotification($item, 21));
+            $item->update(['alerta_21d_enviado_em' => now()]);
+        }
+
+        if ($diasRestantes <= 10 && ! $item->alerta_10d_enviado_em) {
+            $destinatario->notify(new AlertaPrazoSuprimentoNotification($item, 10));
+            $item->update(['alerta_10d_enviado_em' => now()]);
+        }
     }
 
     private function calcularStatus(ItemSuprimento $item): StatusItemSuprimento

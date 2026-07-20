@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Enums\StatusItemSuprimento;
 use App\Models\ItemSuprimento;
 use App\Models\Tenant;
+use App\Services\SuprimentoScheduler;
 use App\Support\SincronizarRestricaoSuprimento;
 use App\Support\TenantContext;
 use Illuminate\Console\Command;
@@ -23,14 +24,17 @@ class RecalcularStatusSuprimentos extends Command
 
     public function handle(): int
     {
-        Tenant::query()->each(function (Tenant $tenant) {
-            TenantContext::actingAs($tenant, function () use ($tenant) {
+        $scheduler = new SuprimentoScheduler();
+
+        Tenant::query()->each(function (Tenant $tenant) use ($scheduler) {
+            TenantContext::actingAs($tenant, function () use ($tenant, $scheduler) {
                 $itens = ItemSuprimento::whereHas('atividades')
                     ->where('status', '!=', StatusItemSuprimento::Concluido->value)
                     ->get();
 
                 foreach ($itens as $item) {
                     SincronizarRestricaoSuprimento::sincronizarItem($item, null);
+                    $scheduler->verificarMarcoDeAlerta($item);
                 }
 
                 if ($itens->isNotEmpty()) {
