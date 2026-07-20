@@ -67,7 +67,7 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
           $tenantAtivoId = \App\Support\TenantContext::currentId();
           $tenantAtivo = $tenantsDoUsuario->firstWhere('id', $tenantAtivoId);
         @endphp
-        <li class="nav-item dropdown me-3 me-xl-2">
+        <li class="nav-item dropdown me-3 me-xl-2" style="min-width: 500px;">
           <a class="nav-link dropdown-toggle hide-arrow btn btn-label-primary px-3 d-flex align-items-center"
              href="javascript:void(0);"
              id="navbarDropdownTenant"

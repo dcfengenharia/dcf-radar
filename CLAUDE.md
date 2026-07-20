@@ -1,6 +1,6 @@
 # DCF Radar — Regras do projeto
 
-SaaS multitenant (Laravel 12) para quadro de restrições baseado no
+SaaS multitenant (Laravel 10) para quadro de restrições baseado no
 Last Planner System. Antecipa e remove impedimentos antes da execução.
 
 ## Arquitetura inegociável
@@ -188,6 +188,41 @@ ReportComentario (só em reports emitidos). Reaproveita
 
 **YOU MUST** manter `tests/Feature/TenantIsolationTest.php` passando.
 Rode `php artisan test` antes de considerar qualquer tarefa concluída.
+
+## Infraestrutura de release (Fase 1 do roadmap de maturidade SaaS)
+
+- **Repositório Git**: primeiro commit em 2026-07-20 (`dcfengenharia/dcf-radar`,
+  privado, GitHub). `.env` está no `.gitignore` (raiz) e
+  `bootstrap/cache/.gitignore` protege o cache compilado — nunca comitar
+  esses dois.
+- **Monitoramento de erro — Sentry** (`sentry/sentry-laravel`): integrado
+  via canal de log (`config/logging.php` → canal `sentry`, incluído no
+  `stack`), não via `app/Exceptions/Handler.php` (que continua só com o
+  `render()` customizado de 403). Configurar em produção preenchendo
+  `SENTRY_LARAVEL_DSN` no `.env` — vazio = desabilitado, sem erro nenhum.
+  `send_default_pii` fica `false` (não manda IP/dados de request por
+  padrão — decisão consciente de LGPD).
+- **Backup automático — spatie/laravel-backup**: agendado em
+  `app/Console/Kernel.php` (`backup:run --only-db` às 03:00,
+  `backup:clean` às 04:00). **Só banco de dados, nunca arquivos da
+  aplicação** — decisão deliberada pra não arriscar um `.env` real
+  (segredos) dentro de um zip de backup por engano; o código-fonte já
+  está seguro no Git. Destino inicial: disk `local`
+  (`storage/app/{APP_NAME}/*.zip`, já coberto pelo `.gitignore` de
+  `storage/`); trocar pra disk `s3` em `config/backup.php` quando as
+  credenciais AWS forem preenchidas em produção (`config/filesystems.php`
+  já tem o disk `s3` pronto).
+- **CI — GitHub Actions** (`.github/workflows/tests.yml`): roda
+  `php artisan test` a cada push/PR pra `main`, com serviço MySQL efêmero
+  e build de assets (`npm ci && npm run production`, necessário porque
+  algumas views usam o helper `mix()`).
+- **Ambiente de execução real é o WSL2** (`~/dcf_eng` dentro da distro
+  Ubuntu, ver memória `project_ambiente_dev_docker`) — `C:\dcf_eng` (onde
+  as ferramentas de edição desta sessão operam) precisa ser sincronizado
+  manualmente pro WSL depois de cada edição antes de testar/rodar. As
+  duas árvores foram reconciliadas em 2026-07-20 (pequenas divergências
+  de UI que existiam só num lado ou só no outro); a partir daqui, manter
+  as duas em sincronia a cada mudança.
 
 ## Como trabalhar neste repositório
 

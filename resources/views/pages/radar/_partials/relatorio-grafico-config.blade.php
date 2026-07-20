@@ -19,7 +19,7 @@
 <script>
     window.RelatorioGraficoConfig = {
         cores: {
-            previsto:  { barra: '#a5a8f5', linha: '#696cff' },
+            previsto:  { barra: 'rgba(80, 98, 118, 0.2)', linha: '#3C79E8' },
             tendencia: { barra: '#ffd591', linha: '#ffab00' },
             realizado: { barra: '#a8eeb9', linha: '#71dd37' },
         },

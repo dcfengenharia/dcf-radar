@@ -635,8 +635,8 @@ new class extends Component {
                         <th class="text-center">Criadas</th>
                         <th class="text-center">Atualizadas</th>
                         <th class="text-center">Arquivadas</th>
-                        <th>Início Linha de Base</th>
-                        <th>Término Linha de Base</th>
+                        <th class="text-center">Início Linha de Base</th>
+                        <th class="text-center">Término Linha de Base</th>
                         <th class="text-end">Total HH (Previsto)</th>
                     </tr>
                 </thead>
@@ -684,14 +684,14 @@ new class extends Component {
                                 <span class="text-muted">—</span>
                             @endif
                         </td>
-                        <td>
+                        <td class="text-center">
                             @if($imp->baseline_inicio)
                                 {{ \Illuminate\Support\Carbon::parse($imp->baseline_inicio)->format('d/m/Y') }}
                             @else
                                 <span class="text-muted">—</span>
                             @endif
                         </td>
-                        <td>
+                        <td class="text-center">
                             @if($imp->baseline_termino)
                                 {{ \Illuminate\Support\Carbon::parse($imp->baseline_termino)->format('d/m/Y') }}
                             @else
