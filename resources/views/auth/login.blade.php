@@ -35,15 +35,15 @@ $customizerHidden = 'customizer-hide';
           <div class="mb-5">
 
               <h1 class="auth-left-title">
-                  A previsibilidade da obra começa com
+                  O atraso avisa antes.
                   <span>
-                      leitura operacional
+                      Só precisa alguém olhando
                   </span>
               </h1>
 
               <p class="auth-left-subtitle">
-                  Monitore sinais críticos, identifique desvios
-                  e tome decisões com mais antecedência.
+                  Restrição mapeada, plano semanal limpo e curva de avanço
+                  sempre atualizada — sem depender de planilha paralela.
               </p>
 
           </div>
@@ -56,26 +56,26 @@ $customizerHidden = 'customizer-hide';
                   <div class="auth-benefit-item">
                       <div class="me-3">
                           <div class="avatar flex-shrink-0 me-3">
-                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-video"></i></span>
+                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-line-chart"></i></span>
                           </div>
                       </div>
 
                       <div>
                           <h5>Indicadores de previsibilidade</h5>
-                          <p>Visibilidade clara sobre desempenho e risco operacional.</p>
+                          <p>PPC histórico e curvas S por obra, sempre atualizados.</p>
                       </div>
                   </div>
 
                   <div class="auth-benefit-item">
                       <div class="me-3">
                           <div class="avatar flex-shrink-0 me-3">
-                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-video"></i></span>
+                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-bell-plus"></i></span>
                           </div>
                       </div>
 
                       <div>
                           <h5>Alertas operacionais</h5>
-                          <p>Sinais antecipados de deterioração operacional.</p>
+                          <p>Prazos de suprimento avisados antes de virar problema.</p>
                       </div>
                   </div>
 
@@ -86,26 +86,26 @@ $customizerHidden = 'customizer-hide';
                   <div class="auth-benefit-item">
                       <div class="me-3">
                           <div class="avatar flex-shrink-0 me-3">
-                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-video"></i></span>
+                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-calendar-check"></i></span>
                           </div>
                       </div>
 
                       <div>
                           <h5>Ritos de acompanhamento</h5>
-                          <p>Rotinas estruturadas para controle da operação.</p>
+                          <p>Report semanal automático, pronto pra revisar e emitir.</p>
                       </div>
                   </div>
 
                   <div class="auth-benefit-item">
                       <div class="me-3">
                           <div class="avatar flex-shrink-0 me-3">
-                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-video"></i></span>
+                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bx-list-check"></i></span>
                           </div>
                       </div>
 
                       <div>
                           <h5>Resposta gerencial</h5>
-                          <p>Decisões orientadas por dados e tendência operacional.</p>
+                          <p>Da restrição identificada até a ação resolvida, com dono e prazo.</p>
                       </div>
                   </div>
 
@@ -116,7 +116,7 @@ $customizerHidden = 'customizer-hide';
       </div>
       <!-- RODAPÉ -->
       <div class="auth-footer">
-          © 2026 Desenvolvido com 🍺 por <strong>DCF.eng — Planejamento & Controle de Obras</strong>. Todos os direitos reservados.
+          © 2026 <strong>DCF.eng — Planejamento & Controle de Obras</strong>. Todos os direitos reservados.
       </div>
 
     </div>
@@ -132,8 +132,8 @@ $customizerHidden = 'customizer-hide';
           </a>
         </div>
         <!-- /Logo -->
-        <h4 class="mb-2">Seja bem-vindo ao {{config('variables.templateName')}}! 👋</h4>
-        <p class="mb-4">Acesse seu radar operacional.</p>
+        <h4 class="mb-2">Bem-vindo de volta ao DCF Radar! 👋</h4>
+        <p class="mb-4">Entre pra ver o que trava e o que está pronto pra semana.</p>
 
           @if (session('status'))
           <div class="alert alert-success mb-1 rounded-0" role="alert">
