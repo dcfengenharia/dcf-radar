@@ -31,6 +31,11 @@ class CatalogoFuncionalidades
             ['slug' => 'dashboard.gerencial', 'nome' => 'Dashboard', 'secao' => 'Dashboard', 'escopo' => self::ESCOPO_OBRA],
 
             ['slug' => 'obras.minhas_obras', 'nome' => 'Minhas Obras', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],
+            // Página com seletor múltiplo de obras (compara 2+ ao mesmo
+            // tempo) — mesmo motivo de engenharia.pacotes ser
+            // ESCOPO_TENANT: não faz sentido travado na obra ativa da
+            // sessão.
+            ['slug' => 'gestao.benchmarking', 'nome' => 'Benchmarking entre Obras', 'secao' => 'Obras', 'escopo' => self::ESCOPO_TENANT],
             ['slug' => 'obras.importar_cronograma', 'nome' => 'Importar Cronograma', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'obras.linhas_base', 'nome' => 'Linhas de Base', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'obras.curvas', 'nome' => 'Curvas S', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],

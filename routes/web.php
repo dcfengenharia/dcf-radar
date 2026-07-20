@@ -109,6 +109,10 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
             abort_unless(auth()->user()->is_platform_admin || auth()->user()->temAcessoAObra($obra), 403);
             return view('app.gestao.obra-detalhe', ['obra' => $obra]);
         })->name('gestao.obra.show');
+
+        Route::get('/benchmarking', function () {
+            return view('app.gestao.benchmarking-obras');
+        })->name('gestao.benchmarking');
     })->name('app.gestao');
 
     // RADAR — requer obra selecionada na sessão

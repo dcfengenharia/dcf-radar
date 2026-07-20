@@ -23,6 +23,13 @@
       "slug": "gestao.minhas-obras"
     },
     {
+      "url": "/app/gestao/benchmarking",
+      "name": "Benchmarking entre Obras",
+      "icon": "menu-icon tf-icons bx bx-bar-chart-alt-2",
+      "slug": "gestao.benchmarking",
+      "funcionalidade": "gestao.benchmarking"
+    },
+    {
       "url": "/app/radar/cronograma",
       "name": "Importar Cronograma",
       "icon": "menu-icon tf-icons bx bx-upload",

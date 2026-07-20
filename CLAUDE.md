@@ -160,6 +160,24 @@ ReportComentario (só em reports emitidos). Reaproveita
   hoje não é possível excluir um usuário que já comentou/agiu em algo;
   não mexido nesta fase, só registrado aqui.
 
+## Benchmarking entre obras
+
+- **`⚡benchmarking-obras.blade.php`** (rota `gestao.benchmarking`, slug
+  `gestao.benchmarking` no `CatalogoFuncionalidades`, `ESCOPO_TENANT` —
+  mesmo motivo de `engenharia.pacotes`: página com seletor de várias
+  obras ao mesmo tempo, não faz sentido travada na obra ativa da sessão)
+  compara indicadores lado a lado, uma coluna por obra do tenant. **Não
+  recalcula nada novo** — só reagrega fórmulas já provadas em outras
+  telas, reparametrizadas por obra num loop: PPC histórico (mesma query
+  de `ppcQuery()` em `⚡relatorios-restricoes.blade.php`, sem quebra por
+  semana), % avanço atual (mesma fonte que `resumoAderencia()` do
+  Dashboard usa — última semana com `Realizado` gravado na curva raiz do
+  último Report **emitido**, nunca `CurvaAvanco` ao vivo — filosofia de
+  "Report é fotografia"), restrições em aberto por Pilar Lean e tempo
+  médio de resolução (mesmas fórmulas de `porPilar()`/
+  `tempoMedioResolucao()`). Todo indicador nulo (sem dado suficiente)
+  renderiza como "—", nunca zero ou erro.
+
 ## Papéis, permissões e clientes
 
 - **Perfis de acesso são personalizáveis por tenant** (`App\Models\Perfil`,
