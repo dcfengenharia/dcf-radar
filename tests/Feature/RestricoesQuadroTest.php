@@ -1,0 +1,460 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Enums\Papel;
+use App\Enums\StatusRestricao;
+use App\Models\Atividade;
+use App\Models\Disciplina;
+use App\Models\FrenteTrabalho;
+use App\Models\Restricao;
+use App\Models\Tenant;
+use App\Models\User;
+use App\Models\Work;
+use App\Notifications\RestricoesPendentesNotification;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Notification;
+use Livewire\Livewire;
+use Tests\TestCase;
+
+class RestricoesQuadroTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $user;
+    private Work $obra;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $tenant = Tenant::factory()->create();
+        $this->user = User::factory()->create(['tenant_id' => $tenant->id]);
+        $this->obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+        $this->vincularObra($this->obra, $this->user, Papel::Engenheiro->value);
+        $this->actingAs($this->user);
+    }
+
+    private function componente()
+    {
+        return Livewire::test('pages::radar.restricoes', ['obra' => $this->obra]);
+    }
+
+    private function criarAtividade(array $overrides = []): Atividade
+    {
+        return Atividade::factory()->create(array_merge([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ], $overrides));
+    }
+
+    public function test_resolver_restricao_via_fluxo_completo_do_modal(): void
+    {
+        $atividade = $this->criarAtividade();
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+
+        $this->componente()
+            ->call('abrirModalResolucao', $restricao->id)
+            ->set('acaoTexto', 'Material entregue pelo fornecedor.')
+            ->call('resolver');
+
+        $restricao->refresh();
+        $this->assertEquals(StatusRestricao::Resolvida, $restricao->status);
+        $this->assertNotNull($restricao->resolvida_em);
+        $this->assertDatabaseHas('restricao_acoes', [
+            'restricao_id' => $restricao->id,
+            'descricao' => 'Material entregue pelo fornecedor.',
+        ]);
+    }
+
+    public function test_falha_de_banco_ao_reabrir_mostra_toast_de_erro_sem_quebrar_e_sem_gravar(): void
+    {
+        $atividade = $this->criarAtividade();
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'status' => StatusRestricao::Resolvida->value,
+            'resolvida_em' => now(),
+        ]);
+
+        $conexaoReal = app('db');
+        DB::shouldReceive('transaction')->once()->andThrow(new \RuntimeException('falha forçada de teste'));
+
+        $this->componente()
+            ->call('reabrirRestricao', $restricao->id)
+            ->assertDispatched('show-toast', function (string $name, array $params) {
+                return ($params['type'] ?? null) === 'error';
+            })
+            ->assertNotDispatched('show-toast', function (string $name, array $params) {
+                return ($params['message'] ?? null) === 'Restrição reaberta.';
+            });
+
+        DB::swap($conexaoReal);
+        $restricao->refresh();
+        $this->assertEquals(StatusRestricao::Resolvida, $restricao->status);
+    }
+
+    public function test_reabrir_restricao_volta_status_para_aberta(): void
+    {
+        $atividade = $this->criarAtividade();
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'status' => StatusRestricao::Resolvida->value,
+            'resolvida_em' => now(),
+        ]);
+
+        $this->componente()->call('reabrirRestricao', $restricao->id);
+
+        $restricao->refresh();
+        $this->assertEquals(StatusRestricao::Aberta, $restricao->status);
+        $this->assertNull($restricao->resolvida_em);
+        $this->assertDatabaseHas('restricao_acoes', [
+            'restricao_id' => $restricao->id,
+            'descricao' => 'Restrição reaberta.',
+        ]);
+    }
+
+    public function test_usuario_sem_permissao_nao_pode_reabrir(): void
+    {
+        $atividade = $this->criarAtividade();
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'status' => StatusRestricao::Resolvida->value,
+            'resolvida_em' => now(),
+        ]);
+
+        $leitor = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $leitor, Papel::ClienteLeitura->value);
+        $this->actingAs($leitor);
+
+        Livewire::test('pages::radar.restricoes', ['obra' => $this->obra])
+            ->call('reabrirRestricao', $restricao->id)
+            ->assertForbidden();
+    }
+
+    public function test_notificar_responsaveis_agrupa_restricoes_por_usuario(): void
+    {
+        Notification::fake();
+
+        $atividade = $this->criarAtividade();
+        $responsavel = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $responsavel, Papel::Engenheiro->value);
+
+        $r1 = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'responsavel_id' => $responsavel->id,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+        $r2 = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'responsavel_id' => $responsavel->id,
+            'status' => StatusRestricao::EmTratamento->value,
+        ]);
+
+        $this->componente()->call('notificarResponsaveis');
+
+        Notification::assertSentTo(
+            $responsavel,
+            RestricoesPendentesNotification::class,
+            function (RestricoesPendentesNotification $notification) use ($r1, $r2, $responsavel) {
+                $ids = $notification->restricoesParaTeste()->pluck('id');
+                $linkEsperado = route('radar.entrar', ['obraId' => $this->obra->id, 'responsavel' => $responsavel->id]);
+
+                return $ids->count() === 2 && $ids->contains($r1->id) && $ids->contains($r2->id)
+                    && $notification->toArray($responsavel)['link'] === $linkEsperado;
+            }
+        );
+        Notification::assertSentTimes(RestricoesPendentesNotification::class, 1);
+    }
+
+    public function test_filtro_responsavel_e_inicializado_via_query_string(): void
+    {
+        $responsavel = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+
+        Livewire::withQueryParams(['responsavel' => $responsavel->id])
+            ->test('pages::radar.restricoes', ['obra' => $this->obra])
+            ->assertSet('filtroResponsavelId', $responsavel->id);
+    }
+
+    public function test_notificar_responsaveis_ignora_quem_nao_tem_pendencias(): void
+    {
+        Notification::fake();
+
+        $atividade = $this->criarAtividade();
+        $semPendencia = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $semPendencia, Papel::Engenheiro->value);
+        Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'responsavel_id' => $semPendencia->id,
+            'status' => StatusRestricao::Resolvida->value,
+        ]);
+
+        $this->componente()->call('notificarResponsaveis');
+
+        Notification::assertNotSentTo($semPendencia, RestricoesPendentesNotification::class);
+    }
+
+    public function test_notificar_responsaveis_ignora_responsavel_externo(): void
+    {
+        Notification::fake();
+
+        $atividade = $this->criarAtividade();
+        Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'responsavel_id' => null,
+            'responsavel_externo' => 'Fornecedor XYZ',
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+
+        $this->componente()->call('notificarResponsaveis');
+
+        Notification::assertNothingSent();
+    }
+
+    public function test_notificar_responsaveis_exclui_resolvidas(): void
+    {
+        Notification::fake();
+
+        $atividade = $this->criarAtividade();
+        $responsavel = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $responsavel, Papel::Engenheiro->value);
+        Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'responsavel_id' => $responsavel->id,
+            'status' => StatusRestricao::Resolvida->value,
+        ]);
+
+        $this->componente()->call('notificarResponsaveis');
+
+        Notification::assertNotSentTo($responsavel, RestricoesPendentesNotification::class);
+    }
+
+    public function test_notificar_responsaveis_bloqueado_sem_permissao_editar(): void
+    {
+        $leitor = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $leitor, Papel::ClienteLeitura->value);
+        $this->actingAs($leitor);
+
+        Livewire::test('pages::radar.restricoes', ['obra' => $this->obra])
+            ->call('notificarResponsaveis')
+            ->assertForbidden();
+    }
+
+    public function test_criar_restricao_para_multiplas_atividades_cria_uma_por_atividade(): void
+    {
+        $at1 = $this->criarAtividade(['nome' => 'Atividade Um']);
+        $at2 = $this->criarAtividade(['nome' => 'Atividade Dois']);
+        $at3 = $this->criarAtividade(['nome' => 'Atividade Três']);
+
+        $this->componente()
+            ->call('abrirModalNova')
+            ->call('toggleAtividadeSelecionada', $at1->id)
+            ->call('toggleAtividadeSelecionada', $at2->id)
+            ->call('toggleAtividadeSelecionada', $at3->id)
+            ->set('descricaoNova', 'Falta liberação do projeto executivo')
+            ->call('salvarRestricao');
+
+        $this->assertEquals(3, Restricao::where('descricao', 'Falta liberação do projeto executivo')->count());
+        $this->assertDatabaseHas('restricoes', ['atividade_id' => $at1->id]);
+        $this->assertDatabaseHas('restricoes', ['atividade_id' => $at2->id]);
+        $this->assertDatabaseHas('restricoes', ['atividade_id' => $at3->id]);
+    }
+
+    public function test_toggle_atividade_selecionada_remove_quando_ja_selecionada(): void
+    {
+        $atividade = $this->criarAtividade();
+
+        $componente = $this->componente()
+            ->call('abrirModalNova')
+            ->call('toggleAtividadeSelecionada', $atividade->id);
+
+        $this->assertContains($atividade->id, $componente->get('atividadesIdsNova'));
+
+        $componente->call('toggleAtividadeSelecionada', $atividade->id);
+        $this->assertNotContains($atividade->id, $componente->get('atividadesIdsNova'));
+    }
+
+    public function test_editar_restricao_mantem_atividade_unica(): void
+    {
+        $atividade = $this->criarAtividade();
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'descricao' => 'Descrição original',
+        ]);
+
+        $this->componente()
+            ->call('abrirModalEdicao', $restricao->id)
+            ->assertSet('atividadesIdsNova', [$atividade->id])
+            ->set('descricaoNova', 'Descrição atualizada')
+            ->call('salvarRestricao');
+
+        $this->assertEquals(1, Restricao::count());
+        $this->assertEquals('Descrição atualizada', $restricao->fresh()->descricao);
+        $this->assertEquals($atividade->id, $restricao->fresh()->atividade_id);
+    }
+
+    public function test_busca_de_atividades_no_modal_filtra_por_nome(): void
+    {
+        $achada = $this->criarAtividade(['nome' => 'Concretagem do berço 3']);
+        $naoAchada = $this->criarAtividade(['nome' => 'Montagem de forma']);
+
+        $componente = $this->componente()
+            ->call('abrirModalNova')
+            ->set('buscaAtividadeNova', 'berço 3');
+
+        $nomes = collect($componente->instance()->atividadesParaSelecao)->pluck('nome')->all();
+        $this->assertContains($achada->nome, $nomes);
+        $this->assertNotContains($naoAchada->nome, $nomes);
+    }
+
+    public function test_criar_restricao_sem_autorizacao_e_bloqueada(): void
+    {
+        $atividade = $this->criarAtividade();
+
+        $leitor = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $leitor, Papel::ClienteLeitura->value);
+        $this->actingAs($leitor);
+
+        Livewire::test('pages::radar.restricoes', ['obra' => $this->obra])
+            ->call('toggleAtividadeSelecionada', $atividade->id)
+            ->set('descricaoNova', 'Tentativa sem permissão')
+            ->call('salvarRestricao')
+            ->assertForbidden();
+    }
+
+    public function test_exportar_excel_com_filtro_gera_download(): void
+    {
+        $atividade = $this->criarAtividade();
+        Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+
+        $this->componente()
+            ->set('filtroStatus', 'aberta')
+            ->call('exportarExcel')
+            ->assertFileDownloaded();
+    }
+
+    public function test_per_page_altera_a_paginacao(): void
+    {
+        $atividade = $this->criarAtividade();
+        Restricao::factory()->count(8)->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+        ]);
+
+        $componente = $this->componente()->set('perPage', 5);
+
+        $this->assertEquals(5, $componente->instance()->restricoes->count());
+        $this->assertEquals(8, $componente->instance()->restricoes->total());
+    }
+
+    public function test_filtro_por_disciplina(): void
+    {
+        $disciplina = Disciplina::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $comDisciplina = $this->criarAtividade(['disciplina_id' => $disciplina->id]);
+        $semDisciplina = $this->criarAtividade();
+
+        $rCom = Restricao::factory()->create(['tenant_id' => $this->obra->tenant_id, 'atividade_id' => $comDisciplina->id]);
+        $rSem = Restricao::factory()->create(['tenant_id' => $this->obra->tenant_id, 'atividade_id' => $semDisciplina->id]);
+
+        $componente = $this->componente()->set('filtroDisciplinaId', $disciplina->id);
+        $ids = $componente->instance()->restricoes->pluck('id');
+
+        $this->assertTrue($ids->contains($rCom->id));
+        $this->assertFalse($ids->contains($rSem->id));
+    }
+
+    public function test_filtro_por_frente_de_trabalho(): void
+    {
+        $frente = FrenteTrabalho::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $comFrente = $this->criarAtividade(['frente_trabalho_id' => $frente->id]);
+        $semFrente = $this->criarAtividade();
+
+        $rCom = Restricao::factory()->create(['tenant_id' => $this->obra->tenant_id, 'atividade_id' => $comFrente->id]);
+        $rSem = Restricao::factory()->create(['tenant_id' => $this->obra->tenant_id, 'atividade_id' => $semFrente->id]);
+
+        $componente = $this->componente()->set('filtroFrenteTrabalhoId', $frente->id);
+        $ids = $componente->instance()->restricoes->pluck('id');
+
+        $this->assertTrue($ids->contains($rCom->id));
+        $this->assertFalse($ids->contains($rSem->id));
+    }
+
+    public function test_filtro_por_responsavel(): void
+    {
+        $responsavel = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $responsavel, Papel::Engenheiro->value);
+
+        $atividade = $this->criarAtividade();
+        $rCom = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'responsavel_id' => $responsavel->id,
+        ]);
+        $rSem = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'responsavel_id' => null,
+        ]);
+
+        $componente = $this->componente()->set('filtroResponsavelId', $responsavel->id);
+        $ids = $componente->instance()->restricoes->pluck('id');
+
+        $this->assertTrue($ids->contains($rCom->id));
+        $this->assertFalse($ids->contains($rSem->id));
+    }
+
+    public function test_adicionar_comentario_cria_acao(): void
+    {
+        $atividade = $this->criarAtividade();
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+        ]);
+
+        $this->componente()
+            ->call('abrirModalComentarios', $restricao->id)
+            ->set('comentarioTexto', 'Aguardando retorno do fornecedor.')
+            ->call('adicionarComentario');
+
+        $this->assertDatabaseHas('restricao_acoes', [
+            'restricao_id' => $restricao->id,
+            'descricao' => 'Aguardando retorno do fornecedor.',
+        ]);
+    }
+
+    public function test_usuario_cliente_leitura_nao_pode_comentar(): void
+    {
+        $atividade = $this->criarAtividade();
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+        ]);
+
+        $leitor = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $leitor, Papel::ClienteLeitura->value);
+        $this->actingAs($leitor);
+
+        Livewire::test('pages::radar.restricoes', ['obra' => $this->obra])
+            ->call('abrirModalComentarios', $restricao->id)
+            ->set('comentarioTexto', 'Tentativa sem permissão')
+            ->call('adicionarComentario')
+            ->assertForbidden();
+    }
+}

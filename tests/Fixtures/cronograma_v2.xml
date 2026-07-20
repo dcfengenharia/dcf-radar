@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  v2: Atividade 2 (UID=3) removida.
+      Atividade 1 (UID=2) com baseline aumentado para 50 HH.
+      Serve para testar arquivamento + sinalização de ajuste obsoleto.
+-->
+<Project xmlns="http://schemas.microsoft.com/project">
+  <StatusDate>2024-02-29T00:00:00</StatusDate>
+  <ExtendedAttributes>
+    <ExtendedAttribute>
+      <FieldID>188743777</FieldID>
+      <FieldName>Text20</FieldName>
+    </ExtendedAttribute>
+  </ExtendedAttributes>
+  <Tasks>
+    <Task>
+      <UID>1</UID>
+      <Name>Pacote A</Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-21T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>2</UID>
+      <Name>Atividade 1</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>1</Critical>
+      <OutlineNumber>1.1</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-21T17:00:00</Finish>
+      <Work>PT50H0M0S</Work>
+      <ActualWork>PT16H0M0S</ActualWork>
+      <ActualStart>2024-01-01T08:00:00</ActualStart>
+      <Baseline>
+        <Number>0</Number>
+        <Start>2024-01-01T08:00:00</Start>
+        <Finish>2024-01-21T17:00:00</Finish>
+        <Work>PT50H0M0S</Work>
+      </Baseline>
+    </Task>
+  </Tasks>
+  <Resources>
+    <Resource>
+      <UID>1</UID>
+      <Type>1</Type>
+      <Name>Engenheiro</Name>
+    </Resource>
+  </Resources>
+  <Assignments>
+    <Assignment>
+      <UID>1</UID>
+      <TaskUID>2</TaskUID>
+      <ResourceUID>1</ResourceUID>
+      <TimephasedData>
+        <Type>4</Type>
+        <Start>2024-01-01T08:00:00</Start>
+        <Finish>2024-01-07T17:00:00</Finish>
+        <Value>PT50H0M0S</Value>
+      </TimephasedData>
+      <TimephasedData>
+        <Type>2</Type>
+        <Start>2024-01-01T08:00:00</Start>
+        <Finish>2024-01-07T17:00:00</Finish>
+        <Value>PT16H0M0S</Value>
+      </TimephasedData>
+      <TimephasedData>
+        <Type>1</Type>
+        <Start>2024-01-08T08:00:00</Start>
+        <Finish>2024-01-21T17:00:00</Finish>
+        <Value>PT34H0M0S</Value>
+      </TimephasedData>
+    </Assignment>
+  </Assignments>
+</Project>

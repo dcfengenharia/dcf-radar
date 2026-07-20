@@ -1,0 +1,235 @@
+{
+  "menu": [
+    {
+      "url": "/app/home",
+      "name": "Início",
+      "icon": "menu-icon tf-icons bx bx-home-circle",
+      "slug": "app.home"
+    },
+    {
+      "url": "/app/radar/dashboard",
+      "name": "Dashboard",
+      "icon": "menu-icon tf-icons bx bx-grid-alt",
+      "slug": "radar.dashboard",
+      "funcionalidade": "dashboard.gerencial"
+    },
+    {
+      "menuHeader": "1. OBRAS"
+    },
+    {
+      "url": "/app/gestao/minhas-obras",
+      "name": "Minhas Obras",
+      "icon": "menu-icon tf-icons bx bx-hard-hat",
+      "slug": "gestao.minhas-obras"
+    },
+    {
+      "url": "/app/radar/cronograma",
+      "name": "Importar Cronograma",
+      "icon": "menu-icon tf-icons bx bx-upload",
+      "slug": "radar.cronograma",
+      "funcionalidade": "obras.importar_cronograma"
+    },
+    {
+      "url": "/app/radar/linhas-base",
+      "name": "Linhas de Base",
+      "icon": "menu-icon tf-icons bx bx-bookmark-plus",
+      "slug": "radar.linhas-base",
+      "funcionalidade": "obras.linhas_base"
+    },
+    {
+      "url": "/app/radar/curvas",
+      "name": "Curvas S",
+      "icon": "menu-icon tf-icons bx bx-line-chart",
+      "slug": "radar.curvas",
+      "funcionalidade": "obras.curvas"
+    },
+    {
+      "menuHeader": "2. RESTRIÇÕES"
+    },
+    {
+      "url": "/app/radar/lookahead",
+      "name": "Lookahead Lean",
+      "icon": "menu-icon tf-icons bx bx-calendar-week",
+      "slug": "radar.lookahead",
+      "funcionalidade": "restricoes.lookahead"
+    },
+    {
+      "url": "/app/radar/restricoes",
+      "name": "Quadro de Restrições",
+      "icon": "menu-icon tf-icons bx bx-shield-alt-2",
+      "slug": "radar.restricoes",
+      "funcionalidade": "restricoes.quadro"
+    },
+    {
+      "url": "/app/radar/plano-semanal",
+      "name": "Plano Semanal",
+      "icon": "menu-icon tf-icons bx bx-calendar-check",
+      "slug": "radar.plano-semanal",
+      "funcionalidade": "restricoes.plano_semanal"
+    },
+    {
+      "url": "/app/radar/causas",
+      "name": "Causas de Não Cumprimento",
+      "icon": "menu-icon tf-icons bx bx-bar-chart-alt-2",
+      "slug": "radar.causas",
+      "funcionalidade": "restricoes.causas"
+    },
+    {
+      "url": "/app/radar/matriz",
+      "name": "Matriz P×I",
+      "icon": "menu-icon tf-icons bx bx-grid-alt",
+      "slug": "radar.matriz",
+      "funcionalidade": "restricoes.matriz"
+    },
+    {
+      "url": "/app/radar/relatorios-restricoes",
+      "name": "Relatórios de Restrições",
+      "icon": "menu-icon tf-icons bx bx-line-chart",
+      "slug": "radar.relatorios-restricoes",
+      "funcionalidade": "restricoes.relatorios"
+    },
+    {
+      "menuHeader": "3. REPORT"
+    },
+    {
+      "url": "/app/radar/relatorios",
+      "name": "Relatórios",
+      "icon": "menu-icon tf-icons bx bx-file",
+      "slug": "radar.relatorios",
+      "funcionalidade": "report.relatorios"
+    },
+    {
+      "url": "/app/radar/relatorios/importar-avanco",
+      "name": "Importar Avanço",
+      "icon": "menu-icon tf-icons bx bx-upload",
+      "slug": "radar.relatorios.importar-avanco",
+      "funcionalidade": "report.importar_avanco"
+    },
+    {
+      "menuHeader": "4. ENGENHARIA"
+    },
+    {
+      "url": "/app/engenharia/pacotes",
+      "name": "Lista de Documentos",
+      "icon": "menu-icon tf-icons bx bx-compass",
+      "slug": "engenharia.pacotes",
+      "funcionalidade": "engenharia.pacotes"
+    },
+    {
+      "menuHeader": "5. SUPRIMENTOS"
+    },
+    {
+      "url": "/app/radar/suprimentos",
+      "name": "Mapa de Suprimentos",
+      "icon": "menu-icon tf-icons bx bx-package",
+      "slug": "radar.suprimentos",
+      "funcionalidade": "suprimentos.mapa"
+    },
+    {
+      "menuHeader": "CONFIGURAÇÕES"
+    },
+    {
+      "name": "Cadastros",
+      "icon": "menu-icon tf-icons bx bx-cog",
+      "slug": "cadastros",
+      "submenu": [
+        {
+          "url": "/app/cadastros/clientes",
+          "name": "Clientes",
+          "slug": "cadastros.clientes.index",
+          "funcionalidade": "cadastros.clientes"
+        },
+        {
+          "url": "/app/cadastros/obras",
+          "name": "Obras",
+          "slug": "cadastros.obras.index",
+          "funcionalidade": "cadastros.obras"
+        },
+        {
+          "url": "/app/cadastros/categorias-restricao",
+          "name": "Tipos de Restrição",
+          "slug": "cadastros.categorias-restricao",
+          "funcionalidade": "cadastros.categorias_restricao"
+        },
+        {
+          "url": "/app/cadastros/itens-prontidao",
+          "name": "Itens de Prontidão",
+          "slug": "cadastros.itens-prontidao",
+          "funcionalidade": "cadastros.itens_prontidao"
+        },
+        {
+          "url": "/app/cadastros/convite-config",
+          "name": "Convite por E-mail",
+          "slug": "cadastros.convite-config",
+          "funcionalidade": "cadastros.convite_config"
+        },
+        {
+          "url": "/app/cadastros/fornecedores",
+          "name": "Fornecedores",
+          "slug": "cadastros.fornecedores",
+          "funcionalidade": "cadastros.fornecedores"
+        },
+        {
+          "url": "/app/cadastros/feriados",
+          "name": "Feriados",
+          "slug": "cadastros.feriados",
+          "funcionalidade": "cadastros.feriados"
+        },
+        {
+          "url": "/app/cadastros/fluxos-suprimento",
+          "name": "Tipos de Fluxo (Suprimentos)",
+          "slug": "cadastros.fluxos-suprimento",
+          "funcionalidade": "cadastros.fluxos_suprimento"
+        },
+        {
+          "url": "/app/cadastros/status-documentos",
+          "name": "Status de Documento",
+          "slug": "cadastros.status-documentos",
+          "funcionalidade": "cadastros.status_documentos"
+        }
+      ]
+    },
+    {
+      "url": "/app/perfis-acesso",
+      "name": "Perfis de Acesso",
+      "icon": "menu-icon tf-icons bx bx-lock-alt",
+      "slug": "gestao.perfis-acesso",
+      "gate": "gerenciar-perfis-acesso"
+    },
+    {
+      "url": "/app/empresa",
+      "name": "Dados da Empresa",
+      "icon": "menu-icon tf-icons bx bx-buildings",
+      "slug": "app.empresa.show",
+      "gate": "gerenciar-empresa-ativa"
+    },
+    {
+      "menuHeader": "ADMINISTRAÇÃO",
+      "gate": "acessar-admin-plataforma"
+    },
+    {
+      "url": "/admin",
+      "name": "Painel do Proprietário",
+      "icon": "menu-icon tf-icons bx bx-crown",
+      "slug": "admin.dashboard",
+      "gate": "acessar-admin-plataforma",
+      "submenu": [
+        {
+          "url": "/admin/tenants",
+          "name": "Contas (Tenants)",
+          "slug": "admin.tenants.index"
+        },
+        {
+          "url": "/admin/planos",
+          "name": "Planos",
+          "slug": "admin.planos.index"
+        },
+        {
+          "url": "/admin/avisos",
+          "name": "Avisos aos Usuários",
+          "slug": "admin.avisos.index"
+        }
+      ]
+    }
+  ]
+}

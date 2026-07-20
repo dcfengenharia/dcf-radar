@@ -1,0 +1,130 @@
+<?php
+
+namespace App\Models;
+
+use App\Notifications\CustomVerifyEmail;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use App\Models\Concerns\HasObraPapel;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Fortify\TwoFactorAuthenticatable;
+use Laravel\Jetstream\HasProfilePhoto;
+use Laravel\Sanctum\HasApiTokens;
+
+class User extends Authenticatable implements MustVerifyEmail
+{
+    use HasApiTokens;
+    use HasFactory;
+    use HasObraPapel;
+    use HasProfilePhoto;
+    use HasUlids;
+    use Notifiable;
+    use TwoFactorAuthenticatable;
+
+    protected $fillable = [
+        'first_name',
+        'last_name',
+        'cargo',
+        'telefone',
+        'email',
+        'password',
+        'tenant_id',
+        'is_platform_admin',
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
+        'two_factor_recovery_codes',
+        'two_factor_secret',
+    ];
+
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'is_platform_admin' => 'boolean',
+    ];
+
+    protected $appends = [
+        'profile_photo_url',
+    ];
+
+    public function tenant()
+    {
+        return $this->belongsTo(Tenant::class);
+    }
+
+    /**
+     * Todos os tenants que este usuário pode acessar/trocar (via
+     * tenant_user) — inclui o tenant "casa" (tenant_id), que já nasce
+     * vinculado via o hook em booted() abaixo.
+     */
+    public function tenants(): BelongsToMany
+    {
+        return $this->belongsToMany(Tenant::class, 'tenant_user')->withTimestamps();
+    }
+
+    public function podeGerenciarTenant(Tenant $tenant): bool
+    {
+        return $tenant->criado_por_id === $this->id;
+    }
+
+    public function works(): BelongsToMany
+    {
+        return $this->belongsToMany(Work::class, 'obra_user', 'user_id', 'work_id')
+            ->withPivot('papel', 'perfil_id')
+            ->withTimestamps();
+    }
+
+    public function sendEmailVerificationNotification(): void
+    {
+        $this->notify(new CustomVerifyEmail);
+    }
+
+    public function avisosPlataformaDispensados(): BelongsToMany
+    {
+        return $this->belongsToMany(AvisoPlataforma::class, 'aviso_plataforma_dispensas')->withTimestamps();
+    }
+
+    /** Avisos ativos da plataforma que este usuário ainda não dispensou permanentemente. */
+    public function avisosPlataformaPendentes(): \Illuminate\Support\Collection
+    {
+        return AvisoPlataforma::ativos()
+            ->paraTenant(\App\Support\TenantContext::currentId())
+            ->whereDoesntHave('dispensas', fn ($q) => $q->where('user_id', $this->id))
+            ->orderBy('created_at')
+            ->get();
+    }
+
+    /**
+     * Garante que todo usuário criado com tenant_id já nasce com a linha
+     * de pivô correspondente em tenant_user — sem precisar lembrar de
+     * inserir manualmente em cada ponto de criação (registro, convite,
+     * factories, seeders futuros).
+     */
+    protected static function booted(): void
+    {
+        static::created(function (User $user) {
+            if ($user->tenant_id && ! $user->tenants()->where('tenants.id', $user->tenant_id)->exists()) {
+                $user->tenants()->attach($user->tenant_id);
+            }
+        });
+    }
+
+    /**
+     * Sobrescreve o padrão do HasProfilePhoto, que assume um campo "name"
+     * único — este schema usa first_name/last_name.
+     */
+    protected function defaultProfilePhotoUrl(): string
+    {
+        $name = trim("{$this->first_name} {$this->last_name}");
+        $iniciais = collect(explode(' ', $name))
+            ->filter()
+            ->map(fn ($segmento) => mb_substr($segmento, 0, 1))
+            ->join(' ');
+
+        return 'https://ui-avatars.com/api/?name=' . urlencode($iniciais) . '&color=7F9CF5&background=EBF4FF';
+    }
+}

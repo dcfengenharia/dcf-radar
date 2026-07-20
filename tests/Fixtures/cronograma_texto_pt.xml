@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fixture com campos customizados em português (Texto20/21/22), reproduzindo
+  a nomenclatura real de instalações do MS Project em PT-BR — reproduz o bug
+  em que o importador só reconhecia "Text20/21/22" (inglês).
+-->
+<Project xmlns="http://schemas.microsoft.com/project">
+  <StatusDate>2024-01-31T00:00:00</StatusDate>
+  <ExtendedAttributes>
+    <ExtendedAttribute>
+      <FieldID>188743777</FieldID>
+      <FieldName>Texto20</FieldName>
+    </ExtendedAttribute>
+    <ExtendedAttribute>
+      <FieldID>188743778</FieldID>
+      <FieldName>Texto21</FieldName>
+    </ExtendedAttribute>
+    <ExtendedAttribute>
+      <FieldID>188743779</FieldID>
+      <FieldName>Texto22</FieldName>
+    </ExtendedAttribute>
+    <ExtendedAttribute>
+      <FieldID>188743780</FieldID>
+      <FieldName>Texto23</FieldName>
+    </ExtendedAttribute>
+    <ExtendedAttribute>
+      <FieldID>188743781</FieldID>
+      <FieldName>Texto24</FieldName>
+    </ExtendedAttribute>
+    <ExtendedAttribute>
+      <FieldID>188743782</FieldID>
+      <FieldName>Texto25</FieldName>
+    </ExtendedAttribute>
+  </ExtendedAttributes>
+  <Tasks>
+    <Task>
+      <UID>1</UID>
+      <Name>Pacote A</Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-02-14T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>2</UID>
+      <Name>Atividade 1</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>1</Critical>
+      <OutlineNumber>1.1</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <Work>PT40H0M0S</Work>
+      <ActualWork>PT16H0M0S</ActualWork>
+      <ActualStart>2024-01-01T08:00:00</ActualStart>
+      <Baseline>
+        <Number>0</Number>
+        <Start>2024-01-01T08:00:00</Start>
+        <Finish>2024-01-14T17:00:00</Finish>
+        <Work>PT40H0M0S</Work>
+      </Baseline>
+      <ExtendedAttribute>
+        <FieldID>188743777</FieldID>
+        <Value>MOBILIZAÇÃO</Value>
+      </ExtendedAttribute>
+      <ExtendedAttribute>
+        <FieldID>188743778</FieldID>
+        <Value>ENGENHARIA</Value>
+      </ExtendedAttribute>
+      <ExtendedAttribute>
+        <FieldID>188743779</FieldID>
+        <Value>Berço 3</Value>
+      </ExtendedAttribute>
+      <ExtendedAttribute>
+        <FieldID>188743780</FieldID>
+        <Value>sim</Value>
+      </ExtendedAttribute>
+      <ExtendedAttribute>
+        <FieldID>188743781</FieldID>
+        <Value>Projeto Executivo</Value>
+      </ExtendedAttribute>
+      <ExtendedAttribute>
+        <FieldID>188743782</FieldID>
+        <Value>Equipe Alpha</Value>
+      </ExtendedAttribute>
+    </Task>
+  </Tasks>
+  <Resources>
+    <Resource>
+      <UID>1</UID>
+      <Type>1</Type>
+      <Name>Engenheiro</Name>
+    </Resource>
+  </Resources>
+  <Assignments>
+    <Assignment>
+      <UID>1</UID>
+      <TaskUID>2</TaskUID>
+      <ResourceUID>1</ResourceUID>
+      <TimephasedData>
+        <Type>4</Type>
+        <Start>2024-01-01T08:00:00</Start>
+        <Finish>2024-01-07T17:00:00</Finish>
+        <Value>PT40H0M0S</Value>
+      </TimephasedData>
+      <TimephasedData>
+        <Type>2</Type>
+        <Start>2024-01-01T08:00:00</Start>
+        <Finish>2024-01-07T17:00:00</Finish>
+        <Value>PT16H0M0S</Value>
+      </TimephasedData>
+      <TimephasedData>
+        <Type>1</Type>
+        <Start>2024-01-08T08:00:00</Start>
+        <Finish>2024-01-14T17:00:00</Finish>
+        <Value>PT24H0M0S</Value>
+      </TimephasedData>
+    </Assignment>
+  </Assignments>
+</Project>
