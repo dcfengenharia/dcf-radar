@@ -30,6 +30,10 @@
     @livewire('profile.logout-other-browser-sessions-form')
   </div>
 
+  <div class="mb-4">
+    @livewire('profile.export-user-data-form')
+  </div>
+
   @if (Laravel\Jetstream\Jetstream::hasAccountDeletionFeatures())
     @livewire('profile.delete-user-form')
   @endif

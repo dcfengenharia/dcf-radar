@@ -126,6 +126,21 @@ ReportComentario (só em reports emitidos). Reaproveita
   também sempre passa (mesmo fallback "sem plano = sem restrição" usado
   em todo o resto do sistema).
 
+## LGPD
+
+- **Exportação de dados pessoais** (`App\Actions\ExportUserData::gerar()`,
+  botão "Exportar meus dados" no Perfil via
+  `App\Livewire\Profile\ExportUserDataForm`): monta um JSON com os dados
+  do usuário + todo registro onde ele é autor/responsável, consultando
+  direto via `DB::table()` (não Eloquent) as ~20 tabelas com FK pra
+  `users` já mapeadas — sempre filtrando por `tenant_id` também, como
+  defesa extra. Ao adicionar uma tabela nova com FK de autoria pra
+  `users`, incluir aqui também. Exclusão de conta já existe via
+  Jetstream (`profile.delete-user-form`) — mas várias dessas mesmas
+  tabelas têm a FK como `restrictOnDelete` (não `nullOnDelete`), então
+  hoje não é possível excluir um usuário que já comentou/agiu em algo;
+  não mexido nesta fase, só registrado aqui.
+
 ## Papéis, permissões e clientes
 
 - **Perfis de acesso são personalizáveis por tenant** (`App\Models\Perfil`,
