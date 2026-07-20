@@ -89,6 +89,13 @@ new class extends Component {
   {
     $this->authorize('create', Work::class);
 
+    $limite = Auth::user()->tenant->limiteObras();
+    if ($limite !== null && Work::count() >= $limite) {
+      $this->addError('name', "Seu plano permite no máximo {$limite} obra(s). Fale com o administrador da conta pra aumentar o limite.");
+
+      return;
+    }
+
     $work = Work::create([
       'client_id'            => $this->clientId,
       'name'                 => $this->name,

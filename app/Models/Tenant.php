@@ -81,6 +81,23 @@ class Tenant extends Model
             ?? self::LIMITE_UPLOAD_SEM_PLANO_MB;
     }
 
+    /**
+     * `null` = ilimitado, tanto pra tenant sem Assinatura (situação de
+     * todo tenant hoje) quanto pra plano cujo `max_obras`/`max_usuarios`
+     * está vazio (mesma semântica já usada na tela de Planos, onde
+     * `null` exibe "Ilimitado") — ao contrário de `limiteUploadMb()`,
+     * aqui não há teto técnico pra usar de fallback.
+     */
+    public function limiteObras(): ?int
+    {
+        return $this->assinaturaAtual()?->plano?->max_obras;
+    }
+
+    public function limiteUsuarios(): ?int
+    {
+        return $this->assinaturaAtual()?->plano?->max_usuarios;
+    }
+
     public function criador(): BelongsTo
     {
         return $this->belongsTo(User::class, 'criado_por_id');

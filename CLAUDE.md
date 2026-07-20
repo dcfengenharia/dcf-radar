@@ -107,6 +107,25 @@ ReportComentario (só em reports emitidos). Reaproveita
   nem atividade). Ao adicionar um novo passo obrigatório em `passosObra()`,
   conferir se esse mesmo mecanismo de exceção cobre a rota certa.
 
+## Planos e Assinatura
+
+- **`Tenant::limiteObras()`/`limiteUsuarios()`/`limiteUploadMb()`**: únicos
+  pontos de leitura do limite de plano — `null` em `limiteObras()`/
+  `limiteUsuarios()` = ilimitado (tenant sem `Assinatura`, ou `Plano` com
+  o campo vazio); `limiteUploadMb()` é diferente, tem teto técnico de
+  fallback (`Tenant::LIMITE_UPLOAD_SEM_PLANO_MB`). Aplicados em
+  `⚡obras/create.blade.php::createWork()` e em dois pontos do fluxo de
+  convite (`⚡obra-detalhe.blade.php::enviarConvite()`, que dá feedback
+  cedo, e `ConviteController::aceitar()`, que é a checagem que vale de
+  verdade — o limite pode mudar entre o envio e a aceitação).
+- **`StatusAssinatura::concedeAcesso()`** (`Trial`/`Ativa` = true,
+  `Cancelada`/`Suspensa`/`Inadimplente` = false) é enforced por
+  `App\Http\Middleware\EnsureTenantAssinaturaAtiva` (alias
+  `assinatura.ativa`, no grupo de rotas `app`) — admin da plataforma
+  (`is_platform_admin`) sempre passa; tenant sem nenhuma `Assinatura`
+  também sempre passa (mesmo fallback "sem plano = sem restrição" usado
+  em todo o resto do sistema).
+
 ## Papéis, permissões e clientes
 
 - **Perfis de acesso são personalizáveis por tenant** (`App\Models\Perfil`,

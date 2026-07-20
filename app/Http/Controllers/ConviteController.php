@@ -49,8 +49,19 @@ class ConviteController extends Controller
         $obra = $convite->obra;
         $tenant = $obra->tenant;
 
-        $usuario = DB::transaction(function () use ($convite, $obra, $tenant, $request) {
-            $usuario = User::where('tenant_id', $tenant->id)->where('email', $convite->email)->first();
+        $usuarioExistente = User::where('tenant_id', $tenant->id)->where('email', $convite->email)->first();
+
+        if (! $usuarioExistente) {
+            $limite = $tenant->limiteUsuarios();
+            if ($limite !== null && User::where('tenant_id', $tenant->id)->count() >= $limite) {
+                return redirect()->route('login')
+                    ->with('flash.banner', 'Este convite não pode ser aceito agora: a empresa atingiu o limite de usuários do plano contratado. Peça a quem te convidou pra falar com o administrador da conta.')
+                    ->with('flash.bannerStyle', 'danger');
+            }
+        }
+
+        $usuario = DB::transaction(function () use ($convite, $obra, $tenant, $request, $usuarioExistente) {
+            $usuario = $usuarioExistente;
 
             if (! $usuario) {
                 $usuario = User::create([

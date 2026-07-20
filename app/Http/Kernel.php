@@ -94,5 +94,6 @@ class Kernel extends HttpKernel
         'verified' => EnsureEmailIsVerified::class,
         'obra.context' => \App\Http\Middleware\RequireObraContext::class,
         'platform.admin' => \App\Http\Middleware\EnsurePlatformAdmin::class,
+        'assinatura.ativa' => \App\Http\Middleware\EnsureTenantAssinaturaAtiva::class,
     ];
 }

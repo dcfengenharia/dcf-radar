@@ -10,7 +10,7 @@ Route::get('/', function () {
 
 // PLATAFORMA
 
-Route::middleware(['auth', 'verified'])->prefix('app')->group(function () {
+Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->group(function () {
 
     // página inicial da plataforma
     Route::get('/home', function () {

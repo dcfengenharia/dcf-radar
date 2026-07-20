@@ -14,6 +14,7 @@ use App\Notifications\ConviteObraNotification;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
@@ -296,6 +297,14 @@ new class extends Component {
     {
         $this->authorize('update', $this->obra);
 
+        $chaveThrottle = 'enviar-convite:'.Auth::id();
+        if (RateLimiter::tooManyAttempts($chaveThrottle, 10)) {
+            $segundos = RateLimiter::availableIn($chaveThrottle);
+            $this->addError('emailConvite', "Muitos convites enviados em pouco tempo. Tente de novo em {$segundos} segundos.");
+            return;
+        }
+        RateLimiter::hit($chaveThrottle, 60);
+
         $this->validate([
             'emailConvite' => 'required|email',
             'perfilConviteId' => ['required', Rule::exists('perfis', 'id')->where('tenant_id', $this->obra->tenant_id)],
@@ -322,6 +331,16 @@ new class extends Component {
 
         if (Convite::where('obra_id', $this->obra->id)->where('email', $this->emailConvite)->where('status', 'pendente')->exists()) {
             $this->addError('emailConvite', 'Já existe um convite pendente para este e-mail nesta obra.');
+            return;
+        }
+
+        // Só bloqueia aqui pra dar feedback cedo — quem cria de verdade o
+        // usuário novo é ConviteController::aceitar(), que repete a mesma
+        // checagem no momento da aceitação (o limite pode mudar entre o
+        // envio e a aceitação de um convite).
+        $limite = $this->obra->tenant->limiteUsuarios();
+        if ($limite !== null && User::where('tenant_id', $this->obra->tenant_id)->count() >= $limite) {
+            $this->addError('emailConvite', "Seu plano permite no máximo {$limite} usuário(s). Fale com o administrador da conta pra aumentar o limite.");
             return;
         }
 

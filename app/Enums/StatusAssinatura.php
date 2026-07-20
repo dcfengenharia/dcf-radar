@@ -35,8 +35,8 @@ enum StatusAssinatura: string
     public function concedeAcesso(): bool
     {
         return match ($this) {
-            self::Trial, self::Ativa, self::Inadimplente => true,
-            self::Cancelada, self::Suspensa => false,
+            self::Trial, self::Ativa => true,
+            self::Cancelada, self::Suspensa, self::Inadimplente => false,
         };
     }
 }
