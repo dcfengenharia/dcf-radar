@@ -45,7 +45,13 @@ class Handler extends ExceptionHandler
         $eAcessoNegado = $e instanceof AuthorizationException
             || ($e instanceof HttpExceptionInterface && $e->getStatusCode() === 403);
 
-        if ($eAcessoNegado && ! $request->hasHeader('X-Livewire') && ! $request->expectsJson()) {
+        // Rotas públicas "cliente.*" (link somente-leitura sem login, ver
+        // App\Http\Controllers\ClienteRelatorioPublicoController) ficam de
+        // fora desse redirecionamento — o visitante não tem sessão logada
+        // nem "página anterior" dentro do app pra voltar; um link
+        // assinado inválido/expirado deve mostrar o 403 padrão, não
+        // empurrar quem clicou pra dentro do login.
+        if ($eAcessoNegado && ! $request->hasHeader('X-Livewire') && ! $request->expectsJson() && ! $request->routeIs('cliente.*')) {
             // Não usar o helper redirect(): quando um componente Livewire
             // lança essa exceção dentro do próprio mount() (antes do
             // dehydrate() rodar), o binding 'redirect' do container

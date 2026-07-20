@@ -10,6 +10,7 @@ use App\Services\ReportGerador;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 use Livewire\WithFileUploads;
@@ -47,6 +48,9 @@ new class extends Component {
     public array $novasFotosUpload = [];
     public array $legendasNovasFotosUpload = [];
 
+    /** Link público gerado pra este report (ver gerarLinkCliente()) — null até o botão ser clicado. */
+    public ?string $linkClienteGerado = null;
+
     /**
      * Limiares do velocímetro de aderência (zonas vermelha/amarela/verde) —
      * repassados ao JS via limiaresAderencia() na hora de montar o gráfico
@@ -54,8 +58,6 @@ new class extends Component {
      */
     private const ADERENCIA_LIMIAR_OTIMO = 95.0;
     private const ADERENCIA_LIMIAR_ATENCAO = 80.0;
-
-    private const MESES_PT = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
 
     public function mount(Report $report): void
     {
@@ -83,6 +85,25 @@ new class extends Component {
 
         $this->report->update(['titulo' => trim($this->tituloEdit) ?: null]);
         $this->dispatch('show-toast', message: 'Título atualizado.');
+    }
+
+    /**
+     * Gera um link assinado (Laravel signed route, 30 dias de validade)
+     * pra este report específico — único jeito de acesso somente-leitura
+     * sem login, servido por App\Http\Controllers\ClienteRelatorioPublicoController.
+     * Só faz sentido pra report já emitido (rascunho nunca é exposto
+     * publicamente, mesma regra de visibilidade normal do sistema).
+     */
+    public function gerarLinkCliente(): void
+    {
+        $this->authorize('view', $this->report);
+        abort_unless($this->report->estaEmitido(), 403);
+
+        $this->linkClienteGerado = URL::temporarySignedRoute(
+            'cliente.relatorio.publico',
+            now()->addDays(30),
+            ['report' => $this->report->id]
+        );
     }
 
     private function sincronizarPontosAtencaoEdit(): void
@@ -142,116 +163,19 @@ new class extends Component {
     }
 
     /**
-     * Todos os valores aqui são PERCENTUAIS — nunca HH. "barras" = % que o
-     * HH daquele período representa do total de linha de base da curva
-     * (period_horas ÷ total_hh_previsto); "linhas" = % acumulado (já
-     * corrigido em ReportGerador::gerarCurva() via CurvaAvanco::
-     * rebasearPercentual(), mesmo denominador pras 3 séries).
+     * Delega pra App\Support\ReportCurvaSerializer (extraída daqui pra
+     * ser reaproveitada também pelo link público do cliente — mesma
+     * lógica, sem duplicar/arriscar divergência entre as duas telas).
      */
     private function serieParaGrafico(ReportCurva $curva, GranularidadePeriodo $gran): array
     {
-        $doPeriodo = $curva->datapoints->where('granularidade', $gran);
-
-        $periodos = $doPeriodo->pluck('periodo_inicio')
-            ->unique(fn ($d) => $d->toDateString())
-            ->sort()
-            ->values();
-
-        $porSerie = $doPeriodo->groupBy(fn ($d) => $d->serie->value);
-
-        $labels = $periodos->map(fn ($p) => $this->formatarPeriodoPt($p, $gran))->all();
-
-        $porData = [];
-        foreach (['previsto' => 'Previsto', 'tendencia' => 'Tendência', 'realizado' => 'Realizado'] as $serieValue => $label) {
-            $porData[$serieValue] = ($porSerie->get($serieValue) ?? collect())->keyBy(fn ($d) => $d->periodo_inicio->toDateString());
-        }
-
-        $totalBase = (float) $curva->total_hh_previsto;
-
-        $barras = [];
-        $linhas = [];
-        foreach (['previsto' => 'Previsto', 'tendencia' => 'Tendência', 'realizado' => 'Realizado'] as $serieValue => $label) {
-            $barras[$serieValue] = [
-                'label' => $label,
-                'data' => $periodos->map(function ($p) use ($porData, $serieValue, $totalBase) {
-                    if (! $porData[$serieValue]->has($p->toDateString())) {
-                        return null;
-                    }
-
-                    $horas = (float) $porData[$serieValue]->get($p->toDateString())->horas;
-
-                    return $totalBase > 0 ? round($horas / $totalBase * 100, 2) : 0.0;
-                })->all(),
-            ];
-            $linhas[$serieValue] = [
-                'label' => $label,
-                'data' => $periodos->map(fn ($p) => $porData[$serieValue]->has($p->toDateString())
-                    ? (float) $porData[$serieValue]->get($p->toDateString())->percentual_acumulado
-                    : null)->all(),
-            ];
-        }
-
-        // Aderência = %real acumulado ÷ %previsto acumulado, período a
-        // período — 100% = exatamente em dia com o planejado (usada na
-        // tabela mensal).
-        $tabela = [];
-        foreach ($periodos as $i => $p) {
-            $chave = $p->toDateString();
-            $previstoPct = $porData['previsto']->has($chave) ? (float) $porData['previsto']->get($chave)->percentual_acumulado : null;
-            $tendenciaPct = $porData['tendencia']->has($chave) ? (float) $porData['tendencia']->get($chave)->percentual_acumulado : null;
-            $realPct = $porData['realizado']->has($chave) ? (float) $porData['realizado']->get($chave)->percentual_acumulado : null;
-
-            $aderencia = ($previstoPct !== null && $previstoPct > 0 && $realPct !== null)
-                ? round($realPct / $previstoPct * 100, 2)
-                : null;
-
-            // Aderência DA SEMANA (usada na tabela semanal e no
-            // velocímetro): %realizado DO PERÍODO ÷ %previsto DO PERÍODO —
-            // diferente da acumulada acima, mede o quanto foi executado
-            // NAQUELA semana especificamente em relação ao planejado pra
-            // ela, não o acumulado desde o início do projeto.
-            $previstoPctPeriodo = $barras['previsto']['data'][$i];
-            $realizadoPctPeriodo = $barras['realizado']['data'][$i];
-            $aderenciaPeriodo = ($previstoPctPeriodo !== null && $previstoPctPeriodo > 0 && $realizadoPctPeriodo !== null)
-                ? round($realizadoPctPeriodo / $previstoPctPeriodo * 100, 2)
-                : null;
-
-            $tabela[] = [
-                'label' => $labels[$i],
-                'previsto_pct_periodo' => $barras['previsto']['data'][$i],
-                'tendencia_pct_periodo' => $barras['tendencia']['data'][$i],
-                'realizado_pct_periodo' => $barras['realizado']['data'][$i],
-                'previsto_pct' => $previstoPct,
-                'tendencia_pct' => $tendenciaPct,
-                'realizado_pct' => $realPct,
-                'aderencia' => $aderencia,
-                'aderencia_periodo' => $aderenciaPeriodo,
-            ];
-        }
-
-        return [
-            'labels' => $labels,
-            'barras' => $barras,
-            'linhas' => $linhas,
-            'tabela' => $tabela,
-        ];
+        return \App\Support\ReportCurvaSerializer::serieParaGrafico($curva, $gran);
     }
 
     /** Limiares do velocímetro de aderência, expostos pro Blade repassar ao JS (evita duplicar os números). */
     public function limiaresAderencia(): array
     {
         return [self::ADERENCIA_LIMIAR_ATENCAO, self::ADERENCIA_LIMIAR_OTIMO];
-    }
-
-    private function formatarPeriodoPt(Carbon $data, GranularidadePeriodo $gran): string
-    {
-        if ($gran === GranularidadePeriodo::Mensal) {
-            return self::MESES_PT[$data->month - 1] . '/' . $data->format('y');
-        }
-
-        // Número da semana (ISO-8601) + ano cheio — evita a confusão de
-        // mostrar dois números de 2 dígitos parecidos (ex.: "26/2026").
-        return sprintf('SEM %02d/%d', $data->weekOfYear, $data->year);
     }
 
     /**
@@ -470,6 +394,11 @@ new class extends Component {
             <button class="btn btn-outline-success btn-sm" wire:click="exportarExcel">
                 <i class="bx bxs-file-export me-1"></i>Excel
             </button>
+            @if($report->estaEmitido())
+            <button class="btn btn-outline-primary btn-sm" wire:click="gerarLinkCliente">
+                <i class="bx bx-link me-1"></i>Link para o cliente
+            </button>
+            @endif
             @can('emitir', $report)
             <button class="btn btn-success" wire:click="emitir"
                     wire:confirm="Emitir este report? Ele deixará de ser rascunho e passará a ser visível (e comentável) por todos com acesso à obra.">
@@ -478,6 +407,18 @@ new class extends Component {
             @endcan
         </div>
     </div>
+
+    @if($linkClienteGerado)
+    <div class="alert alert-info d-flex align-items-center gap-2 py-2 mb-4" x-data>
+        <i class="bx bx-link"></i>
+        <input type="text" readonly class="form-control form-control-sm" value="{{ $linkClienteGerado }}" x-ref="linkCliente" onclick="this.select()">
+        <button type="button" class="btn btn-sm btn-outline-secondary flex-shrink-0"
+                x-on:click="navigator.clipboard.writeText($refs.linkCliente.value)">
+            <i class="bx bx-copy"></i> Copiar
+        </button>
+        <small class="text-muted flex-shrink-0">Válido por 30 dias, sem login.</small>
+    </div>
+    @endif
 
     @if($report->estaEmitido())
     <div class="alert alert-success d-flex align-items-center gap-2 py-2 mb-4">

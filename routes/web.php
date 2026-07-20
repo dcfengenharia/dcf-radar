@@ -8,6 +8,12 @@ Route::get('/', function () {
     return view('site.index');
 });
 
+// CLIENTE — acesso público (sem login) a um Report específico, só via
+// link assinado gerado em ⚡relatorio-detalhe.blade.php::gerarLinkCliente().
+Route::get('/cliente/relatorio/{report}', [\App\Http\Controllers\ClienteRelatorioPublicoController::class, 'show'])
+    ->middleware('signed')
+    ->name('cliente.relatorio.publico');
+
 // PLATAFORMA
 
 Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->group(function () {

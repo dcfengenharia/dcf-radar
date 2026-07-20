@@ -89,6 +89,25 @@ ReportComentario (só em reports emitidos). Reaproveita
   repete a mesma importação de um report antigo). Obra sem nenhum report
   anterior, ou sem importação de avanço elegível (`RuntimeException` de
   `gerarRascunho()`), é pulada sem quebrar as demais obras do tenant.
+- **Link público do cliente**: botão "Link para o cliente" em
+  `⚡relatorio-detalhe.blade.php` (só report emitido) gera um signed route
+  (`URL::temporarySignedRoute`, 30 dias) pra
+  `App\Http\Controllers\ClienteRelatorioPublicoController` — acesso
+  SEM LOGIN, escopo deliberadamente limitado a UM Report emitido
+  específico (nunca o quadro de restrições ao vivo). Como o visitante é
+  anônimo, `HasObraPapel`/o global scope de `BelongsToTenant` não têm
+  como resolver o tenant sozinhos: o controller resolve o `tenant_id` do
+  report com uma consulta `DB::table()` mínima e entra nele via
+  `TenantContext::actingAs()` (nunca `withoutGlobalScope()` em código de
+  request). A view (`resources/views/cliente/relatorio-publico.blade.php`)
+  reaproveita `App\Support\ReportCurvaSerializer` — extraída de dentro do
+  próprio `⚡relatorio-detalhe.blade.php` (que agora só delega pra ela)
+  pra não duplicar a lógica de tabela/gráfico em dois lugares. **Achado
+  desta fase:** `app/Exceptions/Handler.php::render()` intercepta
+  qualquer 403 numa navegação de página cheia (autenticada) e redireciona
+  pro popup interno de acesso negado — teria empurrado um visitante
+  público com link expirado/inválido pro login; rotas `cliente.*` agora
+  ficam de fora desse redirecionamento.
 
 ## Onboarding
 
