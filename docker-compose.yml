@@ -6,6 +6,7 @@ services:
             args:
                 WWWGROUP: '${WWWGROUP}'
         image: sail-8.4/app
+        restart: unless-stopped
         extra_hosts:
             - 'host.docker.internal:host-gateway'
         ports:
@@ -25,6 +26,7 @@ services:
             - redis
     queue:
         image: sail-8.4/app
+        restart: unless-stopped
         volumes:
             - '.:/var/www/html'
         networks:
@@ -38,6 +40,7 @@ services:
         entrypoint: ['php', 'artisan', 'queue:work', 'redis', '--tries=3', '--sleep=3']
     reverb:
         image: sail-8.4/app
+        restart: unless-stopped
         volumes:
             - '.:/var/www/html'
         networks:

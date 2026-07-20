@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Enums\StatusAssinatura;
+use App\Models\Plano;
 use App\Providers\RouteServiceProvider;
+use App\Models\Tenant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Fortify\Features;
 use Laravel\Jetstream\Jetstream;
@@ -76,6 +79,104 @@ class RegistrationTest extends TestCase
         $response->assertSessionHasErrors('terms');
         $this->assertGuest();
         $this->assertDatabaseMissing('users', ['email' => 'sem-termos@example.com']);
+    }
+
+    /**
+     * Melhoria da página de cadastro (wizard): o passo "Escolha seu plano"
+     * envia plano_id, e o trial de 7 dias deve nascer nesse plano — não no
+     * padrao_trial genérico.
+     */
+    public function test_cadastro_com_plano_id_valido_cria_assinatura_no_plano_escolhido(): void
+    {
+        $planoEscolhido = Plano::factory()->create(['ativo' => true, 'padrao_trial' => false]);
+
+        $response = $this->post('/register', [
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'company_name' => 'Test Company',
+            'email' => 'com-plano@example.com',
+            'password' => 'Password1!',
+            'password_confirmation' => 'Password1!',
+            'plano_id' => $planoEscolhido->id,
+            'terms' => true,
+        ]);
+
+        $response->assertRedirect(route('verification.notice'));
+        $this->assertAuthenticated();
+
+        $tenant = Tenant::where('name', 'Test Company')->firstOrFail();
+        $assinatura = $tenant->assinaturaAtual();
+
+        $this->assertNotNull($assinatura);
+        $this->assertSame($planoEscolhido->id, $assinatura->plano_id);
+        $this->assertSame(StatusAssinatura::Trial->value, $assinatura->status->value);
+        $this->assertSame(now()->addDays(7)->toDateString(), $assinatura->fim_trial->toDateString());
+    }
+
+    public function test_cadastro_sem_plano_id_preserva_comportamento_do_padrao_trial(): void
+    {
+        $planoPadrao = Plano::factory()->create(['ativo' => true, 'padrao_trial' => true]);
+
+        $response = $this->post('/register', [
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'company_name' => 'Sem Plano Escolhido Ltda',
+            'email' => 'sem-plano@example.com',
+            'password' => 'Password1!',
+            'password_confirmation' => 'Password1!',
+            'terms' => true,
+        ]);
+
+        $response->assertRedirect(route('verification.notice'));
+
+        $tenant = Tenant::where('name', 'Sem Plano Escolhido Ltda')->firstOrFail();
+        $assinatura = $tenant->assinaturaAtual();
+
+        $this->assertNotNull($assinatura);
+        $this->assertSame($planoPadrao->id, $assinatura->plano_id);
+    }
+
+    public function test_cadastro_com_plano_id_inativo_falha_validacao_e_nao_cria_tenant(): void
+    {
+        $planoInativo = Plano::factory()->inativo()->create();
+
+        $response = $this->post('/register', [
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'company_name' => 'Nao Deve Existir Ltda',
+            'email' => 'plano-inativo@example.com',
+            'password' => 'Password1!',
+            'password_confirmation' => 'Password1!',
+            'plano_id' => $planoInativo->id,
+            'terms' => true,
+        ]);
+
+        $response->assertSessionHasErrors('plano_id');
+        $this->assertGuest();
+        $this->assertDatabaseMissing('tenants', ['name' => 'Nao Deve Existir Ltda']);
+    }
+
+    public function test_cadastro_grava_cnpj_e_razao_social_no_tenant(): void
+    {
+        $response = $this->post('/register', [
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'company_name' => 'Com CNPJ Ltda',
+            'email' => 'com-cnpj@example.com',
+            'password' => 'Password1!',
+            'password_confirmation' => 'Password1!',
+            'cnpj' => '12.345.678/0001-90',
+            'razao_social' => 'Com CNPJ Comércio e Serviços Ltda',
+            'terms' => true,
+        ]);
+
+        $response->assertRedirect(route('verification.notice'));
+
+        $this->assertDatabaseHas('tenants', [
+            'name' => 'Com CNPJ Ltda',
+            'cnpj' => '12.345.678/0001-90',
+            'razao_social' => 'Com CNPJ Comércio e Serviços Ltda',
+        ]);
     }
 
     public function test_pagina_de_politica_de_privacidade_mostra_conteudo_real(): void

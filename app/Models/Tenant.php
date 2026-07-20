@@ -39,18 +39,45 @@ class Tenant extends Model
     }
 
     /**
+     * Override do plano do trial automático — usado pela página de
+     * cadastro (wizard) quando o próprio usuário escolhe um plano no
+     * passo "Escolha seu plano", em vez do plano genérico
+     * `padrao_trial`. Mesmo padrão de propriedade estática +
+     * try/finally já usado em App\Support\TenantContext::actingAs() —
+     * só afeta quem chama comPlanoTrialForcado() explicitamente; todo
+     * outro chamador de Tenant::create() (admin, "Criar Nova Empresa",
+     * testes) continua resolvendo pelo `padrao_trial` de sempre.
+     */
+    private static ?string $planoTrialForcadoId = null;
+
+    public static function comPlanoTrialForcado(?string $planoId, callable $callback): mixed
+    {
+        $anterior = self::$planoTrialForcadoId;
+        self::$planoTrialForcadoId = $planoId;
+        try {
+            return $callback();
+        } finally {
+            self::$planoTrialForcadoId = $anterior;
+        }
+    }
+
+    /**
      * Trial automático de 7 dias pra todo tenant novo (Fase 10 do roadmap
      * de maturidade SaaS) — só cria a Assinatura se existir um Plano
-     * marcado `padrao_trial = true`; sem plano marcado, o tenant
-     * simplesmente nasce sem Assinatura (mesmo fallback "sem plano = sem
-     * restrição" já usado em todo o resto do sistema, nunca quebra o
-     * cadastro por configuração de plano faltando). `origem = 'sistema'`
-     * — nem `manual` (admin não fez nada) nem `mercadopago` (não passou
-     * por pagamento nenhum ainda).
+     * marcado `padrao_trial = true` (ou um plano forçado via
+     * `comPlanoTrialForcado()`, ver acima); sem plano resolvido, o
+     * tenant simplesmente nasce sem Assinatura (mesmo fallback "sem
+     * plano = sem restrição" já usado em todo o resto do sistema, nunca
+     * quebra o cadastro por configuração de plano faltando ou inválida).
+     * `origem = 'sistema'` — nem `manual` (admin não fez nada) nem
+     * `mercadopago` (não passou por pagamento nenhum ainda).
      */
     private function criarTrialAutomatico(): void
     {
-        $planoTrial = Plano::where('padrao_trial', true)->first();
+        $planoTrial = self::$planoTrialForcadoId
+            ? Plano::where('id', self::$planoTrialForcadoId)->where('ativo', true)->first()
+            : Plano::where('padrao_trial', true)->first();
+
         if (! $planoTrial) {
             return;
         }

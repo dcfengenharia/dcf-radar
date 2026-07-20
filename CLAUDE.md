@@ -145,6 +145,43 @@ ReportComentario (só em reports emitidos). Reaproveita
   também sempre passa (mesmo fallback "sem plano = sem restrição" usado
   em todo o resto do sistema).
 
+## Página de cadastro (registro)
+
+- **`resources/views/auth/register.blade.php`** é um wizard de 3-4 passos
+  (Acesso → Empresa → [Plano] → Revisão) — **front-end puro**: um único
+  `<form action="{{ route('register') }}" method="POST">`, JS vanilla
+  inline só troca `display`/pills entre `.wizard-step[data-step]` e roda
+  `reportValidity()` por passo antes de avançar. Nenhum campo é
+  `disabled` nos passos escondidos (só `d-none`), então o POST final
+  envia tudo de uma vez — **zero mudança de contrato** com
+  `RegisteredUserController::store()`/`CreateNewUser::create()`, que
+  continuam sendo o único ponto real de validação (client-side é só UX).
+- **Passo "Escolha seu plano" é condicional**: `RegisteredUserController::
+  create()` passa `$planosAtivos = Plano::where('ativo', true)-
+  >orderBy('preco_mensal')->get()` pra view; o passo inteiro (e a pill
+  correspondente) some do array `$steps` quando `$planosAtivos` está
+  vazio — cadastro nunca fica bloqueado por falta de Plano cadastrado
+  (mesmo fallback "sem plano = sem restrição" de sempre). Com 1 único
+  plano ativo, ele vem pré-selecionado; com 2+, o clique no card seta um
+  `<input type="hidden" name="plano_id">`.
+- **`Tenant::comPlanoTrialForcado(?$planoId, $callback)`**: mesmo padrão
+  de propriedade estática + `try/finally` de
+  `App\Support\TenantContext::actingAs()`. Permite ao registro (e só a
+  quem chamar explicitamente) forçar qual `Plano` o trial automático de
+  7 dias usa, em vez do `padrao_trial` genérico resolvido por
+  `criarTrialAutomatico()` — todo outro chamador de `Tenant::create()`
+  (admin, modal "Criar Nova Empresa", testes, seeders) não é afetado.
+  `plano_id` inválido/inativo no request nem chega aqui: é rejeitado
+  antes pela validação (`Rule::exists('planos', 'id')->where('ativo',
+  true)`).
+- **Campos novos, ambos opcionais**: `cnpj` (mascarado em JS puro no
+  evento `input`, sem lib — `00.000.000/0000-00`) e `razao_social`,
+  gravados direto no `Tenant` fillable já existente (nenhuma migration
+  nova). Nome dos campos de sempre (`first_name`/`last_name`/
+  `company_name`/`email`/`password`/`password_confirmation`/`terms`) e o
+  toggle de mostrar/ocultar senha (`form-password-toggle`, `bx-hide`, JS
+  global do template) foram preservados sem alteração.
+
 ## Cobrança (Mercado Pago)
 
 - **Self-service, 3 métodos de pagamento, sem SDK oficial** — sai de

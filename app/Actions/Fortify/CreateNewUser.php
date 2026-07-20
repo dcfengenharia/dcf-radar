@@ -7,6 +7,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Laravel\Fortify\Contracts\CreatesNewUsers;
 use Laravel\Jetstream\Jetstream;
 
@@ -27,13 +28,20 @@ class CreateNewUser implements CreatesNewUsers
             'company_name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
             'password' => $this->passwordRules(),
+            'cnpj' => ['nullable', 'string', 'max:18'],
+            'razao_social' => ['nullable', 'string', 'max:255'],
+            'plano_id' => ['nullable', Rule::exists('planos', 'id')->where('ativo', true)],
             'terms' => Jetstream::hasTermsAndPrivacyPolicyFeature() ? ['accepted', 'required'] : '',
         ])->validate();
 
         return DB::transaction(function () use ($input) {
-            $tenant = Tenant::create([
-                'name' => $input['company_name'],
-            ]);
+            $tenant = Tenant::comPlanoTrialForcado($input['plano_id'] ?? null, function () use ($input) {
+                return Tenant::create([
+                    'name' => $input['company_name'],
+                    'cnpj' => $input['cnpj'] ?? null,
+                    'razao_social' => $input['razao_social'] ?? null,
+                ]);
+            });
 
             $user = User::create([
                 'first_name'        => $input['first_name'],
