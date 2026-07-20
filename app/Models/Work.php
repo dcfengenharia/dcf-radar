@@ -25,12 +25,14 @@ class Work extends Model
         'start_date_baseline',
         'end_date_baseline',
         'status',
+        'dia_semana_report',
     ];
 
     protected $casts = [
         'start_date_baseline' => 'date',
         'end_date_baseline' => 'date',
         'budget_total' => 'float',
+        'dia_semana_report' => 'integer',
     ];
 
     public function client(): BelongsTo

@@ -77,6 +77,18 @@ ReportComentario (só em reports emitidos). Reaproveita
   uma vez por item, via as colunas `alerta_21d_enviado_em`/
   `alerta_10d_enviado_em` (nunca setadas à mão). Item `Concluido` ou sem
   atividade vinculada (sem `necessidade()`) nunca dispara.
+- **Relatório semanal automático (opt-in por obra)**: `Work.dia_semana_report`
+  (0=domingo..6=sábado, `null` = desligado, comportamento padrão). Job
+  diário `App\Console\Commands\GerarReportsAutomaticoCommand` (agendado
+  06:00, depois de `suprimentos:recalcular-status`) cria só o RASCUNHO —
+  emissão continua manual, dupla trava preservada. Reaproveita
+  `pacote_trabalho_id`/`ordem` das curvas do último report da obra (sem
+  copiar `pontos_atencao`); `linha_base_id`/`avanco_importacao_id` ficam
+  `null` de propósito, deixando `ReportGerador::cronogramaParaSerie()`
+  resolver sempre a linha de base/avanço mais recente disponível (nunca
+  repete a mesma importação de um report antigo). Obra sem nenhum report
+  anterior, ou sem importação de avanço elegível (`RuntimeException` de
+  `gerarRascunho()`), é pulada sem quebrar as demais obras do tenant.
 
 ## Papéis, permissões e clientes
 

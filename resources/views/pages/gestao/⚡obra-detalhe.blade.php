@@ -32,6 +32,7 @@ new class extends Component {
     public ?string $inicioBaselineEdit = null;
     public ?string $terminoBaselineEdit = null;
     public string  $statusEdit         = 'planejamento';
+    public ?string $diaSemanaReportEdit = null;
 
     // ---- Equipe ----
     public string  $buscaUsuario       = '';
@@ -128,6 +129,7 @@ new class extends Component {
         $this->inicioBaselineEdit  = $this->obra->start_date_baseline?->format('Y-m-d');
         $this->terminoBaselineEdit = $this->obra->end_date_baseline?->format('Y-m-d');
         $this->statusEdit          = $this->obra->status;
+        $this->diaSemanaReportEdit = $this->obra->dia_semana_report !== null ? (string) $this->obra->dia_semana_report : '';
         $this->editandoDados       = true;
     }
 
@@ -149,6 +151,7 @@ new class extends Component {
             'inicioBaselineEdit'  => 'nullable|date',
             'terminoBaselineEdit' => 'nullable|date|after_or_equal:inicioBaselineEdit',
             'statusEdit'          => 'required|in:planejamento,em_andamento,paralisada,concluida',
+            'diaSemanaReportEdit' => 'nullable|in:0,1,2,3,4,5,6',
         ], [], [
             'nomeEdit' => 'nome',
             'clienteIdEdit' => 'cliente',
@@ -162,6 +165,9 @@ new class extends Component {
             'start_date_baseline' => $this->inicioBaselineEdit,
             'end_date_baseline' => $this->terminoBaselineEdit,
             'status' => $this->statusEdit,
+            'dia_semana_report' => $this->diaSemanaReportEdit !== '' && $this->diaSemanaReportEdit !== null
+                ? (int) $this->diaSemanaReportEdit
+                : null,
         ]);
 
         $this->editandoDados = false;
@@ -539,6 +545,15 @@ new class extends Component {
                         } }}
                     </span>
                 </div>
+                <div class="col-md-6">
+                    <div class="small text-muted">Relatório semanal automático</div>
+                    <div class="fw-semibold">
+                        @php
+                        $diasSemana = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+                        @endphp
+                        {{ $obra->dia_semana_report !== null ? 'Toda ' . $diasSemana[$obra->dia_semana_report] : 'Desligado (geração manual)' }}
+                    </div>
+                </div>
             </div>
         @else
             <h5 class="mb-3">Editar Dados da Obra</h5>
@@ -583,6 +598,21 @@ new class extends Component {
                         <option value="paralisada">Paralisada</option>
                         <option value="concluida">Concluída</option>
                     </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Gerar relatório automaticamente</label>
+                    <select class="form-select @error('diaSemanaReportEdit') is-invalid @enderror" wire:model="diaSemanaReportEdit">
+                        <option value="">Desligado (geração manual)</option>
+                        <option value="0">Toda Domingo</option>
+                        <option value="1">Toda Segunda-feira</option>
+                        <option value="2">Toda Terça-feira</option>
+                        <option value="3">Toda Quarta-feira</option>
+                        <option value="4">Toda Quinta-feira</option>
+                        <option value="5">Toda Sexta-feira</option>
+                        <option value="6">Todo Sábado</option>
+                    </select>
+                    @error('diaSemanaReportEdit')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    <small class="text-muted">Cria o rascunho automaticamente no dia escolhido, reaproveitando as curvas do último relatório — a emissão continua manual.</small>
                 </div>
             </div>
             <div class="mt-3 d-flex gap-2">

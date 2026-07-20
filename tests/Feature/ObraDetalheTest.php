@@ -106,6 +106,7 @@ class ObraDetalheTest extends TestCase
             ->set('clienteIdEdit', $novoCliente->id)
             ->set('localizacaoEdit', 'Recife, PE')
             ->set('statusEdit', 'em_andamento')
+            ->set('diaSemanaReportEdit', '3')
             ->call('salvarDadosObra');
 
         $this->obra->refresh();
@@ -113,6 +114,20 @@ class ObraDetalheTest extends TestCase
         $this->assertEquals($novoCliente->id, $this->obra->client_id);
         $this->assertEquals('Recife, PE', $this->obra->location);
         $this->assertEquals('em_andamento', $this->obra->status);
+        $this->assertSame(3, $this->obra->dia_semana_report);
+    }
+
+    public function test_desligar_relatorio_automatico_grava_null(): void
+    {
+        $this->obra->update(['dia_semana_report' => 2]);
+
+        $this->componente()
+            ->call('abrirEdicaoDados')
+            ->assertSet('diaSemanaReportEdit', '2')
+            ->set('diaSemanaReportEdit', '')
+            ->call('salvarDadosObra');
+
+        $this->assertNull($this->obra->refresh()->dia_semana_report);
     }
 
     public function test_usuario_sem_permissao_nao_pode_editar_dados_da_obra(): void
