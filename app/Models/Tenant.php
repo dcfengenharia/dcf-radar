@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\StatusAssinatura;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -33,7 +34,34 @@ class Tenant extends Model
     {
         static::created(function (Tenant $tenant) {
             Perfil::seedPadrao($tenant);
+            $tenant->criarTrialAutomatico();
         });
+    }
+
+    /**
+     * Trial automático de 7 dias pra todo tenant novo (Fase 10 do roadmap
+     * de maturidade SaaS) — só cria a Assinatura se existir um Plano
+     * marcado `padrao_trial = true`; sem plano marcado, o tenant
+     * simplesmente nasce sem Assinatura (mesmo fallback "sem plano = sem
+     * restrição" já usado em todo o resto do sistema, nunca quebra o
+     * cadastro por configuração de plano faltando). `origem = 'sistema'`
+     * — nem `manual` (admin não fez nada) nem `mercadopago` (não passou
+     * por pagamento nenhum ainda).
+     */
+    private function criarTrialAutomatico(): void
+    {
+        $planoTrial = Plano::where('padrao_trial', true)->first();
+        if (! $planoTrial) {
+            return;
+        }
+
+        $this->assinaturas()->create([
+            'plano_id' => $planoTrial->id,
+            'status' => StatusAssinatura::Trial->value,
+            'origem' => 'sistema',
+            'inicio' => now()->toDateString(),
+            'fim_trial' => now()->addDays(7)->toDateString(),
+        ]);
     }
 
     public function getLogoUrlAttribute(): string

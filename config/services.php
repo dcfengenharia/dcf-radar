@@ -37,4 +37,10 @@ return [
         'client_token' => env('ZAPI_CLIENT_TOKEN'),
     ],
 
+    'mercadopago' => [
+        'access_token' => env('MERCADOPAGO_ACCESS_TOKEN'),
+        'public_key' => env('MERCADOPAGO_PUBLIC_KEY'),
+        'webhook_secret' => env('MERCADOPAGO_WEBHOOK_SECRET'),
+    ],
+
 ];

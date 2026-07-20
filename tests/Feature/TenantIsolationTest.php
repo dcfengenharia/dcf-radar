@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\Assinatura;
+use App\Models\AssinaturaFatura;
 use App\Models\Atividade;
 use App\Models\AtividadeItemProntidao;
 use App\Models\Client;
@@ -12,6 +14,7 @@ use App\Models\FluxoSuprimento;
 use App\Models\Fornecedor;
 use App\Models\ItemProntidao;
 use App\Models\ItemSuprimento;
+use App\Models\Plano;
 use App\Models\ProgramacaoSemanal;
 use App\Models\ProgramacaoSemanalItem;
 use App\Models\Restricao;
@@ -340,5 +343,52 @@ class TenantIsolationTest extends TestCase
         $this->actingAs($userA);
 
         $this->assertNull(AtividadeItemProntidao::find($registroB->id));
+    }
+
+    /**
+     * Assinatura/AssinaturaFatura são de propósito as ÚNICAS tabelas do
+     * projeto SEM BelongsToTenant (ver comentário em App\Models\Assinatura)
+     * — o dono da plataforma precisa enxergar todos os tenants ao mesmo
+     * tempo. Isso significa que NENHUM scope global protege essas tabelas:
+     * toda tela do TENANT (ex.: ⚡empresa/assinatura.blade.php) precisa
+     * filtrar `tenant_id` manualmente. Este teste documenta o risco
+     * explicitamente — confirma que o comportamento "sem scope" é real
+     * (pra nunca presumir engano se aparecer dado de outro tenant numa
+     * query direta) e que o padrão de filtro manual (`where('tenant_id', ...)`)
+     * é o único jeito seguro de consultar essas tabelas numa tela do tenant.
+     */
+    public function test_assinatura_e_assinatura_fatura_nao_tem_scope_automatico_de_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $planoA = Plano::factory()->create();
+        $planoB = Plano::factory()->create();
+
+        $assinaturaA = Assinatura::factory()->create(['tenant_id' => $tenantA->id, 'plano_id' => $planoA->id]);
+        $assinaturaB = Assinatura::factory()->create(['tenant_id' => $tenantB->id, 'plano_id' => $planoB->id]);
+
+        $faturaB = AssinaturaFatura::factory()->create([
+            'tenant_id' => $tenantB->id,
+            'assinatura_id' => $assinaturaB->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        // Confirma a ausência de scope: mesmo autenticado como tenant A,
+        // uma query direta (sem filtro manual) SEMPRE enxerga o registro
+        // do tenant B — nunca presumir que isso é bug, é o design.
+        $this->assertNotNull(Assinatura::find($assinaturaB->id));
+        $this->assertNotNull(AssinaturaFatura::find($faturaB->id));
+
+        // O único jeito seguro de consultar essas tabelas numa tela do
+        // TENANT é filtrando tenant_id manualmente — confirma que esse
+        // padrão exclui corretamente o dado de outro tenant.
+        $faturasFiltradas = AssinaturaFatura::where('tenant_id', $tenantA->id)->pluck('id');
+        $this->assertNotContains($faturaB->id, $faturasFiltradas);
+
+        $assinaturasFiltradas = Assinatura::where('tenant_id', $tenantA->id)->pluck('id');
+        $this->assertContains($assinaturaA->id, $assinaturasFiltradas);
+        $this->assertNotContains($assinaturaB->id, $assinaturasFiltradas);
     }
 }

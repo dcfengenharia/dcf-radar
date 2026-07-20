@@ -14,6 +14,12 @@ Route::get('/cliente/relatorio/{report}', [\App\Http\Controllers\ClienteRelatori
     ->middleware('signed')
     ->name('cliente.relatorio.publico');
 
+// WEBHOOKS — o Mercado Pago bate aqui direto (visitante não-autenticado,
+// sem token CSRF); autenticidade é validada via HMAC no próprio
+// controller (ver App\Http\Middleware\VerifyCsrfToken::$except).
+Route::post('/webhooks/mercadopago', [\App\Http\Controllers\MercadoPagoWebhookController::class, 'handle'])
+    ->name('webhooks.mercadopago');
+
 // PLATAFORMA
 
 Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->group(function () {
@@ -49,6 +55,17 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
 
         return redirect()->route('app.home');
     })->name('app.empresa.trocar');
+
+    // ASSINATURA (autoatendimento) — mesmo tenant ativo/mesma permissão
+    // da página Dados da Empresa.
+    Route::get('/empresa/assinatura', function () {
+        $tenantId = \App\Support\TenantContext::currentId();
+        $tenant = $tenantId ? \App\Models\Tenant::find($tenantId) : null;
+
+        abort_unless($tenant && auth()->user()->podeGerenciarTenant($tenant), 403);
+
+        return view('app.empresa.assinatura', ['tenant' => $tenant]);
+    })->name('app.empresa.assinatura');
 
     // PERFIS DE ACESSO — só o criador do tenant gerencia perfis/permissões
     Route::get('/perfis-acesso', function () {

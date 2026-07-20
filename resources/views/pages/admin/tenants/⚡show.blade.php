@@ -138,6 +138,7 @@ new class extends Component {
                                 <th>Início</th>
                                 <th>Plano</th>
                                 <th>Status</th>
+                                <th>Origem</th>
                                 <th>Cancelada em</th>
                                 <th>Motivo</th>
                             </tr>
@@ -152,12 +153,24 @@ new class extends Component {
                                             {{ $assinatura->status->label() }}
                                         </span>
                                     </td>
+                                    <td>
+                                        @if ($assinatura->origem === 'mercadopago')
+                                            <span class="badge bg-label-info">Mercado Pago</span>
+                                            @if ($assinatura->metodo_pagamento)
+                                                <span class="badge bg-label-secondary text-capitalize">{{ $assinatura->metodo_pagamento }}</span>
+                                            @endif
+                                        @elseif ($assinatura->origem === 'sistema')
+                                            <span class="badge bg-label-secondary">Trial automático</span>
+                                        @else
+                                            <span class="badge bg-label-dark">Manual (admin)</span>
+                                        @endif
+                                    </td>
                                     <td>{{ $assinatura->cancelada_em?->format('d/m/Y H:i') ?? '—' }}</td>
                                     <td>{{ $assinatura->motivo_cancelamento ?? '—' }}</td>
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="5" class="text-center py-4 text-muted">Nenhuma assinatura registrada ainda.</td>
+                                    <td colspan="6" class="text-center py-4 text-muted">Nenhuma assinatura registrada ainda.</td>
                                 </tr>
                             @endforelse
                         </tbody>

@@ -30,11 +30,13 @@ class Plano extends Model
         'max_usuarios',
         'limite_upload_mb',
         'ativo',
+        'padrao_trial',
     ];
 
     protected $casts = [
         'preco_mensal' => 'decimal:2',
         'ativo' => 'boolean',
+        'padrao_trial' => 'boolean',
     ];
 
     public function assinaturas(): HasMany

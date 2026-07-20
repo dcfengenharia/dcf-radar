@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * ATENÇÃO: este model tem `tenant_id` mas NÃO usa BelongsToTenant de
@@ -30,8 +31,12 @@ class Assinatura extends Model
         'tenant_id',
         'plano_id',
         'status',
+        'origem',
+        'metodo_pagamento',
+        'mp_preapproval_id',
         'inicio',
         'fim_trial',
+        'renovar_em',
         'cancelada_em',
         'motivo_cancelamento',
     ];
@@ -40,6 +45,7 @@ class Assinatura extends Model
         'status' => StatusAssinatura::class,
         'inicio' => 'date',
         'fim_trial' => 'date',
+        'renovar_em' => 'date',
         'cancelada_em' => 'datetime',
     ];
 
@@ -51,6 +57,11 @@ class Assinatura extends Model
     public function plano(): BelongsTo
     {
         return $this->belongsTo(Plano::class);
+    }
+
+    public function faturas(): HasMany
+    {
+        return $this->hasMany(AssinaturaFatura::class);
     }
 
     public function estaAtiva(): bool

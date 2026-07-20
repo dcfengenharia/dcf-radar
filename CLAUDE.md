@@ -145,6 +145,78 @@ ReportComentario (só em reports emitidos). Reaproveita
   também sempre passa (mesmo fallback "sem plano = sem restrição" usado
   em todo o resto do sistema).
 
+## Cobrança (Mercado Pago)
+
+- **Self-service, 3 métodos de pagamento, sem SDK oficial** — sai de
+  "admin cria Assinatura na mão" (fluxo manual em `⚡admin/tenants/
+  show.blade.php::salvarAssinatura()`, que continua existindo intacto)
+  pra cobrança real iniciada pelo próprio tenant em
+  `⚡empresa/assinatura.blade.php` (rota `app.empresa.assinatura`,
+  linkada por um card em "Dados da Empresa"). **Cartão** usa a API de
+  Assinaturas do Mercado Pago (`/preapproval`) — cobrança recorrente
+  automática de verdade, tokenizada no navegador via **Card Payment
+  Brick** (SDK `https://sdk.mercadopago.com/js/v2`, carregado só nessa
+  página, mesmo padrão *per-page* do Chart.js — dado de cartão nunca
+  toca o servidor). **Pix/Boleto não têm recorrência nativa no Mercado
+  Pago** — a cada ciclo o `App\Services\CobrancaScheduler` gera uma
+  cobrança avulsa nova (`/v1/payments`) alguns dias antes do vencimento.
+  `App\Services\MercadoPagoGateway` centraliza as chamadas — mesmo
+  padrão de `App\Notifications\Channels\ZApiChannel` (Fase 9): `Http::`
+  facade direto, sem SDK do pacote, 100% testável com `Http::fake()`.
+  Config em `services.mercadopago.*` (`MERCADOPAGO_ACCESS_TOKEN`/
+  `_PUBLIC_KEY`/`_WEBHOOK_SECRET`, vazios por padrão) — diferente do
+  Z-API, `MercadoPagoGateway` **lança exceção** sem credencial (nunca
+  falha em silêncio, porque aqui é o mecanismo de cobrança em si, não
+  um canal de notificação lateral).
+- **Trial automático de 7 dias**: hook em `Tenant::booted()`, junto do
+  `Perfil::seedPadrao()` já existente — só cria a `Assinatura` se
+  existir um `Plano` marcado `padrao_trial = true`; sem plano marcado,
+  tenant novo nasce sem Assinatura (mesmo fallback "sem plano = sem
+  restrição" de sempre). `origem = 'sistema'` — nem `manual` (admin não
+  fez nada) nem `mercadopago` (não passou por pagamento nenhum ainda).
+- **Webhook** (`App\Http\Controllers\MercadoPagoWebhookController`,
+  rota pública `POST /webhooks/mercadopago`, fora de `auth`, exceção
+  própria em `VerifyCsrfToken::$except`): valida a assinatura HMAC do
+  header `x-signature` com `webhook_secret` antes de processar qualquer
+  coisa, e **nunca confia no payload do webhook pra decidir status** —
+  sempre reconfirma direto na API via `MercadoPagoGateway::buscarPagamento()`/
+  `buscarAssinatura()`, seguindo a recomendação de segurança do próprio
+  Mercado Pago. Resolve o tenant via `DB::table()` cru (visitante não
+  autenticado, mesmo padrão do `ClienteRelatorioPublicoController` da
+  Fase 7) e entra nele com `TenantContext::actingAs()`. Sempre responde
+  200 rápido, mesmo em erro interno (só `report()`) — evita loop de
+  retentativa do Mercado Pago.
+- **`assinaturas`/`assinatura_faturas` são as ÚNICAS tabelas do projeto
+  sem `BelongsToTenant`** (mesmo motivo de `Assinatura` já documentado:
+  o dono da plataforma precisa ver todos os tenants ao mesmo tempo) —
+  **toda consulta feita a partir de uma tela do TENANT precisa filtrar
+  `tenant_id` manualmente**, nunca confiar em scope automático (risco
+  coberto por teste dedicado em `TenantIsolationTest.php`). `origem` da
+  `Assinatura` tem 3 valores possíveis: `manual` (admin), `sistema`
+  (trial automático) ou `mercadopago` (self-service, com
+  `metodo_pagamento` preenchido) — badges correspondentes no histórico
+  de `⚡admin/tenants/show.blade.php`.
+- **Inadimplência automática** — antes só existia manual (admin marcava
+  `Inadimplente` na mão). Agora `CobrancaScheduler::verificarInadimplenciaSeNecessario()`,
+  chamado pelo comando diário `assinaturas:processar` (`dailyAt('07:00')`,
+  depois dos outros 3 já agendados): Trial vencido, ou Ativa cujo ciclo
+  venceu há mais de 3 dias de carência sem fatura paga correspondente
+  (dá tempo de um Pix/Boleto recém-gerado compensar) — vira
+  `Inadimplente`, já enforçado de verdade desde a Fase 5
+  (`concedeAcesso()`/`EnsureTenantAssinaturaAtiva`). Uniforme pros 3
+  métodos: cartão com cobrança recorrente rejeitada também deixa
+  `renovar_em` estagnado (o webhook só avança essa data quando o
+  pagamento é de fato confirmado), caindo no mesmo caminho de
+  Pix/Boleto sem tratamento especial.
+- **Notificações**: `FaturaGeradaNotification`, `PagamentoConfirmadoNotification`,
+  `AssinaturaInadimplenteNotification` — mesmo formato de 4 canais
+  (mail+database+broadcast+`ZApiChannel::class`) já estabelecido na
+  Fase 9, reaproveitando 100% da infraestrutura pronta.
+- **Bloqueado em conta Mercado Pago real** pra teste de ponta a ponta
+  (tokenização de cartão de verdade via Brick, webhook de verdade) —
+  mesma ressalva da Fase 9 com a Z-API. Tudo testável e testado com
+  `Http::fake()`.
+
 ## LGPD
 
 - **Exportação de dados pessoais** (`App\Actions\ExportUserData::gerar()`,

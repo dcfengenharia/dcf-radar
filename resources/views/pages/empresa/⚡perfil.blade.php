@@ -143,6 +143,24 @@ new class extends Component {
         </div>
 
         <div class="col-md-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Plano e Cobrança</h5>
+                </div>
+                <div class="card-body">
+                    @php $assinaturaAtual = $tenant->assinaturaAtual(); @endphp
+                    @if ($assinaturaAtual)
+                        <p class="mb-1">
+                            {{ $assinaturaAtual->plano->nome }}
+                            <span class="badge bg-label-{{ $assinaturaAtual->status->corBadge() }} ms-1">{{ $assinaturaAtual->status->label() }}</span>
+                        </p>
+                    @else
+                        <p class="text-muted mb-1">Nenhuma assinatura ainda.</p>
+                    @endif
+                    <a href="{{ route('app.empresa.assinatura') }}" class="btn btn-sm btn-outline-primary">Gerenciar assinatura</a>
+                </div>
+            </div>
+
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Outras Empresas</h5>

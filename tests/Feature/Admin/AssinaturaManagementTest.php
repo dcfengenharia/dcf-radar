@@ -77,6 +77,32 @@ class AssinaturaManagementTest extends TestCase
         $this->assertEquals('Cliente não renovou.', $assinatura->motivo_cancelamento);
     }
 
+    public function test_mostra_badge_de_origem_mercadopago_com_metodo_de_pagamento(): void
+    {
+        $plano = Plano::factory()->create();
+        Assinatura::factory()->create([
+            'tenant_id' => $this->tenant->id,
+            'plano_id' => $plano->id,
+            'origem' => 'mercadopago',
+            'metodo_pagamento' => 'pix',
+        ]);
+
+        $this->componente()
+            ->assertSee('Mercado Pago')
+            ->assertSee('pix');
+    }
+
+    public function test_mostra_badge_de_origem_manual_por_padrao(): void
+    {
+        $plano = Plano::factory()->create();
+        Assinatura::factory()->create([
+            'tenant_id' => $this->tenant->id,
+            'plano_id' => $plano->id,
+        ]);
+
+        $this->componente()->assertSee('Manual (admin)');
+    }
+
     public function test_assinaturas_de_tenants_diferentes_sao_visiveis_sem_acting_as(): void
     {
         $tenantA = Tenant::factory()->create();

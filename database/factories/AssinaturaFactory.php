@@ -15,6 +15,7 @@ class AssinaturaFactory extends Factory
             'tenant_id' => Tenant::factory(),
             'plano_id' => Plano::factory(),
             'status' => StatusAssinatura::Trial->value,
+            'origem' => 'manual',
             'inicio' => now(),
             'fim_trial' => now()->addDays(14),
         ];
