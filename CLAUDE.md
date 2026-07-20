@@ -90,6 +90,23 @@ ReportComentario (só em reports emitidos). Reaproveita
   anterior, ou sem importação de avanço elegível (`RuntimeException` de
   `gerarRascunho()`), é pulada sem quebrar as demais obras do tenant.
 
+## Onboarding
+
+- **Checklist único de manutenção**: `App\Support\Onboarding\OnboardingChecklist`
+  (`passosTenant()`/`passosObra()`). Passo obrigatório mais recente:
+  `restricao_cadastrada` — sem isso, o checklist parava em "importar
+  cronograma" e nunca chegava no motivo do produto existir (o quadro de
+  restrições do Last Planner System).
+- **`App\Http\Middleware\RequireObraContext` bloqueia páginas do Radar**
+  enquanto há pendência obrigatória — mas a rota que É a própria ação
+  (`rotaAcao`) de um passo pendente sempre fica acessível, senão o
+  usuário fica trancado fora da tela que precisa visitar pra concluir o
+  passo (ex.: sem esse cuidado, faltar a 1ª restrição bloquearia
+  justamente o Quadro de Restrições). `radar.cronograma` continua com
+  exceção própria e incondicional (é o ponto de partida quando não há
+  nem atividade). Ao adicionar um novo passo obrigatório em `passosObra()`,
+  conferir se esse mesmo mecanismo de exceção cobre a rota certa.
+
 ## Papéis, permissões e clientes
 
 - **Perfis de acesso são personalizáveis por tenant** (`App\Models\Perfil`,

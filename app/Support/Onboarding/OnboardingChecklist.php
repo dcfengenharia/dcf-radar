@@ -5,6 +5,7 @@ namespace App\Support\Onboarding;
 use App\Models\CategoriaRestricao;
 use App\Models\Client;
 use App\Models\ItemProntidao;
+use App\Models\Restricao;
 use App\Models\Work;
 use App\Support\ObraContext;
 
@@ -59,6 +60,15 @@ class OnboardingChecklist
                 rotaAcao: 'radar.cronograma',
                 rotuloAcao: 'Importar Cronograma',
                 verificar: fn () => $obra->atividades()->exists(),
+            ),
+            new PassoConfiguracao(
+                chave: 'restricao_cadastrada',
+                titulo: 'Cadastrar 1ª Restrição',
+                descricao: 'Registre a primeira restrição no Quadro de Restrições — é o coração do Last Planner System.',
+                obrigatorio: true,
+                rotaAcao: 'radar.restricoes',
+                rotuloAcao: 'Ir para o Quadro de Restrições',
+                verificar: fn () => Restricao::whereHas('atividade', fn ($q) => $q->where('obra_id', $obra->id))->exists(),
             ),
             new PassoConfiguracao(
                 chave: 'item_prontidao_cadastrado',

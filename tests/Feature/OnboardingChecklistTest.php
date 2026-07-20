@@ -6,6 +6,7 @@ use App\Enums\Papel;
 use App\Models\Atividade;
 use App\Models\CategoriaRestricao;
 use App\Models\Client;
+use App\Models\Restricao;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
@@ -117,10 +118,46 @@ class OnboardingChecklistTest extends TestCase
     public function test_botao_de_pendencia_nao_aparece_quando_tudo_esta_configurado(): void
     {
         $obra = Work::factory()->create(['tenant_id' => $this->user->tenant_id]);
-        Atividade::factory()->create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $obra->id]);
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $obra->id]);
+        Restricao::factory()->create(['tenant_id' => $this->user->tenant_id, 'atividade_id' => $atividade->id]);
 
         $this->get(route('app.home'))
             ->assertDontSee('Configuração Pendente');
+    }
+
+    public function test_passo_restricao_cadastrada_fica_pendente_com_atividade_mas_sem_restricao(): void
+    {
+        $obra = Work::factory()->create(['tenant_id' => $this->user->tenant_id]);
+        Atividade::factory()->create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $obra->id]);
+
+        $pendentes = $this->chaves(OnboardingChecklist::pendentesObrigatorios(OnboardingChecklist::passosObra($obra)));
+
+        $this->assertContains('restricao_cadastrada', $pendentes);
+    }
+
+    public function test_passo_restricao_cadastrada_conclui_apos_criar_a_primeira_restricao(): void
+    {
+        $obra = Work::factory()->create(['tenant_id' => $this->user->tenant_id]);
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $obra->id]);
+        Restricao::factory()->create(['tenant_id' => $this->user->tenant_id, 'atividade_id' => $atividade->id]);
+
+        $pendentes = $this->chaves(OnboardingChecklist::pendentesObrigatorios(OnboardingChecklist::passosObra($obra)));
+
+        $this->assertNotContains('restricao_cadastrada', $pendentes);
+    }
+
+    public function test_quadro_de_restricoes_fica_acessivel_mesmo_com_restricao_cadastrada_pendente(): void
+    {
+        $obra = Work::factory()->create(['tenant_id' => $this->user->tenant_id]);
+        $this->vincularObra($obra, $this->user, Papel::Admin->value);
+        Atividade::factory()->create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $obra->id]);
+        ObraContext::set($obra);
+
+        // Atividade existe mas nenhuma restrição ainda — sem o exemption
+        // dedicado, o middleware travaria justamente a página que o
+        // usuário precisa visitar pra concluir o passo.
+        $this->get(route('radar.restricoes'))
+            ->assertOk();
     }
 
     public function test_tela_de_cronograma_continua_acessivel_mesmo_com_obra_sem_atividades(): void

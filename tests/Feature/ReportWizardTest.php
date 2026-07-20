@@ -10,6 +10,7 @@ use App\Models\AvancoPeriodo;
 use App\Models\CronogramaImportacao;
 use App\Models\PacoteTrabalho;
 use App\Models\Report;
+use App\Models\Restricao;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
@@ -78,10 +79,11 @@ class ReportWizardTest extends TestCase
         // isso, window.Chart é undefined na página do assistente e a
         // promise de renderizarPreview() falha em silêncio (sem erro
         // visível), então nenhuma curva aparecia nunca.
-        Atividade::factory()->create([
+        $atividade = Atividade::factory()->create([
             'tenant_id' => $this->tenant->id,
             'obra_id' => $this->obra->id,
         ]);
+        Restricao::factory()->create(['tenant_id' => $this->tenant->id, 'atividade_id' => $atividade->id]);
         \App\Support\ObraContext::set($this->obra);
         $this->actingAs($this->gerente);
 

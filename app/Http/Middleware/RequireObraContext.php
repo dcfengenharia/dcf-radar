@@ -35,7 +35,19 @@ class RequireObraContext
 
         $pendenciasObrigatorias = OnboardingChecklist::pendentesObrigatorios(OnboardingChecklist::passosObra($obra));
 
-        if ($pendenciasObrigatorias !== [] && ! $request->routeIs('radar.cronograma')) {
+        // radar.cronograma é sempre alcançável — é o ponto de partida
+        // (sem atividade nenhuma, nenhuma outra tela do Radar faz sentido).
+        // Qualquer outra rota só fica liberada se TODA pendência obrigatória
+        // restante for resolvida justamente nesta página — senão o usuário
+        // ficaria trancado fora da tela que precisa visitar pra concluir o
+        // passo (ex.: faltar "1ª Restrição" não pode bloquear o próprio
+        // Quadro de Restrições). Mas se ainda falta um passo anterior (ex.:
+        // nenhuma atividade cadastrada), continua bloqueado mesmo que a
+        // rota atual resolvesse um passo diferente.
+        $existePendenciaQueEstaRotaNaoResolve = collect($pendenciasObrigatorias)
+            ->contains(fn ($passo) => ! $request->routeIs($passo->rotaAcao));
+
+        if ($pendenciasObrigatorias !== [] && ! $request->routeIs('radar.cronograma') && $existePendenciaQueEstaRotaNaoResolve) {
             return redirect()->route('app.onboarding')
                 ->with('flash.banner', 'Cadastre ao menos uma atividade nesta obra (importando o cronograma ou manualmente) para acessar o Radar.')
                 ->with('flash.bannerStyle', 'warning');

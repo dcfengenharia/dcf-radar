@@ -292,7 +292,8 @@ class RelatoriosRestricoesTest extends TestCase
 
     public function test_menu_mostra_item_para_usuario_com_permissao(): void
     {
-        Atividade::factory()->create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id]);
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id]);
+        Restricao::factory()->create(['tenant_id' => $this->tenant->id, 'atividade_id' => $atividade->id]);
 
         $this->get(route('radar.relatorios-restricoes'))
             ->assertOk()

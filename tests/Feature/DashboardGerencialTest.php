@@ -125,10 +125,11 @@ class DashboardGerencialTest extends TestCase
 
     public function test_menu_mostra_item_dashboard_por_padrao(): void
     {
-        Atividade::factory()->create([
+        $atividade = Atividade::factory()->create([
             'tenant_id' => $this->tenant->id,
             'obra_id' => $this->obra->id,
         ]);
+        Restricao::factory()->create(['tenant_id' => $this->tenant->id, 'atividade_id' => $atividade->id]);
 
         $this->get(route('radar.dashboard'))
             ->assertOk()
@@ -170,10 +171,11 @@ class DashboardGerencialTest extends TestCase
         $outraObra = Work::factory()->create(['tenant_id' => $this->tenant->id, 'name' => 'Obra Nova']);
         $this->vincularObra($outraObra, $this->user, Papel::GerentePlanejamento->value);
 
-        Atividade::factory()->create([
+        $atividadeOutraObra = Atividade::factory()->create([
             'tenant_id' => $this->tenant->id,
             'obra_id' => $outraObra->id,
         ]);
+        Restricao::factory()->create(['tenant_id' => $this->tenant->id, 'atividade_id' => $atividadeOutraObra->id]);
 
         $importacao = CronogramaImportacao::create([
             'tenant_id' => $this->tenant->id,
