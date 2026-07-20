@@ -160,6 +160,33 @@ ReportComentario (só em reports emitidos). Reaproveita
   hoje não é possível excluir um usuário que já comentou/agiu em algo;
   não mexido nesta fase, só registrado aqui.
 
+## Notificações (WhatsApp via Z-API)
+
+- **`App\Notifications\Channels\ZApiChannel`**: canal customizado de
+  notification, incluído no array de `via()` como classe
+  (`ZApiChannel::class`, não uma string registrada) — Laravel resolve
+  isso automaticamente via `class_exists()` no `ChannelManager`, sem
+  precisar registrar em lugar nenhum. A Notification precisa implementar
+  `toWhatsApp($notifiable): string` (igual a `toMail`/`toArray`); sem
+  esse método, sem `ZAPI_INSTANCE_ID`/`ZAPI_TOKEN` configurados
+  (`config('services.zapi.*')`, vazio por padrão), ou sem
+  `$notifiable->routeNotificationFor('whatsapp')` resolver um número —
+  o canal só retorna cedo, nunca lança exceção (best-effort, canal não
+  crítico). **Reaproveita o campo `telefone`** já existente no `User`
+  (decisão da Fase 9 do roadmap de maturidade SaaS — não criar um campo
+  `whatsapp` duplicado) via `User::routeNotificationForWhatsapp()`.
+  Primeira notification ligada nesse canal:
+  `AlertaPrazoSuprimentoNotification`. Número é normalizado (só dígitos
+  + DDI 55 se ausente) antes de enviar pro endpoint
+  `https://api.z-api.io/instances/{id}/token/{token}/send-text`.
+  **Testar o canal em isolamento** — chamar
+  `(new ZApiChannel())->send($notifiable, $notification)` direto, nunca
+  `$user->notify()`/`notifyNow()` — porque a notification também vai por
+  `broadcast`, que tentaria alcançar o Reverb de verdade mesmo em teste
+  (indisponível no container de teste) e derrubaria o teste por um
+  motivo alheio ao canal WhatsApp. Fase bloqueada em conta Z-API real
+  pra teste de ponta a ponta — testado até aqui só com `Http::fake()`.
+
 ## Benchmarking entre obras
 
 - **`⚡benchmarking-obras.blade.php`** (rota `gestao.benchmarking`, slug

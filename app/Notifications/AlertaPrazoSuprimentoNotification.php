@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use App\Models\ItemSuprimento;
+use App\Notifications\Channels\ZApiChannel;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -21,7 +22,19 @@ class AlertaPrazoSuprimentoNotification extends Notification implements ShouldQu
 
     public function via($notifiable): array
     {
-        return ['mail', 'database', 'broadcast'];
+        return ['mail', 'database', 'broadcast', ZApiChannel::class];
+    }
+
+    public function toWhatsApp($notifiable): string
+    {
+        $mensagem = "Atenção, {$notifiable->first_name}! Faltam {$this->marcoDias} dias (ou menos) pro prazo do item \"{$this->item->nome}\" da obra \"{$this->item->obra->name}\".";
+
+        $necessidade = $this->item->necessidade();
+        if ($necessidade) {
+            $mensagem .= " Prazo necessário: {$necessidade->format('d/m/Y')}.";
+        }
+
+        return $mensagem." Ver: {$this->link()}";
     }
 
     public function toMail($notifiable): MailMessage

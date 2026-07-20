@@ -57,6 +57,17 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
+     * Roteamento do canal 'whatsapp' (App\Notifications\Channels\ZApiChannel)
+     * — reaproveita o campo `telefone` de contato já existente no Perfil,
+     * em vez de duplicar num campo `whatsapp` separado (decisão tomada na
+     * Fase 9 do roadmap de maturidade SaaS).
+     */
+    public function routeNotificationForWhatsapp(): ?string
+    {
+        return $this->telefone;
+    }
+
+    /**
      * Todos os tenants que este usuário pode acessar/trocar (via
      * tenant_user) — inclui o tenant "casa" (tenant_id), que já nasce
      * vinculado via o hook em booted() abaixo.
