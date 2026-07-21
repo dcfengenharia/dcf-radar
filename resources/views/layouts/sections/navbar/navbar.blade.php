@@ -43,42 +43,13 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
       </div>
       @endif
 
-      @if($configData['hasCustomizer'] == true)
-      <div class="navbar-nav align-items-center">
-        <div class="nav-item dropdown-style-switcher dropdown me-2 me-xl-0">
-          <a class="nav-link dropdown-toggle hide-arrow" href="javascript:void(0);" data-bs-toggle="dropdown">
-            <i class='bx bx-sm'></i>
-          </a>
-          <ul class="dropdown-menu dropdown-menu-start dropdown-styles">
-            <li>
-              <a class="dropdown-item" href="javascript:void(0);" data-theme="light">
-                <span class="align-middle"><i class='bx bx-sun me-2'></i>Light</span>
-              </a>
-            </li>
-            <li>
-              <a class="dropdown-item" href="javascript:void(0);" data-theme="dark">
-                <span class="align-middle"><i class="bx bx-moon me-2"></i>Dark</span>
-              </a>
-            </li>
-            <li>
-              <a class="dropdown-item" href="javascript:void(0);" data-theme="system">
-                <span class="align-middle"><i class="bx bx-desktop me-2"></i>Sistema</span>
-              </a>
-            </li>
-          </ul>
-        </div>
-      </div>
-      @endif
-
-
-      <ul class="navbar-nav flex-row align-items-center ms-auto">
-
-        @if(!isset($hideEmpresaSwitcher))
-        @php
-          $tenantsDoUsuario = auth()->check() ? auth()->user()->tenants()->orderBy('name')->get() : collect();
-          $tenantAtivoId = \App\Support\TenantContext::currentId();
-          $tenantAtivo = $tenantsDoUsuario->firstWhere('id', $tenantAtivoId);
-        @endphp
+      @if(!isset($hideEmpresaSwitcher))
+      @php
+        $tenantsDoUsuario = auth()->check() ? auth()->user()->tenants()->orderBy('name')->get() : collect();
+        $tenantAtivoId = \App\Support\TenantContext::currentId();
+        $tenantAtivo = $tenantsDoUsuario->firstWhere('id', $tenantAtivoId);
+      @endphp
+      <ul class="navbar-nav flex-row align-items-center me-3">
         <li class="nav-item dropdown me-3 me-xl-2" style="min-width: 500px;">
           <a class="nav-link dropdown-toggle hide-arrow btn btn-label-primary px-3 d-flex align-items-center"
              href="javascript:void(0);"
@@ -123,7 +94,38 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
             </li>
           </ul>
         </li>
-        @endif
+      </ul>
+      @endif
+
+      @if($configData['hasCustomizer'] == true)
+      <div class="navbar-nav align-items-center">
+        <div class="nav-item dropdown-style-switcher dropdown me-2 me-xl-0">
+          <a class="nav-link dropdown-toggle hide-arrow" href="javascript:void(0);" data-bs-toggle="dropdown">
+            <i class='bx bx-sm'></i>
+          </a>
+          <ul class="dropdown-menu dropdown-menu-start dropdown-styles">
+            <li>
+              <a class="dropdown-item" href="javascript:void(0);" data-theme="light">
+                <span class="align-middle"><i class='bx bx-sun me-2'></i>Light</span>
+              </a>
+            </li>
+            <li>
+              <a class="dropdown-item" href="javascript:void(0);" data-theme="dark">
+                <span class="align-middle"><i class="bx bx-moon me-2"></i>Dark</span>
+              </a>
+            </li>
+            <li>
+              <a class="dropdown-item" href="javascript:void(0);" data-theme="system">
+                <span class="align-middle"><i class="bx bx-desktop me-2"></i>Sistema</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+      @endif
+
+
+      <ul class="navbar-nav flex-row align-items-center ms-auto">
 
         <li class="nav-item dropdown-shortcuts navbar-dropdown dropdown me-2 me-xl-0">
           <a class="nav-link dropdown-toggle hide-arrow" href="javascript:void(0);" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
