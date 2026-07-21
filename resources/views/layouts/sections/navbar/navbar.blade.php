@@ -32,6 +32,17 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
 
     <div class="navbar-nav-right d-flex align-items-center" id="navbar-collapse">
 
+      @php
+        $tenantLogoNavbar = auth()->check() ? \App\Models\Tenant::find(\App\Support\TenantContext::currentId()) : null;
+      @endphp
+      @if ($tenantLogoNavbar?->logo_path)
+      <div class="d-flex align-items-center me-3">
+        <img src="{{ \Illuminate\Support\Facades\Storage::disk('public')->url($tenantLogoNavbar->logo_path) }}"
+             alt="{{ $tenantLogoNavbar->name }}"
+             style="max-height: 32px; max-width: 140px; object-fit: contain;">
+      </div>
+      @endif
+
       @if($configData['hasCustomizer'] == true)
       <div class="navbar-nav align-items-center">
         <div class="nav-item dropdown-style-switcher dropdown me-2 me-xl-0">
