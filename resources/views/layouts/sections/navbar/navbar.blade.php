@@ -62,6 +62,7 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
 
       <ul class="navbar-nav flex-row align-items-center ms-auto">
 
+        @if(!isset($hideEmpresaSwitcher))
         @php
           $tenantsDoUsuario = auth()->check() ? auth()->user()->tenants()->orderBy('name')->get() : collect();
           $tenantAtivoId = \App\Support\TenantContext::currentId();
@@ -111,6 +112,7 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
             </li>
           </ul>
         </li>
+        @endif
 
         <li class="nav-item dropdown-shortcuts navbar-dropdown dropdown me-2 me-xl-0">
           <a class="nav-link dropdown-toggle hide-arrow" href="javascript:void(0);" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">

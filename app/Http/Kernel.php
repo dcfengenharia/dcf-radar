@@ -3,6 +3,7 @@
 namespace App\Http;
 
 use App\Http\Middleware\Authenticate;
+use App\Http\Middleware\BloquearUsuarioInativo;
 use App\Http\Middleware\DefinirLimiteUploadDoTenant;
 use App\Http\Middleware\EncryptCookies;
 use App\Http\Middleware\LocaleMiddleware;
@@ -64,6 +65,7 @@ class Kernel extends HttpKernel
             SubstituteBindings::class,
             LocaleMiddleware::class,
             DefinirLimiteUploadDoTenant::class,
+            BloquearUsuarioInativo::class,
         ],
 
         'api' => [

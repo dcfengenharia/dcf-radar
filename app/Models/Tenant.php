@@ -28,6 +28,11 @@ class Tenant extends Model
         'telefone',
         'email_comercial',
         'criado_por_id',
+        'eh_conta_operadora',
+    ];
+
+    protected $casts = [
+        'eh_conta_operadora' => 'boolean',
     ];
 
     protected static function booted(): void
@@ -71,9 +76,21 @@ class Tenant extends Model
      * quebra o cadastro por configuração de plano faltando ou inválida).
      * `origem = 'sistema'` — nem `manual` (admin não fez nada) nem
      * `mercadopago` (não passou por pagamento nenhum ainda).
+     *
+     * Conta operadora (`eh_conta_operadora`, a empresa dona da própria
+     * plataforma — ver `scopeClientes()`) nunca ganha essa Assinatura
+     * fake: ela não é assinante de si mesma. Efeito colateral gratuito:
+     * `ProcessarAssinaturas`/`GerarReportsAutomaticoCommand`/
+     * `RecalcularStatusSuprimentos` já ignoram tenant sem Assinatura,
+     * então a conta operadora fica automaticamente fora desses jobs
+     * também, sem precisar tocar neles.
      */
     private function criarTrialAutomatico(): void
     {
+        if ($this->eh_conta_operadora) {
+            return;
+        }
+
         $planoTrial = self::$planoTrialForcadoId
             ? Plano::where('id', self::$planoTrialForcadoId)->where('ativo', true)->first()
             : Plano::where('padrao_trial', true)->first();
@@ -156,6 +173,19 @@ class Tenant extends Model
     public function criador(): BelongsTo
     {
         return $this->belongsTo(User::class, 'criado_por_id');
+    }
+
+    /**
+     * Único ponto de exclusão da conta operadora (a empresa dona da
+     * própria plataforma, marcada via `eh_conta_operadora`) das
+     * métricas de negócio do admin — contagem de tenants, MRR, listas
+     * de "clientes". Reaproveitado em vez de reimplementar o filtro em
+     * cada tela; nunca derivar isso de `criador()->is_platform_admin`
+     * (a FK é `nullOnDelete()`, então some se o usuário for excluído).
+     */
+    public function scopeClientes(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        return $query->where('eh_conta_operadora', false);
     }
 
     /**

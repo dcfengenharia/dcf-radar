@@ -33,6 +33,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'password',
         'tenant_id',
         'is_platform_admin',
+        'ativo',
     ];
 
     protected $hidden = [
@@ -45,6 +46,7 @@ class User extends Authenticatable implements MustVerifyEmail
     protected $casts = [
         'email_verified_at' => 'datetime',
         'is_platform_admin' => 'boolean',
+        'ativo' => 'boolean',
     ];
 
     protected $appends = [

@@ -75,6 +75,13 @@
       "funcionalidade": "restricoes.plano_semanal"
     },
     {
+      "url": "/app/radar/minhas-programacoes",
+      "name": "Minhas Programações",
+      "icon": "menu-icon tf-icons bx bx-list-check",
+      "slug": "radar.programacoes",
+      "funcionalidade": "restricoes.minhas_programacoes"
+    },
+    {
       "url": "/app/radar/causas",
       "name": "Causas de Não Cumprimento",
       "icon": "menu-icon tf-icons bx bx-bar-chart-alt-2",
@@ -225,6 +232,11 @@
           "url": "/admin/tenants",
           "name": "Contas (Tenants)",
           "slug": "admin.tenants.index"
+        },
+        {
+          "url": "/admin/usuarios",
+          "name": "Usuários",
+          "slug": "admin.usuarios.index"
         },
         {
           "url": "/admin/planos",

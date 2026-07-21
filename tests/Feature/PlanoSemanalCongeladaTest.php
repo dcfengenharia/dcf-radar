@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Actions\ProgramacaoSemanal\FecharProgramacaoSemanal;
 use App\Actions\ProgramacaoSemanal\RegistrarComprometimentoSemanal;
 use App\Enums\OrigemProgramacaoSemanalItem;
 use App\Enums\Papel;
@@ -226,5 +227,38 @@ class PlanoSemanalCongeladaTest extends TestCase
                 return ($params['type'] ?? null) === 'error';
             });
         $this->assertSame(StatusAtividade::Comprometido, $atividade->fresh()->status);
+    }
+
+    /**
+     * Decisão do usuário: fechar explicitamente ("Gerar Programação") abre
+     * a EXCEÇÃO de marcar concluída/não concluído mesmo numa semana
+     * passada travada por `semanaEstaCongelada` — diferente da trava total
+     * de uma semana nunca fechada (regressão coberta acima).
+     */
+    public function test_semana_fechada_permite_marcar_concluida_mesmo_sendo_semana_passada(): void
+    {
+        $semanaPassada = Carbon::now()->startOfWeek()->subWeeks(2);
+
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'status' => StatusAtividade::Planejado->value,
+            'inicio_planejado' => $semanaPassada,
+            'data_termino' => $semanaPassada->copy()->addDays(2),
+        ]);
+
+        $header = (new RegistrarComprometimentoSemanal)->execute(
+            $this->obra, $semanaPassada->toDateString(), collect([$atividade]), OrigemProgramacaoSemanalItem::Manual
+        );
+        $atividade->update(['status' => StatusAtividade::Comprometido->value]);
+        (new FecharProgramacaoSemanal)->execute($header);
+
+        $componente = $this->componente()->set('semanaInicio', $semanaPassada->toDateString());
+        $this->assertTrue($componente->instance()->semanaEstaCongelada);
+        $this->assertTrue($componente->instance()->semanaEstaFechada);
+
+        $componente->call('marcarConcluida', $atividade->id);
+
+        $this->assertSame(StatusAtividade::Concluido, $atividade->fresh()->status);
     }
 }

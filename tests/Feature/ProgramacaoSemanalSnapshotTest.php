@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Actions\ProgramacaoSemanal\FecharProgramacaoSemanal;
 use App\Actions\ProgramacaoSemanal\RegistrarComprometimentoSemanal;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemProgramacaoSemanalItem;
@@ -217,5 +218,48 @@ class ProgramacaoSemanalSnapshotTest extends TestCase
         $this->assertSame(StatusAtividade::Planejado, $atividade->fresh()->status);
         $this->assertSame(0, ProgramacaoSemanal::where('obra_id', $this->obra->id)->count());
         $this->assertSame(0, ProgramacaoSemanalItem::where('atividade_id', $atividade->id)->count());
+    }
+
+    public function test_comprometer_numa_programacao_ja_fechada_lanca_excecao(): void
+    {
+        $inicioSemana = Carbon::now()->startOfWeek()->toDateString();
+
+        $atividade1 = Atividade::factory()->create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id]);
+        $atividade2 = Atividade::factory()->create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id]);
+
+        $action = new RegistrarComprometimentoSemanal;
+        $header = $action->execute($this->obra, $inicioSemana, collect([$atividade1]), OrigemProgramacaoSemanalItem::Manual);
+        (new FecharProgramacaoSemanal)->execute($header);
+
+        $this->expectException(\RuntimeException::class);
+        $action->execute($this->obra, $inicioSemana, collect([$atividade2]), OrigemProgramacaoSemanalItem::Manual);
+    }
+
+    public function test_botao_gerar_programacao_fecha_a_semana_vigente(): void
+    {
+        $inicioSemana = Carbon::now()->startOfWeek();
+
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'status' => StatusAtividade::Planejado->value,
+            'inicio_planejado' => $inicioSemana,
+            'data_termino' => $inicioSemana->copy()->addDays(2),
+        ]);
+
+        $componente = $this->planoSemanalComponente()
+            ->set('selecionadas', [$atividade->id])
+            ->call('comprometerSelecionadas');
+
+        $this->assertFalse($componente->instance()->semanaEstaFechada);
+
+        $componente->call('fecharProgramacao');
+
+        $this->assertTrue($componente->instance()->semanaEstaFechada);
+
+        $header = ProgramacaoSemanal::where('obra_id', $this->obra->id)
+            ->where('semana_inicio', $inicioSemana->toDateString())
+            ->firstOrFail();
+        $this->assertTrue($header->estaFechada());
     }
 }

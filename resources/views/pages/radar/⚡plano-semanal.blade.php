@@ -2,7 +2,9 @@
 
 use Livewire\Component;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Url;
 use App\Actions\Atividade\MarcarNaoConcluido;
+use App\Actions\ProgramacaoSemanal\FecharProgramacaoSemanal;
 use App\Actions\ProgramacaoSemanal\RegistrarComprometimentoSemanal;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemProgramacaoSemanalItem;
@@ -39,8 +41,11 @@ new class extends Component {
 
     public Work $obra;
 
-    // Semana visualizada (início = segunda-feira)
-    public string $semanaInicio;
+    // Semana visualizada (início = segunda-feira). #[Url] permite link
+    // direto de Minhas Programações pra uma semana específica
+    // (?semana=YYYY-MM-DD); sem o parâmetro, mount() usa a semana atual.
+    #[Url(as: 'semana')]
+    public string $semanaInicio = '';
 
     // Modal "Não Concluído"
     public ?string $naoConcluindoId   = null;
@@ -71,7 +76,14 @@ new class extends Component {
     public function mount(Work $obra): void
     {
         $this->obra = $obra;
-        $this->semanaInicio = Carbon::now()->startOfWeek()->toDateString();
+
+        if ($this->semanaInicio === '') {
+            $this->semanaInicio = Carbon::now()->startOfWeek()->toDateString();
+        } else {
+            // Link direto (?semana=) sempre normalizado pro início da
+            // semana (segunda-feira), igual a qualquer navegação interna.
+            $this->semanaInicio = Carbon::parse($this->semanaInicio)->startOfWeek()->toDateString();
+        }
     }
 
     #[Computed]
@@ -80,14 +92,11 @@ new class extends Component {
         return Carbon::parse($this->semanaInicio)->endOfWeek()->toDateString();
     }
 
-    /** Programação (header) já congelada pra semana visualizada, se existir. */
+    /** Programação (header) vigente pra semana visualizada, se existir — a versão mais recente (ver ProgramacaoSemanal::ativaPara()). */
     #[Computed]
     public function programacaoDaSemana(): ?ProgramacaoSemanal
     {
-        return ProgramacaoSemanal::where('obra_id', $this->obra->id)
-            ->where('semana_inicio', $this->semanaInicio)
-            ->with('itens')
-            ->first();
+        return ProgramacaoSemanal::ativaPara($this->obra, $this->semanaInicio)?->load('itens');
     }
 
     #[Computed]
@@ -107,6 +116,20 @@ new class extends Component {
     public function semanaEstaCongelada(): bool
     {
         return $this->programacaoDaSemana !== null && $this->estaVisualizandoSemanaPassada;
+    }
+
+    /**
+     * Fechamento EXPLÍCITO (botão "Gerar Programação"), independente de
+     * ser semana passada ou corrente — diferente de `semanaEstaCongelada`
+     * (trava total automática, legado). É esse status que abre a exceção
+     * de marcar concluída/não concluído numa semana já travada por ser
+     * passado (ver CLAUDE.md, seção "Programação Semanal — fechamento e
+     * revisões").
+     */
+    #[Computed]
+    public function semanaEstaFechada(): bool
+    {
+        return $this->programacaoDaSemana?->estaFechada() ?? false;
     }
 
     #[Computed]
@@ -624,6 +647,7 @@ new class extends Component {
             $this->programacaoDaSemana,
             $this->estaVisualizandoSemanaPassada,
             $this->semanaEstaCongelada,
+            $this->semanaEstaFechada,
             $this->hhPrevistoSemanaPorAtividade,
             $this->totalHhProjeto,
             $this->linhaBaseSelecionada,
@@ -662,7 +686,7 @@ new class extends Component {
 
     public function marcarConcluida(string $id): void
     {
-        if ($this->semanaEstaCongelada) {
+        if ($this->semanaEstaCongelada && ! $this->semanaEstaFechada) {
             $this->dispatch('show-toast', message: 'Esta semana está congelada; conclua atividades pela semana atual.', type: 'error');
             return;
         }
@@ -688,7 +712,7 @@ new class extends Component {
 
     public function confirmarNaoConcluido(): void
     {
-        if ($this->semanaEstaCongelada) {
+        if ($this->semanaEstaCongelada && ! $this->semanaEstaFechada) {
             $this->dispatch('show-toast', message: 'Esta semana está congelada; conclua atividades pela semana atual.', type: 'error');
             return;
         }
@@ -732,7 +756,7 @@ new class extends Component {
     {
         abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.lookahead', 'editar'), 403);
 
-        if ($this->semanaEstaCongelada) {
+        if ($this->semanaEstaCongelada || $this->semanaEstaFechada) {
             $this->dispatch('show-toast', message: 'Esta semana já está congelada; não é possível alterá-la.', type: 'error');
             return;
         }
@@ -766,6 +790,33 @@ new class extends Component {
         $this->selecionadas = [];
         $this->invalidarComputeds();
         $this->dispatch('show-toast', message: "{$idsValidos->count()} atividade(s) inserida(s) na programação.");
+    }
+
+    /**
+     * Botão "Gerar Programação" — fecha formalmente a programação vigente
+     * desta semana. A partir daqui só resta marcar concluída/não
+     * concluído (ver semanaEstaFechada); pra comprometer atividades
+     * novas é preciso criar uma revisão (feito em Minhas Programações).
+     */
+    public function fecharProgramacao(): void
+    {
+        abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.plano_semanal', 'editar'), 403);
+
+        $programacao = $this->programacaoDaSemana;
+
+        if (! $programacao) {
+            $this->dispatch('show-toast', message: 'Não há nenhuma atividade comprometida nesta semana ainda.', type: 'error');
+            return;
+        }
+
+        $this->transacaoSegura(fn () => (new FecharProgramacaoSemanal)->execute($programacao));
+
+        if ($this->transacaoSeguraFalhou()) {
+            return;
+        }
+
+        $this->invalidarComputeds();
+        $this->dispatch('show-toast', message: 'Programação da semana fechada.');
     }
 
     public function exportarPdf()
@@ -853,6 +904,25 @@ new class extends Component {
         </div>
     </div>
 
+    @if ($this->programacaoDaSemana)
+    <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+        <span class="badge bg-label-{{ $this->programacaoDaSemana->status->corBadge() }}">
+            {{ $this->programacaoDaSemana->status->label() }}
+        </span>
+        @if ($this->programacaoDaSemana->versao > 1)
+        <span class="badge bg-label-dark" title="Revisão de v{{ $this->programacaoDaSemana->versao - 1 }}">
+            v{{ $this->programacaoDaSemana->versao }}
+        </span>
+        @endif
+        @if (! $this->semanaEstaFechada)
+        <button type="button" class="btn btn-outline-primary btn-sm" wire:click="fecharProgramacao"
+                wire:confirm="Fechar a programação desta semana? Depois disso só será possível marcar concluída/não concluído — pra comprometer mais atividades será preciso criar uma revisão.">
+            <i class="bx bx-lock-alt me-1"></i>Gerar Programação
+        </button>
+        @endif
+    </div>
+    @endif
+
     @if ($this->semanaEstaCongelada)
     <div class="alert alert-info py-2 mb-3 small">
         <i class="bx bx-lock-alt me-1"></i>
@@ -930,7 +1000,7 @@ new class extends Component {
 
     {{-- Tabela de atividades (hierarquia EAP — mesma estrutura do cronograma) --}}
     @if ($this->atividades->count() > 0)
-        @unless ($this->semanaEstaCongelada)
+        @unless ($this->semanaEstaCongelada || $this->semanaEstaFechada)
         @if (count($this->idsSelecionaveis) > 0)
         <div class="d-flex align-items-center gap-2 mb-2">
             <button class="btn btn-success btn-sm" wire:click="comprometerSelecionadas"
@@ -988,7 +1058,7 @@ new class extends Component {
                 <thead class="table-dark">
                     <tr>
                         <th class="text-center" style="width: 36px">
-                            @unless ($this->semanaEstaCongelada)
+                            @unless ($this->semanaEstaCongelada || $this->semanaEstaFechada)
                             @if (count($this->idsSelecionaveis) > 0)
                             <input type="checkbox" class="form-check-input" wire:click="toggleSelecionarTodas"
                                    @checked(count($selecionadas) > 0 && count(array_intersect($this->idsSelecionaveis, $selecionadas)) === count($this->idsSelecionaveis))
@@ -1054,7 +1124,7 @@ new class extends Component {
                         <tr wire:key="atividade-{{ $at->id }}"
                             x-show="!({{ $ancestraisJson }}).some(id => recolhidos.includes(id))">
                             <td class="text-center">
-                                @unless ($this->semanaEstaCongelada)
+                                @unless ($this->semanaEstaCongelada || $this->semanaEstaFechada)
                                 @if ($selecionavel)
                                 <input type="checkbox" class="form-check-input" wire:model.live="selecionadas" value="{{ $at->id }}">
                                 @endif
@@ -1103,7 +1173,7 @@ new class extends Component {
                                 <span class="badge {{ $badgeClass }}">{{ $statusLabel }}</span>
                             </td>
                             <td class="text-center">
-                                @unless ($this->semanaEstaCongelada)
+                                @unless ($this->semanaEstaCongelada && ! $this->semanaEstaFechada)
                                 @if (in_array($statusVal, ['comprometido', 'em_execucao']))
                                     <div class="d-flex gap-1 justify-content-center">
                                         <button class="btn btn-sm btn-outline-success py-0 px-1"

@@ -9,19 +9,23 @@ new class extends Component {
   #[Computed]
   public function totalTenants(): int
   {
-    return Tenant::count();
+    return Tenant::clientes()->count();
   }
 
   /**
    * Uma linha por tenant — a assinatura vigente (mais recente por
    * `inicio`), agrupando a tabela inteira em memória. Nesta escala
    * (poucas dezenas/centenas de tenants) é simples e correto; se crescer
-   * muito, trocar por uma subquery.
+   * muito, trocar por uma subquery. Exclui a conta operadora
+   * (`Tenant::scopeClientes()`) — ela nunca é assinante de si mesma, não
+   * entra em nenhuma métrica de negócio aqui.
    */
   #[Computed]
   public function assinaturasAtuais(): \Illuminate\Support\Collection
   {
-    return Assinatura::with('plano')->get()
+    return Assinatura::with('plano')
+      ->whereHas('tenant', fn ($q) => $q->clientes())
+      ->get()
       ->groupBy('tenant_id')
       ->map(fn ($grupo) => $grupo->sortByDesc('inicio')->first());
   }
@@ -36,6 +40,15 @@ new class extends Component {
   public function assinaturasPorStatus(): \Illuminate\Support\Collection
   {
     return $this->assinaturasAtuais->groupBy(fn ($a) => $a->status->value)->map->count();
+  }
+
+  #[Computed]
+  public function assinaturasPorPlano(): \Illuminate\Support\Collection
+  {
+    return $this->assinaturasAtuais
+      ->filter(fn ($a) => $a->estaAtiva())
+      ->groupBy(fn ($a) => $a->plano->nome)
+      ->map->count();
   }
 
   #[Computed]
@@ -88,6 +101,23 @@ new class extends Component {
                         </span>
                     @empty
                         <span class="text-muted small">Nenhuma assinatura cadastrada.</span>
+                    @endforelse
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4 mb-4">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <p class="text-muted mb-2">Assinaturas Ativas por Plano</p>
+                    @forelse ($this->assinaturasPorPlano as $planoNome => $qtd)
+                        <span class="badge bg-label-primary me-1 mb-1">
+                            {{ $planoNome }}: {{ $qtd }}
+                        </span>
+                    @empty
+                        <span class="text-muted small">Nenhuma assinatura ativa.</span>
                     @endforelse
                 </div>
             </div>

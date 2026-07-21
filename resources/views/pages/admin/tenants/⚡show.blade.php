@@ -98,6 +98,23 @@ new class extends Component {
     unset($this->assinaturaAtual, $this->historicoAssinaturas);
     $this->dispatch('show-toast', message: 'Assinatura registrada.');
   }
+
+  /**
+   * Autoatendimento pra marcar/desmarcar esta conta como a operadora
+   * da própria plataforma — nunca fazemos essa alteração por conta
+   * própria em dado real de tenant, quem decide qual conta é a sua é
+   * sempre o admin, com um clique aqui.
+   */
+  public function alternarContaOperadora(): void
+  {
+    $this->tenant->update(['eh_conta_operadora' => ! $this->tenant->eh_conta_operadora]);
+
+    $mensagem = $this->tenant->eh_conta_operadora
+      ? 'Marcada como Conta Operadora — sai das métricas de clientes do dashboard.'
+      : 'Removida a marcação de Conta Operadora.';
+
+    $this->dispatch('show-toast', message: $mensagem);
+  }
 };
 ?>
 
@@ -112,13 +129,23 @@ new class extends Component {
         <div class="col-md-8">
             <div class="card mb-4">
                 <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0">Dados da Conta</h5>
-                    <form method="POST" action="{{ route('admin.tenants.impersonar', $tenant) }}">
-                        @csrf
-                        <button type="submit" class="btn btn-sm btn-outline-danger">
-                            <i class="bx bx-user-voice"></i> Entrar como
+                    <h5 class="mb-0">
+                        Dados da Conta
+                        @if ($tenant->eh_conta_operadora)
+                            <span class="badge bg-label-dark ms-1">Conta Operadora</span>
+                        @endif
+                    </h5>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" wire:click="alternarContaOperadora" wire:confirm="{{ $tenant->eh_conta_operadora ? 'Remover a marcação de Conta Operadora?' : 'Marcar esta conta como a Conta Operadora da plataforma? Ela sai das métricas de clientes e nunca ganha trial automático.' }}">
+                            <i class="bx bx-crown"></i> {{ $tenant->eh_conta_operadora ? 'Desmarcar' : 'Marcar' }} Conta Operadora
                         </button>
-                    </form>
+                        <form method="POST" action="{{ route('admin.tenants.impersonar', $tenant) }}">
+                            @csrf
+                            <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <i class="bx bx-user-voice"></i> Entrar como
+                            </button>
+                        </form>
+                    </div>
                 </div>
                 <div class="card-body">
                     <p class="mb-1"><strong>Nome:</strong> {{ $tenant->name }}</p>

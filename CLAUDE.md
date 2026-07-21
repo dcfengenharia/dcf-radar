@@ -145,6 +145,106 @@ ReportComentario (só em reports emitidos). Reaproveita
   também sempre passa (mesmo fallback "sem plano = sem restrição" usado
   em todo o resto do sistema).
 
+## Área do administrador da plataforma
+
+- **Área visualmente exclusiva**: `/admin/**` usa `resources/views/layouts/layoutAdmin.blade.php`
+  (não `layoutMaster`/`contentNavbarLayout`) com seu próprio menu lateral,
+  `resources/views/layouts/sections/menu/adminVerticalMenu.blade.php` —
+  filtra o MESMO `$menuData[0]->menu` compartilhado por
+  `App\Providers\MenuServiceProvider` pelos itens com
+  `gate === 'acessar-admin-plataforma'` (achatando o submenu de
+  "Painel do Proprietário" em links de primeiro nível, já que não sobra
+  nada do app do tenant pra agrupar ali dentro) — nenhum JSON duplicado,
+  editar `resources/menu/verticalMenu.json` continua sendo o único
+  lugar pra adicionar uma página nova em `/admin`. Reaproveita
+  navbar/footer normais via uma flag nova opcional,
+  `$hideEmpresaSwitcher` (mesmo padrão de `$navbarFull`/
+  `$navbarHideToggle` já existentes em `navbar.blade.php`), que esconde
+  o dropdown "Empresa Ativa"/"Cadastrar Nova Empresa" — não faz sentido
+  pro dono da plataforma.
+- **Login redireciona direto pra lá**: `AuthenticatedSessionController::
+  store()` — único handler de login realmente usado (Fortify instalado
+  mas suas próprias rotas de login não são as registradas) — checa
+  `Auth::user()->is_platform_admin` logo após autenticar e manda pra
+  `route('admin.dashboard')` em vez do `RouteServiceProvider::HOME`
+  (`/app/home`) de sempre.
+- **`tenants.eh_conta_operadora`**: a empresa dona da própria plataforma
+  (ex.: DCF.eng) nunca deveria ter sido tratada como "mais um cliente
+  assinante" — antes dessa fase, virar admin exigia passar pelo wizard
+  público de `/register` (criar uma "construtora" fake), ganhando trial
+  automático e entrando nas métricas de negócio como qualquer tenant
+  real. Agora `Tenant::criarTrialAutomatico()` pula a criação da
+  `Assinatura` fake pra tenant com essa flag (`if ($this->
+  eh_conta_operadora) return;`, primeira linha do método), e
+  `Tenant::scopeClientes()` (`->where('eh_conta_operadora', false)`) é
+  o ÚNICO ponto de exclusão reaproveitado no dashboard admin
+  (`Tenant::clientes()->count()`, e a query-base de
+  `assinaturasAtuais()` — de que `assinaturasAtivasCount()`/
+  `assinaturasPorStatus()`/`assinaturasPorPlano()`/`mrrAproximado()`
+  todos derivam, então filtrar uma vez ali propaga sozinho). A conta
+  operadora continua **visível** na lista de tenants (não escondida —
+  senão o admin acha que sumiu), só com badge `bg-label-dark` "Conta
+  Operadora" (mesmo idiom das badges de origem/método já usadas em
+  `⚡tenants/⚡show.blade.php`, Fase 10.9). Botão "Marcar/Desmarcar Conta
+  Operadora" no detalhe do tenant (`⚡tenants/⚡show.blade.php`) é
+  autoatendimento deliberado — nunca decidimos por conta própria qual
+  tenant existente é a operadora, o próprio admin marca com um clique.
+- **Bootstrap sem passar pelo `/register` público**: `app:seed-owner`
+  (`App\Console\Commands\SeedOwnerCommand`) agora CRIA o tenant
+  operadora (`eh_conta_operadora = true`, nome via `--empresa=`) quando
+  nenhum `--tenant=` é passado e nenhum tenant existe — antes exigia um
+  tenant pré-existente e mandava "registre-se pelo UI". **Achado desta
+  fase**: `email_verified_at` não está em `User::$fillable`
+  (propositalmente, protegido de mass-assignment em código de
+  request) — o `updateOrCreate()` deste comando vinha descartando esse
+  campo em silêncio há tempos, deixando todo admin criado por
+  `app:seed-owner` travado na tela de verificação de e-mail no primeiro
+  login real. Corrigido com `forceFill()` isolado logo depois do
+  `updateOrCreate()` — seguro aqui porque é comando de CLI restrito
+  (dev/staging), nunca input de request.
+- **"Acesso a tudo da plataforma" continua sendo impersonation**
+  (`App\Support\ImpersonationContext::start()`, botão "Entrar como" no
+  detalhe do tenant) — decisão deliberada de não duplicar cada tela do
+  tenant como versão somente-leitura cross-tenant dentro do `/admin`.
+  **Exceção deliberada**: Gestão de Usuários (abaixo) É uma visão
+  cross-tenant de verdade dentro do `/admin` — porque `User` nunca usa
+  `BelongsToTenant` (ver a nota logo acima, seção de isolamento), listar
+  todos os usuários não exige nenhum truque de scope, só uma query
+  Eloquent comum.
+- **Gestão de Usuários (`/admin/usuarios`)**: lista TODOS os usuários de
+  TODOS os tenants numa tabela só (`User::with('tenant')->query()`, sem
+  `TenantContext::actingAs()` — não precisa, `User` não tem scope) com
+  busca, filtro por conta e por status. Botão "Desativar"/"Reativar"
+  alterna a coluna nova `users.ativo` (boolean, default `true`) — usuário
+  inativo não é setado à mão em nenhum outro lugar do sistema além dessa
+  tela. Bloqueio em runtime é
+  `App\Http\Middleware\BloquearUsuarioInativo`, registrado GLOBALMENTE no
+  grupo `web` do `Kernel.php` (mesmo padrão de
+  `DefinirLimiteUploadDoTenant`, que já vive ali) — cobre `/app`, `/admin`
+  e qualquer rota autenticada futura automaticamente, sem precisar
+  lembrar de anexar a cada grupo de rota novo. Como o guard de sessão do
+  Laravel resolve `auth()->user()` do banco a cada requisição, isso já
+  desloga uma sessão já aberta no primeiro request seguinte à
+  desativação — não precisa de nenhuma invalidação de sessão especial
+  além do `logout()` feito ali dentro. Sem exceção pra
+  `is_platform_admin`: um admin desativado por outro admin também é
+  barrado (a trava real contra lockout é a auto-desativação bloqueada em
+  `alternarStatus()`, não o middleware). **Achado desta fase**: a
+  checagem usa `auth()->user()->ativo === false` (comparação estrita),
+  NUNCA `! auth()->user()->ativo` — mesmo fallback "dado ausente nunca
+  bloqueia" já usado em `EnsureTenantAssinaturaAtiva`/`limiteObras()`.
+  Descoberto porque `$this->actingAs($user)` nos testes reaproveita o
+  MESMO objeto `User` em memória do factory pra toda a duração do teste
+  (nunca refaz o SELECT que um request real faria) — um factory sem
+  `'ativo'` explícito deixa esse atributo simplesmente ausente do array
+  em memória, então `! null` avaliava como bloqueio numa suíte inteira de
+  testes de rota HTTP sem relação nenhuma com essa feature (`! $ativo`
+  quebrou 76 testes espalhados por vários arquivos). A coluna legada `users.status`
+  (string solta do starter-kit Jetstream, nunca esteve em `$fillable`,
+  nunca foi lida em lugar nenhum) NÃO foi reaproveitada de propósito —
+  `ativo` é uma coluna nova e dedicada, mesmo idioma simples já usado em
+  `eh_conta_operadora`.
+
 ## Página de cadastro (registro)
 
 - **`resources/views/auth/register.blade.php`** é um wizard de 3-4 passos
@@ -223,10 +323,13 @@ ReportComentario (só em reports emitidos). Reaproveita
   Fase 7) e entra nele com `TenantContext::actingAs()`. Sempre responde
   200 rápido, mesmo em erro interno (só `report()`) — evita loop de
   retentativa do Mercado Pago.
-- **`assinaturas`/`assinatura_faturas` são as ÚNICAS tabelas do projeto
-  sem `BelongsToTenant`** (mesmo motivo de `Assinatura` já documentado:
-  o dono da plataforma precisa ver todos os tenants ao mesmo tempo) —
-  **toda consulta feita a partir de uma tela do TENANT precisa filtrar
+- **`assinaturas`/`assinatura_faturas`/`users` são as ÚNICAS tabelas do
+  projeto sem `BelongsToTenant`** (`User` nunca teve o trait — achado ao
+  construir a Gestão de Usuários do admin, ver seção "Área do
+  administrador da plataforma"; mesmo motivo de `Assinatura` já
+  documentado: o dono da plataforma precisa ver todos os tenants ao
+  mesmo tempo) — **toda consulta feita a partir de uma tela do TENANT
+  precisa filtrar
   `tenant_id` manualmente**, nunca confiar em scope automático (risco
   coberto por teste dedicado em `TenantIsolationTest.php`). `origem` da
   `Assinatura` tem 3 valores possíveis: `manual` (admin), `sistema`
@@ -408,6 +511,71 @@ ReportComentario (só em reports emitidos). Reaproveita
   como 16 colunas cruas no índice único estouram o limite de 3072 bytes
   do MySQL, as 8 novas entram via `escopo_extra_hash` (MD5, calculado
   sozinho em `CurvaAjuste::booted()`), nunca setado à mão.
+
+## Programação Semanal — fechamento e revisões
+
+- **`programacoes_semanais.status`** (`App\Enums\StatusProgramacaoSemanal`,
+  `Aberta`|`Fechada`) — antes deste feature, o "congelamento" da
+  Programação Semanal (docs em [[project_programacao_semanal_congelada]])
+  era só um efeito colateral automático de comprometer atividades. Agora
+  existe uma ação EXPLÍCITA do usuário, botão "Gerar Programação" no
+  Plano Semanal (`fecharProgramacao()`) e também em Minhas Programações
+  — chama `App\Actions\ProgramacaoSemanal\FecharProgramacaoSemanal`, que
+  seta `status = Fechada`, `fechada_em`, `fechada_por`. **Depois de
+  fechada, o único campo editável continua sendo o de sempre** —
+  marcar atividade concluída/não concluída (`Atividade.status`, via
+  `AtividadeObserver`) — decisão deliberada de NÃO duplicar um campo de
+  status dentro de `programacao_semanal_itens`; "realizado" continua
+  sendo lido ao vivo da própria Atividade, igual já era antes.
+- **Duas travas distintas, não confundir**: `semanaEstaCongelada`
+  (`⚡plano-semanal.blade.php`) é a trava TOTAL automática legada —
+  existe header E a semana já é passado — bloqueia até marcar
+  concluída; continua intacta pra qualquer semana que nunca passou pelo
+  botão novo (decisão consciente: não fazer backfill retroativo).
+  `semanaEstaFechada` é o status explícito novo — abre a EXCEÇÃO de
+  marcar concluída/não concluído mesmo com `semanaEstaCongelada=true`.
+  Guard final em `marcarConcluida()`/`confirmarNaoConcluido()`:
+  `semanaEstaCongelada && ! semanaEstaFechada`. Comprometer atividades
+  novas (`comprometerSelecionadas()`) continua bloqueado nos dois casos:
+  `semanaEstaCongelada || semanaEstaFechada`.
+- **`ProgramacaoSemanal::ativaPara(Work $obra, string $semanaInicio)`**
+  é o ÚNICO ponto de resolução de "qual é a programação vigente desta
+  semana" (`orderByDesc('versao')->first()`) — substitui todo lookup
+  direto por `obra_id`+`semana_inicio`, tanto em
+  `programacaoDaSemana` (Plano Semanal) quanto dentro de
+  `RegistrarComprometimentoSemanal`. Necessário porque agora pode haver
+  mais de uma linha por semana: o unique de `programacoes_semanais`
+  virou `(obra_id, semana_inicio, versao)` (antes era só
+  `obra_id`+`semana_inicio`).
+- **Revisões** (`versao`, `revisao_de_id` self-FK): só é possível criar
+  uma revisão de uma programação Fechada que também seja a versão MAIS
+  RECENTE daquela semana (histórico fica linear, nunca ramifica —
+  `App\Actions\ProgramacaoSemanal\CriarRevisaoProgramacaoSemanal`). A
+  nova versão nasce Aberta, com as MESMAS atividades da original, mas
+  com datas/HH **RE-CAPTURADOS ao vivo** da Atividade no momento da
+  revisão (decisão do usuário — não copia os valores congelados
+  antigos, já que replanejamento parte de onde o cronograma está agora).
+  A versão original NUNCA é alterada, fica visível pra sempre no
+  histórico. `App\Actions\ProgramacaoSemanal\ProgramacaoSemanalSnapshot::
+  linhasParaItens()` é o helper compartilhado entre
+  `RegistrarComprometimentoSemanal` e `CriarRevisaoProgramacaoSemanal`
+  pra não duplicar a lógica de captura de HH/datas.
+  `RegistrarComprometimentoSemanal` agora lança `RuntimeException` se
+  tentarem comprometer atividade numa programação já Fechada (é preciso
+  criar uma revisão primeiro).
+- **% de Aderência** (`ProgramacaoSemanal::aderencia()`): itens da
+  programação cuja Atividade está `Concluido` (lida ao vivo) ÷ total de
+  itens — `null` sem itens (nunca zero, mesmo idioma de "traço" já
+  usado na coluna "% do Projeto"). É basicamente o PPC da própria
+  Programação Semanal específica, não o PPC ao vivo do período.
+- **Nova tela Minhas Programações** (`radar.programacoes`, slug
+  `restricoes.minhas_programacoes`): uma linha por semana, sempre a
+  versão vigente (`unique('semana_inicio')` sobre a listagem já
+  ordenada por `semana_inicio desc, versao desc`), com % de aderência,
+  status, versão e ações de Gerar Programação/Criar Revisão. "Ver
+  detalhe" linka pro Plano Semanal daquela semana via `#[Url(as:
+  'semana')]` novo em `⚡plano-semanal.blade.php::semanaInicio`
+  (`?semana=YYYY-MM-DD`), normalizado pro início da semana no `mount()`.
 
 ## Convenções
 

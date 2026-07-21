@@ -43,6 +43,7 @@ class CatalogoFuncionalidades
             ['slug' => 'restricoes.lookahead', 'nome' => 'Lookahead Lean', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'restricoes.quadro', 'nome' => 'Quadro de Restrições', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'restricoes.plano_semanal', 'nome' => 'Plano Semanal', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
+            ['slug' => 'restricoes.minhas_programacoes', 'nome' => 'Minhas Programações', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'restricoes.causas', 'nome' => 'Causas de Não Cumprimento', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'restricoes.matriz', 'nome' => 'Matriz P×I', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'restricoes.relatorios', 'nome' => 'Relatórios de Restrições', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],

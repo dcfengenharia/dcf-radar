@@ -43,6 +43,7 @@ class Perfil extends Model
         'restricoes.lookahead' => ['criar' => Papel::Engenheiro, 'editar' => Papel::Encarregado, 'excluir' => Papel::GerentePlanejamento],
         'restricoes.quadro' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],
         'restricoes.plano_semanal' => ['editar' => Papel::Encarregado],
+        'restricoes.minhas_programacoes' => ['editar' => Papel::Encarregado],
         'restricoes.causas' => ['criar' => Papel::Encarregado, 'editar' => Papel::Encarregado],
         'restricoes.matriz' => ['editar' => Papel::Engenheiro],
         'report.relatorios' => ['criar' => Papel::GerentePlanejamento, 'editar' => Papel::GerentePlanejamento, 'excluir' => Papel::GerentePlanejamento],

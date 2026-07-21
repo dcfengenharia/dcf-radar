@@ -132,7 +132,12 @@ new class extends Component {
                             $assinatura = $this->assinaturasAtuais->get($tenant->id);
                         @endphp
                         <tr>
-                            <td>{{ $tenant->name }}</td>
+                            <td>
+                                {{ $tenant->name }}
+                                @if ($tenant->eh_conta_operadora)
+                                    <span class="badge bg-label-dark ms-1">Conta Operadora</span>
+                                @endif
+                            </td>
                             <td>{{ $assinatura?->plano->nome ?? '—' }}</td>
                             <td>
                                 @if ($assinatura)

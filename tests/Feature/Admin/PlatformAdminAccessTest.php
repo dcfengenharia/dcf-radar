@@ -2,9 +2,12 @@
 
 namespace Tests\Feature\Admin;
 
+use App\Enums\StatusAssinatura;
+use App\Models\Plano;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Livewire\Livewire;
 use Tests\TestCase;
 
 class PlatformAdminAccessTest extends TestCase
@@ -41,5 +44,57 @@ class PlatformAdminAccessTest extends TestCase
         $this->get('/admin')->assertOk();
         $this->get('/admin/tenants')->assertOk();
         $this->get('/admin/planos')->assertOk();
+    }
+
+    public function test_conta_operadora_nunca_ganha_assinatura_automatica(): void
+    {
+        Plano::factory()->create(['ativo' => true, 'padrao_trial' => true]);
+
+        $operadora = Tenant::create(['name' => 'DCF.eng', 'eh_conta_operadora' => true]);
+
+        $this->assertDatabaseMissing('assinaturas', ['tenant_id' => $operadora->id]);
+    }
+
+    public function test_scope_clientes_exclui_conta_operadora(): void
+    {
+        $operadora = Tenant::create(['name' => 'DCF.eng', 'eh_conta_operadora' => true]);
+        $cliente = Tenant::factory()->create(['eh_conta_operadora' => false]);
+
+        $ids = Tenant::clientes()->pluck('id');
+
+        $this->assertTrue($ids->contains($cliente->id));
+        $this->assertFalse($ids->contains($operadora->id));
+    }
+
+    public function test_dashboard_exclui_conta_operadora_das_metricas(): void
+    {
+        $plano = Plano::factory()->create(['ativo' => true, 'padrao_trial' => true, 'preco_mensal' => 500]);
+
+        $operadora = Tenant::create(['name' => 'DCF.eng', 'eh_conta_operadora' => true]);
+        // Conta operadora não ganha assinatura automática — cria uma manualmente
+        // pra provar que mesmo assim ela é excluída das métricas.
+        $operadora->assinaturas()->create([
+            'plano_id' => $plano->id,
+            'status' => StatusAssinatura::Ativa->value,
+            'origem' => 'manual',
+            'inicio' => now()->toDateString(),
+        ]);
+
+        $clienteTenant = Tenant::factory()->create(['eh_conta_operadora' => false]);
+        $clienteTenant->assinaturas()->create([
+            'plano_id' => $plano->id,
+            'status' => StatusAssinatura::Ativa->value,
+            'origem' => 'manual',
+            'inicio' => now()->toDateString(),
+        ]);
+
+        $admin = User::factory()->create(['tenant_id' => $operadora->id, 'is_platform_admin' => true]);
+        $this->actingAs($admin);
+
+        $instance = Livewire::test('pages::admin.dashboard')->instance();
+
+        $this->assertSame(1, $instance->totalTenants);
+        $this->assertSame(1, $instance->assinaturasAtivasCount);
+        $this->assertSame(500.0, $instance->mrrAproximado);
     }
 }

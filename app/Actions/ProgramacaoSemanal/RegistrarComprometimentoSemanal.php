@@ -2,18 +2,16 @@
 
 namespace App\Actions\ProgramacaoSemanal;
 
-use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemProgramacaoSemanalItem;
-use App\Enums\SerieAvanco;
+use App\Enums\StatusProgramacaoSemanal;
 use App\Models\Atividade;
-use App\Models\AvancoPeriodo;
 use App\Models\ProgramacaoSemanal;
 use App\Models\Work;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use RuntimeException;
 
 /**
  * Congela (insert imutável, nunca update) o lado PREVISTO do que foi
@@ -26,6 +24,11 @@ use Illuminate\Support\Str;
  *
  * Idempotente: comprometer a mesma atividade duas vezes na mesma semana
  * nunca duplica (insertOrIgnore + unique constraint).
+ *
+ * Sempre grava na versão VIGENTE da semana (`ProgramacaoSemanal::
+ * ativaPara()` — a de `versao` mais alta); nunca insere numa
+ * programação já Fechada — é preciso criar uma Revisão primeiro
+ * (App\Actions\ProgramacaoSemanal\CriarRevisaoProgramacaoSemanal).
  */
 class RegistrarComprometimentoSemanal
 {
@@ -35,14 +38,25 @@ class RegistrarComprometimentoSemanal
         Collection $atividades,
         OrigemProgramacaoSemanalItem $origem
     ): ProgramacaoSemanal {
-        $semanaFim = Carbon::parse($semanaInicio)->endOfWeek()->toDateString();
+        $header = ProgramacaoSemanal::ativaPara($obra, $semanaInicio);
 
-        $header = ProgramacaoSemanal::firstOrCreate(
-            ['obra_id' => $obra->id, 'semana_inicio' => $semanaInicio],
-            ['semana_fim' => $semanaFim, 'congelada_em' => now(), 'criado_por' => Auth::id()]
-        );
+        if ($header && $header->estaFechada()) {
+            throw new RuntimeException('Esta programação está fechada. Crie uma revisão pra adicionar novos itens.');
+        }
 
-        if (! $header->wasRecentlyCreated) {
+        if (! $header) {
+            $semanaFim = Carbon::parse($semanaInicio)->endOfWeek()->toDateString();
+
+            $header = ProgramacaoSemanal::create([
+                'obra_id' => $obra->id,
+                'semana_inicio' => $semanaInicio,
+                'semana_fim' => $semanaFim,
+                'congelada_em' => now(),
+                'criado_por' => Auth::id(),
+                'status' => StatusProgramacaoSemanal::Aberta->value,
+                'versao' => 1,
+            ]);
+        } else {
             $header->touch();
         }
 
@@ -50,28 +64,7 @@ class RegistrarComprometimentoSemanal
             return $header;
         }
 
-        $idsAtividades = $atividades->pluck('id');
-
-        $horasPorAtividade = AvancoPeriodo::where('serie', SerieAvanco::Previsto->value)
-            ->where('granularidade', GranularidadePeriodo::Semanal->value)
-            ->where('periodo_inicio', $semanaInicio)
-            ->whereIn('atividade_id', $idsAtividades)
-            ->pluck('horas', 'atividade_id');
-
-        $agora = now();
-        $linhas = $atividades->map(fn (Atividade $at) => [
-            'id' => (string) Str::ulid(),
-            'tenant_id' => $obra->tenant_id,
-            'programacao_semanal_id' => $header->id,
-            'atividade_id' => $at->id,
-            'inicio_planejado_congelado' => $at->inicio_planejado?->toDateString(),
-            'data_termino_congelado' => $at->data_termino?->toDateString(),
-            'horas_previstas_congeladas' => $horasPorAtividade->get($at->id),
-            'origem' => $origem->value,
-            'criado_por' => Auth::id(),
-            'created_at' => $agora,
-            'updated_at' => $agora,
-        ])->all();
+        $linhas = ProgramacaoSemanalSnapshot::linhasParaItens($header, $semanaInicio, $atividades, $origem);
 
         DB::table('programacao_semanal_itens')->insertOrIgnore($linhas);
 

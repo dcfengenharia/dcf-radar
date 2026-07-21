@@ -173,6 +173,9 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
             Route::get('/plano-semanal', fn() => view('app.radar.plano-semanal'))
                 ->name('radar.plano-semanal');
 
+            Route::get('/minhas-programacoes', fn() => view('app.radar.programacoes'))
+                ->name('radar.programacoes');
+
             Route::get('/causas', fn() => view('app.radar.causas'))
                 ->name('radar.causas');
 
@@ -246,6 +249,9 @@ Route::middleware(['auth', 'verified', 'platform.admin'])->prefix('admin')->name
             ->with('flash.banner', 'Você está navegando como ' . $tenant->name . '.')
             ->with('flash.bannerStyle', 'warning');
     })->name('tenants.impersonar');
+
+    // Usuários (cross-tenant)
+    Route::get('/usuarios', fn () => view('admin.usuarios.index'))->name('usuarios.index');
 
     // Planos
     Route::get('/planos', fn () => view('admin.planos.index'))->name('planos.index');
