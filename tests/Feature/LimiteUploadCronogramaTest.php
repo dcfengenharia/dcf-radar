@@ -56,8 +56,39 @@ class LimiteUploadCronogramaTest extends TestCase
         $this->assertSame(42, $tenant->fresh()->limiteUploadMb());
     }
 
-    public function test_upload_maior_que_o_limite_do_plano_e_rejeitado_na_validacao(): void
+    public function test_upload_maior_que_o_limite_do_plano_mostra_aviso_amigavel_com_cta_de_upgrade(): void
     {
+        $tenant = Tenant::factory()->create();
+        $plano = Plano::factory()->create(['limite_upload_mb' => 1]);
+        Assinatura::factory()->create([
+            'tenant_id' => $tenant->id,
+            'plano_id' => $plano->id,
+            'status' => StatusAssinatura::Ativa->value,
+        ]);
+
+        // Usuário É o criador do tenant — deve ver o link direto pra
+        // página de assinatura (podeGerenciarTenant() == true).
+        $user = User::factory()->create(['tenant_id' => $tenant->id]);
+        $tenant->update(['criado_por_id' => $user->id]);
+        $this->actingAs($user);
+        $obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+
+        $arquivoGrande = UploadedFile::fake()->create('cronograma-grande.xml', 2000, 'text/xml');
+
+        Livewire::test('pages::radar.cronograma', ['obra' => $obra])
+            ->set('arquivoTemp', $arquivoGrande)
+            ->call('analisar')
+            ->assertHasNoErrors('arquivoTemp')
+            ->assertSet('excedeuLimiteUpload', true)
+            ->assertSee('Arquivo grande demais para o seu plano')
+            ->assertSee('limite do plano atual é de 1 MB')
+            ->assertSeeHtml(route('app.empresa.assinatura'));
+    }
+
+    public function test_aviso_de_limite_excedido_nao_mostra_cta_para_quem_nao_pode_gerenciar_o_tenant(): void
+    {
+        // Helper padrão: criado_por_id fica null — usuário NÃO é o
+        // criador do tenant, então podeGerenciarTenant() é false.
         $obra = $this->criarObraComPlano(limiteUploadMb: 1);
 
         $arquivoGrande = UploadedFile::fake()->create('cronograma-grande.xml', 2000, 'text/xml');
@@ -65,7 +96,9 @@ class LimiteUploadCronogramaTest extends TestCase
         Livewire::test('pages::radar.cronograma', ['obra' => $obra])
             ->set('arquivoTemp', $arquivoGrande)
             ->call('analisar')
-            ->assertHasErrors(['arquivoTemp' => 'max']);
+            ->assertSet('excedeuLimiteUpload', true)
+            ->assertSee('Peça ao administrador da conta pra fazer upgrade do plano')
+            ->assertDontSeeHtml(route('app.empresa.assinatura'));
     }
 
     public function test_upload_dentro_do_limite_do_plano_passa_na_validacao(): void

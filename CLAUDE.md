@@ -137,6 +137,24 @@ ReportComentario (só em reports emitidos). Reaproveita
   convite (`⚡obra-detalhe.blade.php::enviarConvite()`, que dá feedback
   cedo, e `ConviteController::aceitar()`, que é a checagem que vale de
   verdade — o limite pode mudar entre o envio e a aceitação).
+- **Arquivo de cronograma maior que o limite do plano** (`⚡cronograma
+  .blade.php`, Importar Cronograma): nunca mostra o erro genérico
+  "não pode ser superior a N kilobytes" do Livewire — mostra um aviso
+  amigável com o tamanho do arquivo e o limite do plano, mais uma
+  chamada pra ação. Dois pontos alimentam a MESMA propriedade
+  `$excedeuLimiteUpload` (única fonte de verdade pro alerta em Blade):
+  o evento JS `livewire-upload-error` (caminho real do usuário — o
+  upload falha no próprio endpoint do Livewire, travado pelo
+  `DefinirLimiteUploadDoTenant`, ANTES do arquivo virar
+  `$arquivoTemp` de verdade — chama `$wire.marcarLimiteUploadExcedido()`
+  com o tamanho capturado no `x-on:change`) e o catch de
+  `ValidationException` dentro de `analisar()` (defesa em profundidade
+  pro caso do componente já ter `$arquivoTemp` setado, ex.: testes via
+  `Livewire::test()`, que pulam o endpoint de upload). O CTA
+  ("Faça upgrade do plano") só aparece pra quem `podeGerenciarTenant()`
+  (criador do tenant) — quem não pode vê "peça ao administrador da
+  conta" em vez do link, mesmo idioma de mensagem já usado em
+  `createWork()`/`ConviteController`.
 - **`StatusAssinatura::concedeAcesso()`** (`Trial`/`Ativa` = true,
   `Cancelada`/`Suspensa`/`Inadimplente` = false) é enforced por
   `App\Http\Middleware\EnsureTenantAssinaturaAtiva` (alias

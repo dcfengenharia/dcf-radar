@@ -19,6 +19,16 @@ new class extends Component {
 
   public $arquivoTemp = null;
 
+  // Limite de upload excedido (plano do tenant) — tratado à parte do
+  // $errors bag padrão do Livewire pra poder mostrar uma mensagem
+  // amigável com CTA de upgrade, em vez do "não pode ser superior a N
+  // kilobytes" genérico. Alimentado tanto pelo catch em analisar()
+  // (quando o arquivo já chegou a esta instância) quanto pelo evento
+  // JS 'livewire-upload-error' (quando o upload falha antes disso, no
+  // endpoint do próprio Livewire — ver DefinirLimiteUploadDoTenant).
+  public bool $excedeuLimiteUpload = false;
+  public ?float $tamanhoArquivoMb = null;
+
   protected function rules(): array
   {
     $mb = $this->obra->tenant->limiteUploadMb();
@@ -26,6 +36,14 @@ new class extends Component {
     return [
       'arquivoTemp' => ['required', 'file', 'max:' . ($mb * 1024), 'mimetypes:text/xml,application/xml'],
     ];
+  }
+
+  /** Chamado do JS quando o upload falha no endpoint do Livewire (arquivo maior que o limite do plano). */
+  public function marcarLimiteUploadExcedido(?float $tamanhoArquivoMb = null): void
+  {
+    $this->excedeuLimiteUpload = true;
+    $this->tamanhoArquivoMb = $tamanhoArquivoMb;
+    $this->arquivoTemp = null;
   }
 
   // Estado da prévia
@@ -60,7 +78,21 @@ new class extends Component {
 
   public function analisar(): void
   {
-    $this->validateOnly('arquivoTemp');
+    $this->excedeuLimiteUpload = false;
+    $this->tamanhoArquivoMb = null;
+
+    try {
+      $this->validateOnly('arquivoTemp');
+    } catch (\Illuminate\Validation\ValidationException $e) {
+      if (array_key_exists('Max', $e->validator->failed()['arquivoTemp'] ?? [])) {
+        $tamanhoMb = $this->arquivoTemp?->getSize() ? round($this->arquivoTemp->getSize() / 1024 / 1024, 1) : null;
+        $this->marcarLimiteUploadExcedido($tamanhoMb);
+        return;
+      }
+
+      throw $e;
+    }
+
     $this->erro = null;
 
     try {
@@ -400,11 +432,12 @@ new class extends Component {
                 <div x-data="{
                          uploading: false,
                          progress: 0,
-                         hasFile: {{ $arquivoTemp ? 'true' : 'false' }}
+                         hasFile: {{ $arquivoTemp ? 'true' : 'false' }},
+                         tamanhoSelecionadoMb: null
                      }"
-                     x-on:livewire-upload-start="uploading = true; progress = 0"
+                     x-on:livewire-upload-start="uploading = true; progress = 0; $wire.set('excedeuLimiteUpload', false)"
                      x-on:livewire-upload-finish="uploading = false; hasFile = true"
-                     x-on:livewire-upload-error="uploading = false"
+                     x-on:livewire-upload-error="uploading = false; $wire.marcarLimiteUploadExcedido(tamanhoSelecionadoMb)"
                      x-on:livewire-upload-progress="progress = $event.detail.progress">
 
                     <div class="mb-1">
@@ -415,10 +448,33 @@ new class extends Component {
                                        class="form-control @error('arquivoTemp') is-invalid @enderror"
                                        wire:model="arquivoTemp"
                                        accept=".xml"
-                                       x-on:change="hasFile = false">
+                                       x-on:change="
+                                           hasFile = false;
+                                           const arquivo = $event.target.files[0];
+                                           tamanhoSelecionadoMb = arquivo ? +(arquivo.size / 1024 / 1024).toFixed(1) : null;
+                                       ">
                                 @error('arquivoTemp')
                                     <div class="invalid-feedback">{{ $message }}</div>
                                 @enderror
+                                @if($excedeuLimiteUpload)
+                                <div class="alert alert-warning d-flex gap-2 mt-2 mb-0 py-2">
+                                    <i class="bx bx-error mt-1 flex-shrink-0"></i>
+                                    <div class="small">
+                                        <strong>Arquivo grande demais para o seu plano.</strong>
+                                        @if($tamanhoArquivoMb)
+                                            O arquivo selecionado tem aproximadamente {{ number_format($tamanhoArquivoMb, 1) }} MB
+                                        @else
+                                            O arquivo selecionado
+                                        @endif
+                                        e o limite do plano atual é de {{ $obra->tenant->limiteUploadMb() }} MB.
+                                        @if(auth()->user()->podeGerenciarTenant($obra->tenant))
+                                            <a href="{{ route('app.empresa.assinatura') }}" class="fw-semibold">Faça upgrade do plano para importar arquivos maiores →</a>
+                                        @else
+                                            Peça ao administrador da conta pra fazer upgrade do plano.
+                                        @endif
+                                    </div>
+                                </div>
+                                @endif
                             </div>
                             <button wire:click="analisar"
                                     class="btn btn-primary flex-shrink-0"
