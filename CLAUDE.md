@@ -41,6 +41,24 @@ ReportComentario (só em reports emitidos). Reaproveita
   resolvidas.
 - Uma Atividade só vai ao plano semanal (status `comprometido` ou além)
   se estiver pronta.
+- **`AtividadeItemProntidao.concluido_por`/`concluido_em`**: quem marcou um
+  item de prontidão como concluído e quando — gravado/limpo pelos dois
+  pontos que fazem esse toggle (`marcarItemProntidao()` na lista e
+  `marcarItemNaDetalhe()` no popup de detalhe da atividade, ambos em
+  `⚡restricoes.blade.php`), sempre via `Auth::id()`/`now()` quando o
+  valor vai pra `true`, e `null`/`null` quando volta pra `false` (nunca
+  fica um autor "fantasma" apontando pra uma marcação já desfeita). O
+  popup de detalhe exibe isso logo abaixo do item concluído (nome +
+  data/hora). **Datas de início/término do popup** deixaram de ser
+  `inicio_planejado`/`data_termino` (ao vivo) — viraram Linha de Base
+  (`baseline_inicio`/`baseline_termino`, mesma fonte "ao vivo" que o
+  Lookahead usa sem seletor explícito) e Tendência (snapshot da última
+  importação de Avanço/Ambos da obra, mesmo filtro de tipo do
+  Lookahead/`CurvaAvanco::resolverImportacaoId()` — `N/A` quando a obra
+  não tem nenhuma), cada bloco rotulado com a data da importação sendo
+  seguida. O antigo indicador "Situação" (dias restantes/em atraso,
+  calculado a partir de `data_termino`) foi removido — decisão do
+  usuário, informação redundante com as datas agora exibidas.
 - Marcar uma atividade como `nao_concluido` EXIGE registrar uma Causa.
 - **`Atividade.concluido_em`** é a ÚNICA fonte da verdade pra "quando essa
   atividade foi realmente concluída" (usado pelo PPC histórico do

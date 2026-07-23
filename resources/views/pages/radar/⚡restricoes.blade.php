@@ -2,10 +2,13 @@
 
 use App\Enums\PilarLean;
 use App\Enums\StatusRestricao;
+use App\Enums\TipoCronogramaImportacao;
 use App\Exports\RestricoesExport;
 use App\Models\Atividade;
 use App\Models\AtividadeItemProntidao;
+use App\Models\AtividadeSnapshot;
 use App\Models\CategoriaRestricao;
+use App\Models\CronogramaImportacao;
 use App\Models\Disciplina;
 use App\Models\Entregavel;
 use App\Models\EquipeResponsavel;
@@ -392,18 +395,54 @@ new class extends Component {
     $itens = $this->itensProntidao;
     $registros = $itens->isNotEmpty()
       ? AtividadeItemProntidao::where('atividade_id', $at->id)
+        ->with('conclusor:id,first_name,last_name')
         ->get()
         ->keyBy('item_prontidao_id')
       : collect();
 
+    // Linha de Base: sempre a última importação Baseline/Ambos da obra —
+    // mesmo "ao vivo" default do Lookahead sem Linha de Base explícita
+    // selecionada. As datas em si já vêm prontas em baseline_inicio/termino
+    // (gravadas pelo importador junto com a última importação desse tipo).
+    $baselineImportacaoAtual = CronogramaImportacao::where('obra_id', $at->obra_id)
+      ->whereIn('tipo', [TipoCronogramaImportacao::Baseline->value, TipoCronogramaImportacao::Ambos->value])
+      ->orderByDesc('importado_em')
+      ->orderByDesc('id')
+      ->first();
+
+    // Tendência: última importação de Avanço/Ambos da obra (mesmo filtro de
+    // CurvaAvanco::resolverImportacaoId() e do seletor do Lookahead) — sem
+    // nenhuma, não há de onde vir tendência (N/A na view), nunca cai pros
+    // campos ao vivo da Atividade (que refletem só a última Linha de Base).
+    $tendenciaImportacaoAtual = CronogramaImportacao::where('obra_id', $at->obra_id)
+      ->whereIn('tipo', [TipoCronogramaImportacao::Avanco->value, TipoCronogramaImportacao::Ambos->value])
+      ->orderByDesc('importado_em')
+      ->orderByDesc('id')
+      ->first();
+
+    $snapshotTendencia = $tendenciaImportacaoAtual
+      ? AtividadeSnapshot::where('cronograma_importacao_id', $tendenciaImportacaoAtual->id)
+        ->where('atividade_id', $at->id)
+        ->first()
+      : null;
+
     return [
       'atividade' => $at,
+      'baselineImportacaoAtual' => $baselineImportacaoAtual,
+      'tendenciaImportacaoAtual' => $tendenciaImportacaoAtual,
+      'inicioTendencia' => $snapshotTendencia?->inicio_planejado,
+      'terminoTendencia' => $snapshotTendencia?->data_termino,
       'checklist' => $itens->map(
-        fn($item) => [
-          'id' => $item->id,
-          'nome' => $item->nome,
-          'concluido' => (bool) ($registros->get($item->id)?->concluido ?? false),
-        ]
+        function ($item) use ($registros) {
+          $registro = $registros->get($item->id);
+          return [
+            'id' => $item->id,
+            'nome' => $item->nome,
+            'concluido' => (bool) ($registro?->concluido ?? false),
+            'concluidoPor' => $registro?->conclusor,
+            'concluidoEm' => $registro?->concluido_em,
+          ];
+        }
       ),
     ];
   }
@@ -1505,7 +1544,8 @@ new class extends Component {
             @php
                 $at        = $detalhe['atividade'];
                 $checklist = $detalhe['checklist'];
-                $diasRest  = $at->data_termino ? now()->diffInDays($at->data_termino, false) : null;
+                $baselineImp  = $detalhe['baselineImportacaoAtual'];
+                $tendenciaImp = $detalhe['tendenciaImportacaoAtual'];
                 $okChk     = collect($checklist)->where('concluido', true)->count();
                 $totalChk  = collect($checklist)->count();
                 $temBloq   = $at->restricoes->filter(fn($r) =>
@@ -1531,28 +1571,44 @@ new class extends Component {
                         wire:click="$set('modalAtividadeId', null)"></button>
             </div>
 
-            {{-- Barra de datas --}}
+            {{-- Barra de datas: Linha de Base e Tendência, cada uma indicando a importação seguida --}}
             <div class="px-4 py-3 bg-light border-bottom">
-                <div class="row g-3 text-center">
-                    <div class="col-4">
-                        <div class="small text-muted">Início planejado</div>
-                        <div class="fw-semibold">{{ $at->inicio_planejado?->format('d/m/Y') ?? '—' }}</div>
-                    </div>
-                    <div class="col-4">
-                        <div class="small text-muted">Término planejado</div>
-                        <div class="fw-semibold">{{ $at->data_termino?->format('d/m/Y') ?? '—' }}</div>
-                    </div>
-                    <div class="col-4">
-                        <div class="small text-muted">Situação</div>
-                        @if($diasRest !== null)
-                        <div class="fw-semibold {{ $diasRest < 0 ? 'text-danger' : ($diasRest <= 7 ? 'text-warning' : 'text-success') }}">
-                            {{ $diasRest < 0
-                                ? abs((int)$diasRest) . ' dias em atraso'
-                                : (int)$diasRest . ' dias restantes' }}
+                <div class="row g-3">
+                    <div class="col-6">
+                        <div class="small text-muted fw-semibold mb-2">
+                            Linha de Base
+                            <span class="fw-normal">
+                                — {{ $baselineImp ? $baselineImp->importado_em->format('d/m/Y H:i') : 'sem importação registrada' }}
+                            </span>
                         </div>
-                        @else
-                        <div class="text-muted">—</div>
-                        @endif
+                        <div class="row g-2 text-center">
+                            <div class="col-6">
+                                <div class="small text-muted">Início</div>
+                                <div class="fw-semibold">{{ $at->baseline_inicio?->format('d/m/Y') ?? '—' }}</div>
+                            </div>
+                            <div class="col-6">
+                                <div class="small text-muted">Término</div>
+                                <div class="fw-semibold">{{ $at->baseline_termino?->format('d/m/Y') ?? '—' }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6 border-start">
+                        <div class="small text-muted fw-semibold mb-2">
+                            Tendência
+                            <span class="fw-normal">
+                                — {{ $tendenciaImp ? $tendenciaImp->importado_em->format('d/m/Y H:i') : 'sem importação registrada' }}
+                            </span>
+                        </div>
+                        <div class="row g-2 text-center">
+                            <div class="col-6">
+                                <div class="small text-muted">Início</div>
+                                <div class="fw-semibold">{{ $tendenciaImp ? ($detalhe['inicioTendencia']?->format('d/m/Y') ?? '—') : 'N/A' }}</div>
+                            </div>
+                            <div class="col-6">
+                                <div class="small text-muted">Término</div>
+                                <div class="fw-semibold">{{ $tendenciaImp ? ($detalhe['terminoTendencia']?->format('d/m/Y') ?? '—') : 'N/A' }}</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1698,6 +1754,14 @@ new class extends Component {
                                        for="dchk_{{ $at->id }}_{{ $itemChk['id'] }}">
                                     {{ $itemChk['nome'] }}
                                 </label>
+                                @if($itemChk['concluido'] && $itemChk['concluidoPor'])
+                                <small class="text-muted d-block">
+                                    <i class="bx bx-user me-1"></i>{{ $itemChk['concluidoPor']->first_name }} {{ $itemChk['concluidoPor']->last_name }}
+                                    @if($itemChk['concluidoEm'])
+                                    — {{ $itemChk['concluidoEm']->format('d/m/Y H:i') }}
+                                    @endif
+                                </small>
+                                @endif
                             </div>
                             @endforeach
                         </div>

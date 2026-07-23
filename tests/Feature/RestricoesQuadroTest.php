@@ -4,9 +4,14 @@ namespace Tests\Feature;
 
 use App\Enums\Papel;
 use App\Enums\StatusRestricao;
+use App\Enums\TipoCronogramaImportacao;
 use App\Models\Atividade;
+use App\Models\AtividadeItemProntidao;
+use App\Models\AtividadeSnapshot;
+use App\Models\CronogramaImportacao;
 use App\Models\Disciplina;
 use App\Models\FrenteTrabalho;
+use App\Models\ItemProntidao;
 use App\Models\Restricao;
 use App\Models\Tenant;
 use App\Models\User;
@@ -456,5 +461,134 @@ class RestricoesQuadroTest extends TestCase
             ->set('comentarioTexto', 'Tentativa sem permissão')
             ->call('adicionarComentario')
             ->assertForbidden();
+    }
+
+    public function test_marcar_item_de_prontidao_na_detalhe_registra_quem_concluiu(): void
+    {
+        $atividade = $this->criarAtividade();
+        $item = ItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Projeto executivo liberado',
+            'ordem' => 0,
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->call('marcarItemNaDetalhe', $atividade->id, $item->id, true)
+            ->assertSee($this->user->first_name)
+            ->assertSee($this->user->last_name);
+
+        $this->assertDatabaseHas('atividade_itens_prontidao', [
+            'atividade_id' => $atividade->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => true,
+            'concluido_por' => $this->user->id,
+        ]);
+    }
+
+    public function test_desmarcar_item_de_prontidao_remove_o_registro_de_quem_concluiu(): void
+    {
+        $atividade = $this->criarAtividade();
+        $item = ItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Projeto executivo liberado',
+            'ordem' => 0,
+        ]);
+        AtividadeItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => true,
+            'concluido_por' => $this->user->id,
+            'concluido_em' => now(),
+        ]);
+
+        $componente = $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->call('marcarItemNaDetalhe', $atividade->id, $item->id, false);
+
+        $checklist = $componente->instance()->atividadeDetalhe['checklist'];
+        $this->assertNull($checklist->firstWhere('id', $item->id)['concluidoPor']);
+
+        $this->assertDatabaseHas('atividade_itens_prontidao', [
+            'atividade_id' => $atividade->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => false,
+            'concluido_por' => null,
+        ]);
+    }
+
+    public function test_popup_detalhe_mostra_linha_de_base_e_importacao_seguida(): void
+    {
+        $importacao = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now()->subDays(3),
+        ]);
+        $atividade = $this->criarAtividade([
+            'baseline_inicio' => now()->addDays(5),
+            'baseline_termino' => now()->addDays(10),
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee($atividade->baseline_inicio->format('d/m/Y'))
+            ->assertSee($atividade->baseline_termino->format('d/m/Y'))
+            ->assertSee($importacao->importado_em->format('d/m/Y'));
+    }
+
+    public function test_popup_detalhe_mostra_tendencia_na_quando_sem_importacao_de_avanco(): void
+    {
+        $atividade = $this->criarAtividade([
+            'inicio_planejado' => now()->addDays(5),
+            'data_termino' => now()->addDays(10),
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSeeHtml('>N/A<')
+            ->assertSee('sem importação registrada');
+    }
+
+    public function test_popup_detalhe_mostra_tendencia_com_importacao_de_avanco(): void
+    {
+        $atividade = $this->criarAtividade();
+        $importacao = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value,
+            'importado_em' => now()->subDay(),
+        ]);
+        AtividadeSnapshot::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $importacao->id,
+            'atividade_id' => $atividade->id,
+            'inicio_planejado' => now()->addDays(5),
+            'data_termino' => now()->addDays(10),
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee(now()->addDays(5)->format('d/m/Y'))
+            ->assertSee(now()->addDays(10)->format('d/m/Y'))
+            ->assertSee($importacao->importado_em->format('d/m/Y'));
+    }
+
+    public function test_popup_detalhe_nao_mostra_mais_situacao_de_dias_restantes(): void
+    {
+        $atividade = $this->criarAtividade([
+            'data_termino' => now()->addDays(5),
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertDontSee('dias restantes')
+            ->assertDontSee('dias em atraso')
+            ->assertDontSee('Situação');
     }
 }
