@@ -529,6 +529,37 @@ ReportComentario (só em reports emitidos). Reaproveita
   como 16 colunas cruas no índice único estouram o limite de 3072 bytes
   do MySQL, as 8 novas entram via `escopo_extra_hash` (MD5, calculado
   sozinho em `CurvaAjuste::booted()`), nunca setado à mão.
+- **Lookahead — seletor de Tendência só lista importações de Avanço/Ambos**:
+  `importacoesDisponiveis()` (`⚡lookahead.blade.php`) filtra
+  `CronogramaImportacao` por `tipo` (mesmo filtro de
+  `CurvaAvanco::resolverImportacaoId()`) — nunca uma importação
+  Baseline pura, que é escopo exclusivo do seletor de Linha de Base.
+  Sem seleção explícita, usa a mais recente elegível (`orderByDesc
+  ('importado_em')`); com mais de uma Linha de Base salva, idem via
+  `linhaBaseSelecionada`. **Obra sem nenhuma importação de Avanço**
+  (`temImportacaoAvanco()` false): colunas "Início"/"Término"
+  (tendência) mostram `N/A` na tabela e nos 3 exports (PDF, PDF em
+  árvore, Excel) — nunca caem pros campos ao vivo da Atividade
+  (`inicio_planejado`/`data_termino`), que na real refletem só a
+  última importação de Linha de Base (ver nota de arquitetura logo
+  acima), nunca uma de Avanço de verdade. **Decisão do usuário**: o
+  filtro de janela (30/60/90 dias) continua funcionando mesmo nesse
+  caso — quando a fonte escolhida é "Tendência" e não há importação de
+  Avanço, o filtro cai sozinho pra Linha de Base (`$inicioTend ??
+  $inicioBase`), pra não esconder a obra inteira só por nunca ter
+  passado por Importar Avanço; a coluna exibida continua `N/A`.
+  **Achado desta fase**: os botões "Colapsar por nível" (`@click=
+  "colapsarAteNivel(nv)"`, dentro de um `@foreach ($niveisExistentes)`)
+  ficavam sem efeito depois que a quantidade de níveis da EAP mudava
+  entre renders (filtro, nova atividade mais profunda) — faltava
+  `wire:key` no botão, então o morph do Livewire perdia a associação
+  entre o `<button>` e o nível certo, e o clique real parava de
+  disparar `colapsarAteNivel()` com o argumento certo (chamar o método
+  Alpine direto continuava funcionando, só o clique real quebrava —
+  foi assim que o bug foi isolado). Regra geral: todo `@foreach` que
+  renderiza elemento com listener Alpine (`@click` etc.) precisa de
+  `wire:key` estável, mesmo fora de uma lista de "itens de domínio"
+  óbvia.
 
 ## Programação Semanal — fechamento e revisões
 

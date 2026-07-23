@@ -6,6 +6,7 @@ use App\Enums\OrigemAtividade;
 use App\Enums\Papel;
 use App\Enums\StatusAtividade;
 use App\Enums\StatusRestricao;
+use App\Enums\TipoCronogramaImportacao;
 use App\Models\Atividade;
 use App\Models\AtividadeComentario;
 use App\Models\AtividadeSnapshot;
@@ -76,7 +77,6 @@ class LookaheadTest extends TestCase
             'obra_id' => $this->obra->id,
             'nome' => 'Atividade Dentro do Prazo Tendencia XYZ123',
             'baseline_inicio' => now()->addDays(50),
-            'inicio_planejado' => now()->addDays(5),
         ]);
 
         $foraDoPrazoTendencia = Atividade::factory()->create([
@@ -84,6 +84,25 @@ class LookaheadTest extends TestCase
             'obra_id' => $this->obra->id,
             'nome' => 'Atividade Fora do Prazo Tendencia ABC456',
             'baseline_inicio' => now()->addDays(5),
+        ]);
+
+        $avanco = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value,
+            'importado_em' => now(),
+        ]);
+        AtividadeSnapshot::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $avanco->id,
+            'atividade_id' => $noPrazoTendencia->id,
+            'inicio_planejado' => now()->addDays(5),
+        ]);
+        AtividadeSnapshot::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $avanco->id,
+            'atividade_id' => $foraDoPrazoTendencia->id,
             'inicio_planejado' => now()->addDays(50),
         ]);
 
@@ -100,6 +119,7 @@ class LookaheadTest extends TestCase
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
             'status' => StatusAtividade::Concluido->value,
         ]);
 
@@ -151,6 +171,7 @@ class LookaheadTest extends TestCase
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
             'status' => StatusAtividade::Planejado->value,
         ]);
 
@@ -158,6 +179,7 @@ class LookaheadTest extends TestCase
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
             'status' => StatusAtividade::Planejado->value,
         ]);
         Restricao::factory()->create([
@@ -211,6 +233,8 @@ class LookaheadTest extends TestCase
             'nome' => 'Atividade Termina na Janela XYZ123',
             'inicio_planejado' => now()->subDays(40),
             'data_termino' => now()->addDays(10),
+            'baseline_inicio' => now()->subDays(40),
+            'baseline_termino' => now()->addDays(10),
         ]);
 
         $foraDaJanela = Atividade::factory()->create([
@@ -219,6 +243,8 @@ class LookaheadTest extends TestCase
             'nome' => 'Atividade Fora da Janela ABC456',
             'inicio_planejado' => now()->addDays(50),
             'data_termino' => now()->addDays(60),
+            'baseline_inicio' => now()->addDays(50),
+            'baseline_termino' => now()->addDays(60),
         ]);
 
         $this->componente()
@@ -234,6 +260,7 @@ class LookaheadTest extends TestCase
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         Restricao::factory()->create([
@@ -284,12 +311,14 @@ class LookaheadTest extends TestCase
             'obra_id' => $this->obra->id,
             'nome' => 'Concretagem do berço 3',
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
         $naoAchada = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'nome' => 'Montagem de forma',
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $this->componente()
@@ -308,11 +337,13 @@ class LookaheadTest extends TestCase
             'obra_id' => $this->obra->id,
             'etapa_id' => $etapa->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
         $semEtapa = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $this->componente()
@@ -335,6 +366,7 @@ class LookaheadTest extends TestCase
             'obra_id' => $this->obra->id,
             'pacote_trabalho_id' => $pacote->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $linhas = $this->componente()->set('fonteData', 'tendencia')->instance()->linhasArvore;
@@ -355,14 +387,17 @@ class LookaheadTest extends TestCase
         $atividade = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
-            'inicio_planejado' => now()->addDays(50), // fora da janela atual
+            'inicio_planejado' => now()->addDays(50), // ao vivo — nunca usado pra tendência
             'data_termino' => now()->addDays(55),
+            'baseline_inicio' => now()->addDays(50), // baseline também fora da janela
+            'baseline_termino' => now()->addDays(55),
         ]);
 
         $importacaoAntiga = CronogramaImportacao::create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value,
             'importado_em' => now()->subDays(10),
         ]);
 
@@ -375,12 +410,14 @@ class LookaheadTest extends TestCase
             'data_termino' => now()->addDays(10),
         ]);
 
-        // Sem seleção: usa dados ao vivo (fora da janela de 30 dias) → não aparece
+        // Por padrão (sem seleção explícita), a única importação de Avanço
+        // disponível já É a "mais recente" — usada automaticamente, mesmo
+        // sem o usuário escolher nada no filtro.
         $this->componente()
             ->set('fonteData', 'tendencia')
-            ->assertDontSee($atividade->nome);
+            ->assertSee($atividade->nome);
 
-        // Selecionando a importação antiga: usa o snapshot (dentro da janela) → aparece
+        // Selecionando a mesma importação explicitamente: mesmo resultado.
         $this->componente()
             ->set('fonteData', 'tendencia')
             ->set('tendenciaImportacaoId', $importacaoAntiga->id)
@@ -433,12 +470,14 @@ class LookaheadTest extends TestCase
             'obra_id' => $this->obra->id,
             'pacote_trabalho_id' => $dez->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
         Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'pacote_trabalho_id' => $tres->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $linhas = $this->componente()->set('fonteData', 'tendencia')->instance()->linhasArvore;
@@ -574,12 +613,14 @@ class LookaheadTest extends TestCase
             'nome' => 'Atividade Com Frente XYZ123',
             'frente_trabalho_id' => $frente->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
         $semFrente = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'nome' => 'Atividade Sem Frente ABC456',
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $this->componente()
@@ -642,6 +683,7 @@ class LookaheadTest extends TestCase
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
             'percentual_concluido' => 40,
         ]);
 
@@ -653,16 +695,20 @@ class LookaheadTest extends TestCase
 
     public function test_tabela_principal_mostra_datas_com_ano_de_dois_digitos(): void
     {
+        // Coluna verificada é a de Linha de Base (sempre populada) — a de
+        // Tendência mostra N/A nesta obra, que não tem nenhuma importação
+        // de Avanço (ver test_sem_importacao_de_avanco_mostra_na_na_coluna_tendencia).
         $atividade = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $this->componente()
             ->set('fonteData', 'tendencia')
-            ->assertSee($atividade->inicio_planejado->format('d/m/y'))
-            ->assertDontSee($atividade->inicio_planejado->format('d/m/Y'));
+            ->assertSee($atividade->baseline_inicio->format('d/m/y'))
+            ->assertDontSee($atividade->baseline_inicio->format('d/m/Y'));
     }
 
     public function test_popup_detalhe_mostra_prazo_da_restricao(): void
@@ -826,6 +872,7 @@ class LookaheadTest extends TestCase
             'pacote_trabalho_id' => $pacote->id,
             'nome' => 'Primeira',
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
         $segunda = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
@@ -833,6 +880,7 @@ class LookaheadTest extends TestCase
             'pacote_trabalho_id' => $pacote->id,
             'nome' => 'Segunda',
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $this->componente()
@@ -855,6 +903,7 @@ class LookaheadTest extends TestCase
             'pacote_trabalho_id' => $pacote->id,
             'nome' => 'Primeira',
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
         $segunda = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
@@ -862,6 +911,7 @@ class LookaheadTest extends TestCase
             'pacote_trabalho_id' => $pacote->id,
             'nome' => 'Segunda',
             'inicio_planejado' => now()->addDays(5),
+            'baseline_inicio' => now()->addDays(5),
         ]);
 
         $this->componente()
@@ -1083,5 +1133,156 @@ class LookaheadTest extends TestCase
 
         $componente->assertSet('modalImprimirAberto', false);
         $componente->assertFileDownloaded();
+    }
+
+    public function test_botoes_de_colapsar_por_nivel_tem_wire_key_para_sobreviver_ao_morph(): void
+    {
+        // Bug real: sem wire:key, quando a quantidade de níveis muda entre
+        // renders do Livewire (ex.: um pacote mais profundo aparece depois
+        // de um filtro), o morph do DOM perde a associação entre o botão e
+        // o nível certo, e o @click passa a não disparar colapsarAteNivel()
+        // com o argumento correto — reproduzido manualmente no navegador
+        // clicando o botão real vs. chamar a função direto no Alpine.
+        $raiz = PacoteTrabalho::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        $sub = PacoteTrabalho::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'parent_id' => $raiz->id,
+        ]);
+        Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'pacote_trabalho_id' => $sub->id,
+            'inicio_planejado' => now()->addDays(5),
+        ]);
+
+        $this->componente()
+            ->set('fonteData', 'tendencia')
+            ->set('janelaDias', 0)
+            ->assertSeeHtml('wire:key="nivel-btn-0"')
+            ->assertSeeHtml('wire:key="nivel-btn-1"');
+    }
+
+    public function test_sem_importacao_de_avanco_mostra_na_na_coluna_tendencia(): void
+    {
+        // Obra só com uma importação Baseline (nenhuma de Avanço/Ambos) — não
+        // há de onde vir "tendência" de verdade, mesmo a Atividade tendo
+        // inicio_planejado/data_termino ao vivo (esses vêm só da Baseline).
+        CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now()->subDays(5),
+        ]);
+
+        Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Sem Avanco XYZ123',
+            'inicio_planejado' => now()->addDays(5),
+            'data_termino' => now()->addDays(10),
+        ]);
+
+        $this->componente()
+            ->set('fonteData', 'tendencia')
+            ->set('janelaDias', 0)
+            ->assertSee('Atividade Sem Avanco XYZ123')
+            ->assertSeeHtml('>N/A<');
+    }
+
+    public function test_importacoes_disponiveis_para_tendencia_exclui_importacao_so_baseline(): void
+    {
+        $baseline = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now()->subDays(5),
+        ]);
+        $avanco = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value,
+            'importado_em' => now()->subDays(2),
+        ]);
+
+        $disponiveis = $this->componente()->instance()->importacoesDisponiveis;
+
+        $this->assertTrue($disponiveis->contains('id', $avanco->id));
+        $this->assertFalse($disponiveis->contains('id', $baseline->id));
+    }
+
+    public function test_filtro_de_janela_com_fonte_tendencia_sem_avanco_cai_para_baseline(): void
+    {
+        // Sem nenhuma importação de Avanço pra obra: escolher "Tendência" como
+        // fonte não pode esconder tudo — o filtro de janela cai sozinho pra
+        // Linha de Base (decisão explícita do usuário), mesmo a coluna
+        // exibida continuando N/A.
+        $dentroDaJanelaPelaBaseline = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Cai Pela Baseline XYZ123',
+            'baseline_inicio' => now()->addDays(5),
+            'baseline_termino' => now()->addDays(10),
+            'inicio_planejado' => now()->addDays(5),
+            'data_termino' => now()->addDays(10),
+        ]);
+
+        $this->componente()
+            ->set('fonteData', 'tendencia')
+            ->set('janelaDias', 30)
+            ->assertSee($dentroDaJanelaPelaBaseline->nome);
+    }
+
+    public function test_importacao_de_avanco_mais_recente_e_usada_por_padrao_na_tendencia(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'inicio_planejado' => now()->addDays(50), // ao vivo, fora da janela
+            'data_termino' => now()->addDays(55),
+        ]);
+
+        $antiga = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value,
+            'importado_em' => now()->subDays(10),
+        ]);
+        AtividadeSnapshot::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $antiga->id,
+            'atividade_id' => $atividade->id,
+            'inicio_planejado' => now()->addDays(60), // fora da janela também
+            'data_termino' => now()->addDays(65),
+        ]);
+
+        $recente = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value,
+            'importado_em' => now()->subDay(),
+        ]);
+        AtividadeSnapshot::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $recente->id,
+            'atividade_id' => $atividade->id,
+            'inicio_planejado' => now()->addDays(5), // dentro da janela de 30
+            'data_termino' => now()->addDays(10),
+        ]);
+
+        // Sem seleção explícita: usa a importação de Avanço mais recente
+        // (a antiga colocaria fora da janela; a recente coloca dentro).
+        $this->componente()
+            ->set('fonteData', 'tendencia')
+            ->set('janelaDias', 30)
+            ->assertSee($atividade->nome);
     }
 }

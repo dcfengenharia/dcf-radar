@@ -5,6 +5,7 @@ use App\Enums\OrigemAtividade;
 use App\Enums\OrigemProgramacaoSemanalItem;
 use App\Enums\StatusAtividade;
 use App\Enums\StatusRestricao;
+use App\Enums\TipoCronogramaImportacao;
 use App\Exports\LookaheadExport;
 use App\Models\Atividade;
 use App\Notifications\PlanoSemanalGeradoNotification;
@@ -297,11 +298,19 @@ new class extends Component {
     return $resultado;
   }
 
+  /**
+   * Importações elegíveis pra "Tendência" — só as que gravam
+   * Realizado/Tendência (seção Relatórios → Importar Avanço), nunca uma
+   * importação Baseline pura (essa é escopo exclusivo do seletor de Linha
+   * de Base). Mesmo filtro por tipo de `CurvaAvanco::resolverImportacaoId()`.
+   */
   #[Computed]
   public function importacoesDisponiveis()
   {
     return CronogramaImportacao::where('obra_id', $this->obra->id)
+      ->whereIn('tipo', [TipoCronogramaImportacao::Avanco->value, TipoCronogramaImportacao::Ambos->value])
       ->orderByDesc('importado_em')
+      ->orderByDesc('id')
       ->get(['id', 'arquivo', 'importado_em']);
   }
 
@@ -314,7 +323,7 @@ new class extends Component {
       ->get(['id', 'nome', 'cronograma_importacao_id']);
   }
 
-  /** Importação sendo tratada como "tendência" — a selecionada, ou a mais recente. */
+  /** Importação sendo tratada como "tendência" — a selecionada, ou a mais recente (Avanço/Ambos). */
   #[Computed]
   public function importacaoTendenciaAtual(): ?CronogramaImportacao
   {
@@ -323,6 +332,19 @@ new class extends Component {
     }
 
     return $this->importacoesDisponiveis->first();
+  }
+
+  /**
+   * Sem nenhuma importação de Avanço (seção Relatórios → Importar Avanço)
+   * pra esta obra, "Início"/"Término" (tendência) não tem de onde vir —
+   * mostrado como N/A na tabela, em vez de cair silenciosamente pros
+   * campos ao vivo (que na real refletem só a última importação de
+   * QUALQUER tipo, não necessariamente uma de avanço).
+   */
+  #[Computed]
+  public function temImportacaoAvanco(): bool
+  {
+    return $this->importacoesDisponiveis->isNotEmpty();
   }
 
   #[Computed]
@@ -394,11 +416,16 @@ new class extends Component {
 
     $atividades = $query->get();
 
-    // Snapshots só são buscados quando o usuário escolhe uma importação/linha
-    // de base específica (fora do "atual") — no caso padrão, lê direto da
-    // tabela atividades (mais rápido, igual comportamento de antes).
-    $snapshotsTendencia = $this->tendenciaImportacaoId
-      ? AtividadeSnapshot::where('cronograma_importacao_id', $this->tendenciaImportacaoId)
+    // Importação de Avanço efetiva: a escolhida no filtro, ou por padrão a
+    // mais recente elegível (ver importacaoTendenciaAtual() — já filtrada
+    // por tipo Avanço/Ambos). Só busca snapshot quando existe alguma —
+    // sem nenhuma importação de Avanço pra obra, não há de onde vir
+    // "Início"/"Término" (tendência): fica null (exibido como N/A),
+    // nunca cai pros campos ao vivo da Atividade (que podem ter sido só
+    // a última importação de Linha de Base, nunca de Avanço).
+    $tendenciaIdEfetivo = $this->tendenciaImportacaoId ?: $this->importacaoTendenciaAtual?->id;
+    $snapshotsTendencia = $tendenciaIdEfetivo
+      ? AtividadeSnapshot::where('cronograma_importacao_id', $tendenciaIdEfetivo)
         ->whereIn('atividade_id', $atividades->pluck('id'))
         ->get()
         ->keyBy('atividade_id')
@@ -429,14 +456,17 @@ new class extends Component {
       ->addDays($this->janelaDias);
 
     return $atividades
-      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $hoje, $fimJanela) {
-        if ($this->tendenciaImportacaoId) {
+      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $tendenciaIdEfetivo, $hoje, $fimJanela) {
+        if ($tendenciaIdEfetivo) {
           $snap = $snapshotsTendencia->get($at->id);
           $inicioTend = $snap?->inicio_planejado;
           $terminoTend = $snap?->data_termino;
         } else {
-          $inicioTend = $at->inicio_planejado;
-          $terminoTend = $at->data_termino;
+          // Nenhuma importação de Avanço pra obra — nada de onde vir
+          // "tendência" de verdade (ver temImportacaoAvanco()). N/A na
+          // tabela; o filtro de janela abaixo cai pra baseline sozinho.
+          $inicioTend = null;
+          $terminoTend = null;
         }
 
         if ($this->linhaBaseId) {
@@ -448,8 +478,13 @@ new class extends Component {
           $terminoBase = $at->baseline_termino;
         }
 
-        $inicioJanela = $this->fonteData === 'baseline' ? $inicioBase : $inicioTend;
-        $terminoJanela = $this->fonteData === 'baseline' ? $terminoBase : $terminoTend;
+        // Fonte "Tendência" sem nenhuma importação de Avanço disponível:
+        // o filtro de janela cai automaticamente pra Linha de Base (a
+        // única fonte de data que sempre existe) — decisão explícita do
+        // usuário, pra não esconder atividades de obras que nunca
+        // fizeram Importar Avanço. A coluna exibida continua N/A.
+        $inicioJanela = $this->fonteData === 'baseline' ? $inicioBase : ($inicioTend ?? $inicioBase);
+        $terminoJanela = $this->fonteData === 'baseline' ? $terminoBase : ($terminoTend ?? $terminoBase);
 
         // janelaDias = 0 significa "todo o cronograma" — sem filtro de data.
         $dentroDaJanela =
@@ -1150,6 +1185,7 @@ new class extends Component {
       'linhas' => $this->atividades,
       'janelaDias' => $this->janelaDias,
       'fonteData' => $this->fonteData,
+      'temImportacaoAvanco' => $this->temImportacaoAvanco,
     ]);
 
     return response()->streamDownload(
@@ -1161,7 +1197,7 @@ new class extends Component {
   public function exportarExcel()
   {
     return Excel::download(
-      new LookaheadExport($this->atividades),
+      new LookaheadExport($this->atividades, $this->temImportacaoAvanco),
       "lookahead-{$this->obra->id}-{$this->janelaDias}dias.xlsx"
     );
   }
@@ -1178,6 +1214,7 @@ new class extends Component {
       'linhas' => $this->linhasArvore,
       'janelaDias' => $this->janelaDias,
       'fonteData' => $this->fonteData,
+      'temImportacaoAvanco' => $this->temImportacaoAvanco,
     ])->setPaper('a4', $this->orientacaoImpressao);
 
     $this->modalImprimirAberto = false;
@@ -1245,6 +1282,7 @@ new class extends Component {
         </button>
         @foreach ($niveisExistentes as $nv)
         <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                wire:key="nivel-btn-{{ $nv }}"
                 @click="colapsarAteNivel({{ $nv }})">
             Nível {{ $nv + 1 }}+
         </button>
@@ -1310,8 +1348,8 @@ new class extends Component {
                 <td><small>{{ $at->frenteTrabalho?->nome ?? '—' }}</small></td>
                 <td class="text-center"><small>{{ $row['inicioBaseline']?->format('d/m/y') ?? '—' }}</small></td>
                 <td class="text-center"><small>{{ $row['terminoBaseline']?->format('d/m/y') ?? '—' }}</small></td>
-                <td class="text-center"><small>{{ $row['inicioTendencia']?->format('d/m/y') ?? '—' }}</small></td>
-                <td class="text-center"><small>{{ $row['terminoTendencia']?->format('d/m/y') ?? '—' }}</small></td>
+                <td class="text-center"><small>{{ $this->temImportacaoAvanco ? ($row['inicioTendencia']?->format('d/m/y') ?? '—') : 'N/A' }}</small></td>
+                <td class="text-center"><small>{{ $this->temImportacaoAvanco ? ($row['terminoTendencia']?->format('d/m/y') ?? '—') : 'N/A' }}</small></td>
                 <td class="text-center">
                     @php
                         $pctVal = $at->percentual_concluido !== null ? (int) $at->percentual_concluido : null;

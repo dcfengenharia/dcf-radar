@@ -9,8 +9,10 @@ use Maatwebsite\Excel\Concerns\WithMapping;
 
 class LookaheadExport implements FromCollection, WithHeadings, WithMapping
 {
-    public function __construct(private readonly Collection $linhas)
-    {
+    public function __construct(
+        private readonly Collection $linhas,
+        private readonly bool $temImportacaoAvanco = true,
+    ) {
     }
 
     public function collection(): Collection
@@ -41,8 +43,8 @@ class LookaheadExport implements FromCollection, WithHeadings, WithMapping
             $at->frenteTrabalho?->nome ?? '—',
             $linha['inicioBaseline']?->format('d/m/Y') ?? '—',
             $linha['terminoBaseline']?->format('d/m/Y') ?? '—',
-            $linha['inicioTendencia']?->format('d/m/Y') ?? '—',
-            $linha['terminoTendencia']?->format('d/m/Y') ?? '—',
+            $this->temImportacaoAvanco ? ($linha['inicioTendencia']?->format('d/m/Y') ?? '—') : 'N/A',
+            $this->temImportacaoAvanco ? ($linha['terminoTendencia']?->format('d/m/Y') ?? '—') : 'N/A',
             $at->percentual_concluido !== null ? number_format((float) $at->percentual_concluido, 0) . '%' : '—',
             $linha['restricoesBloq'],
             $linha['restricoesNaoBloq'],

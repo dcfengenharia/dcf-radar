@@ -45,8 +45,8 @@
                 <td>{{ $at->frenteTrabalho?->nome ?? '—' }}</td>
                 <td>{{ $linha['inicioBaseline']?->format('d/m/Y') ?? '—' }}</td>
                 <td>{{ $linha['terminoBaseline']?->format('d/m/Y') ?? '—' }}</td>
-                <td>{{ $linha['inicioTendencia']?->format('d/m/Y') ?? '—' }}</td>
-                <td>{{ $linha['terminoTendencia']?->format('d/m/Y') ?? '—' }}</td>
+                <td>{{ $temImportacaoAvanco ? ($linha['inicioTendencia']?->format('d/m/Y') ?? '—') : 'N/A' }}</td>
+                <td>{{ $temImportacaoAvanco ? ($linha['terminoTendencia']?->format('d/m/Y') ?? '—') : 'N/A' }}</td>
                 <td>{{ $at->percentual_concluido !== null ? number_format((float) $at->percentual_concluido, 0) . '%' : '—' }}</td>
                 <td>{{ $linha['restricoesBloq'] }}</td>
                 <td>{{ $linha['restricoesNaoBloq'] }}</td>

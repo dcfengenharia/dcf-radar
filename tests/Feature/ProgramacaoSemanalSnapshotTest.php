@@ -169,6 +169,7 @@ class ProgramacaoSemanalSnapshotTest extends TestCase
             'obra_id' => $this->obra->id,
             'status' => StatusAtividade::Planejado->value,
             'inicio_planejado' => $inicioSemana->copy()->addDays(5),
+            'baseline_inicio' => $inicioSemana->copy()->addDays(5),
         ]);
 
         $this->planoSemanalComponente()
