@@ -435,6 +435,146 @@ ReportComentario (só em reports emitidos). Reaproveita
   motivo alheio ao canal WhatsApp. Fase bloqueada em conta Z-API real
   pra teste de ponta a ponta — testado até aqui só com `Http::fake()`.
 
+## Detalhe da Obra — Gantt do Cronograma
+
+- **Aba "Cronograma" de `⚡obra-detalhe.blade.php`** ganhou um Gantt de
+  verdade com hierarquia expansível/recolhível nativa — **dhtmlxGantt
+  Community (v10, MIT)**, não ApexCharts (tentativa anterior só desenhava
+  barras soltas, sem árvore EAP de verdade nem expandir/recolher — trocado
+  a pedido do usuário). Biblioteca vendorizada como qualquer outro lib do
+  tema: fonte em `resources/assets/vendor/libs/dhtmlx-gantt/`
+  (`dhtmlxgantt.js` + `dhtmlxgantt.scss`, este último é o `.css` original
+  só renomeado — o glob do `webpack.mix.js` só pega `.scss` em
+  `vendor/libs/**`, não `.css` cru), compilada por `npm run production`
+  igual aos demais, carregada só nessa página via `@section('vendor-style'
+  /'vendor-script')` (mesmo padrão *per-page* do Chart.js/ApexCharts).
+  **Antes de trocar por qualquer lib "grátis"**: só a edição Community
+  (pacote npm `dhtmlx-gantt`, license file MIT) serve pra um SaaS fechado
+  — a antiga edição "Standard" da dhtmlx era GPLv2 (copyleft, exigiria
+  abrir o código da aplicação); confirmado lendo o `LICENSE.md` de dentro
+  do pacote antes de vendorizar, não só o campo `license` do `npm view`.
+- **Pacotes viram linha `type=project`, atividades viram `type=task`**
+  (`App\Models\PacoteTrabalho`→`parent_id` mapeado direto pro `parent` do
+  dhtmlx) — o expandir/recolher e a indentação da árvore são 100% nativos
+  da lib (ícone `.gantt_tree_icon`), nada de Alpine/`wire:key` customizado
+  como no Lookahead. Data/duração do pacote = união (mín. início/máx.
+  término) dos próprios descendentes, **calculada em PHP**
+  (`dadosGantt()`), nunca inferida ao vivo pelo dhtmlx — bate exatamente
+  com a Linha de Base gravada. Só entram na árvore pacotes que têm alguma
+  atividade com Linha de Base (direta ou em descendente) — nunca mostra
+  pacote vazio só por existir cadastrado. Datas vêm de
+  `baseline_inicio`/`baseline_termino` (Linha de Base "ao vivo", mesma
+  fonte que o Lookahead usa sem seletor explícito) — nunca
+  `inicio_planejado`/`data_termino` ao vivo, que representam tendência,
+  não a estrutura originalmente importada. Cor da barra por
+  `task.color` nativo do dhtmlx: vermelho (`#ff4d49`) pra
+  `caminho_critico = true`, azul (`#696cff`) pras demais (barras de
+  pacote/projeto usam a cor padrão da lib, não são recoloridas). Teto de
+  1000 atividades (`LIMITE_GANTT`, bem mais folgado que o antigo limite
+  de 200 do ApexCharts — dhtmlx tem scroll virtual nativo e aguenta
+  volume real de projeto) com aviso + link pra Linhas de Base quando a
+  obra tem mais.
+- **Troca de aba não usa `@if` Blade dentro do `@script`** (mesmo gotcha já
+  documentado noutras páginas: `@script` do Livewire roda só uma vez, não
+  reexecuta por request) — `setAba('cronograma')` despacha o evento
+  `cronograma-tab-ativada` com os dados já serializados
+  (`$this->dadosGantt`, formato `{data: [...], links: []}` do dhtmlx), e o
+  JS ouve via `$wire.on(...)`. Como o `<div>` do gráfico está dentro do
+  bloco condicional da aba (some/reaparece do DOM a cada troca), o JS
+  sempre chama `gantt.init(el)` + `gantt.clearAll()` + `gantt.parse(...)`
+  de novo a cada evento — a instância do `gantt` é um singleton global da
+  lib (sem `destroy()` como o ApexCharts), então reinit é o padrão correto
+  pra remontar num container que pode ter mudado.
+- **Escala mensal + seletores de Linha de Base e Tendência** (`⚡obra-
+  detalhe.blade.php`, mesmo componente): `gantt.config.scales` com 2
+  níveis (`year`/`month`, mês em PT-BR via array fixo `mesesPt` — dhtmlx
+  não tem i18n de mês embutido) substituiu a escala diária original —
+  Gantt de cronograma real (meses/anos) nunca precisa granularidade de
+  dia. Dois `<select>` novos (`linhaBaseId`/`tendenciaImportacaoId`,
+  `wire:model.live`) espelham o padrão já usado no Lookahead: sem
+  seleção, Linha de Base é a "ao vivo" (`baseline_inicio`/
+  `baseline_termino` direto da Atividade) e Tendência é a importação de
+  Avanço/Ambos mais recente (`importacoesDisponiveis()`, mesmo filtro por
+  `tipo` de `CurvaAvanco::resolverImportacaoId()`); com uma Linha de Base
+  selecionada, as datas (inclusive as barras) passam a vir do
+  `AtividadeSnapshot` daquela importação, não mais da Atividade ao vivo.
+  `ganttAtividades()` **não filtra mais por baseline no SQL** (removido
+  o `whereNotNull`) — com Linha de Base selecionada, quem decide "tem
+  dado pra mostrar" é a resolução via snapshot dentro de `dadosGantt()`,
+  não mais a query; o card vazio agora checa `empty($this->dadosGantt
+  ['data'])`, nunca `$this->ganttAtividades->isEmpty()`.
+- **Colunas novas na grade** (Início/Término LB, Início/Término Tend.,
+  todas dd/mm/aa via helper JS `formatarDataBR()`). Linha de pacote
+  (`type=project`) nunca mostra Tendência (`task.type === 'project' ?
+  '' : ...` nos templates de coluna) — só a atividade folha tem
+  tendência de verdade. **Achado desta fase — closure presa em config
+  configurada uma única vez**: `gantt.config.columns`/`gantt.templates
+  .tooltip_text` são setados só na PRIMEIRA chamada (dentro do guard
+  `if (!ganttConfigurado)`, prática normal do dhtmlx); qualquer dado que
+  os templates de coluna precisem ler a cada evento (aqui, `ganttData
+  .temTendencia`, pra decidir entre `—`/`N/A`) **não pode vir capturado
+  por closure direto do primeiro disparo** — ficaria congelado no valor
+  da primeira renderização pra sempre, nunca reagindo a troca de filtro
+  depois. Corrigido com uma variável mutável fora do bloco de config
+  (`let temTendenciaAtual`), reatribuída em TODO disparo do evento
+  `cronograma-tab-ativada` — os templates leem essa variável externa,
+  nunca o `ganttData` capturado na definição. Regra geral: em qualquer
+  config de lib configurada uma única vez (guard tipo `if
+  (!xConfigurado)`), nenhum template/callback dela pode capturar dado
+  por closure direto do evento que disparou a config — só variável
+  mutável externa, reatribuída a cada evento.
+- **Segunda barra (Tendência) sobreposta à barra principal (Linha de
+  Base)** — duas tentativas documentadas aqui falharam por serem recurso
+  Pro mesmo na edição MIT/Community vendorizada: (1) `gantt.addTaskLayer()`
+  é literalmente apagado do objeto `gantt` dentro do próprio `init()` —
+  achado inspecionando o `dhtmlxgantt.js` vendorizado com Node fora do
+  browser (`function bo(e){delete e.addTaskLayer,delete
+  e.addLinkLayer}`, chamada logo depois do mixin que registra os dois
+  métodos); (2) "split task" (`render:'split'` no pai + um "filho"
+  sintético com `parent` apontando pra própria atividade) É reconhecido
+  internamente pela lib (`gantt.isSplitTask()`/`task.$split_subtask`
+  batem certinho, inclusive com `gantt.config.open_split_tasks=false`
+  testado), mas nenhum elemento chega a ser desenhado no DOM — mesmo
+  resultado nas duas tentativas: funciona nos bastidores, mas o
+  RENDER visual de uma segunda barra é que é a parte restrita.
+  **Solução que funciona de verdade**: hook no evento público
+  `onGanttRender` (dispara a cada `gantt.render()`/re-parse, sem
+  restrição nenhuma) que remove overlays antigos e, pra cada tarefa
+  visível com `inicio_tend`/`termino_tend`, calcula a geometria via
+  `gantt.getTaskPosition(task)` (barra da Linha de Base) e
+  `gantt.getTaskPosition(task, inicioTend, fimTendExclusivo)` (barra da
+  Tendência) — ambos métodos públicos e sem restrição — e injeta um
+  `<div class="gantt-tendencia-bar">` absoluto direto em
+  `gantt.$task_data` (mesmo elemento-contêiner que o próprio código-
+  fonte do `addTaskLayer` original usa como destino padrão, achado
+  lendo o texto-fonte: `defaultContainer(){if(e.$task_data)return
+  e.$task_data;...}`) — nenhuma API removida/gateada envolvida, só DOM
+  manipulation sobre um container público. `row_height`/`task_height`
+  ajustados (34px/16px) pra sobrar espaço visível abaixo da barra
+  principal pra essa barra fina (6px, amber `#ffab00`) não ficar
+  cortada. Terceiro item na legenda ("Tendência") ao lado de "Linha de
+  Base"/"Linha de Base — Caminho Crítico" já existentes.
+- **Ordem da árvore segue o cronograma importado, não a data de baseline**
+  — achado em QA manual pelo usuário: a primeira versão ordenava
+  `ganttAtividades()` por `orderBy('baseline_inicio')`, então pacotes e
+  atividades apareciam na ordem das datas, não na ordem real do MS
+  Project (ex.: atividade "2.2" com baseline mais cedo aparecia antes da
+  "2.1"). Corrigido reaproveitando o MESMO algoritmo de
+  `⚡linhas-base.blade.php::arvoreAtividades()` (convenção do projeto: um
+  comparador por arquivo, não compartilhado via trait) dentro de
+  `dadosGantt()`: `compararCodigos()` (ordena `codigo`/`codigo_cronograma`
+  segmento a segmento como números — "2" antes de "10", nunca comparação
+  de string crua) pra pacotes-irmãos e `compararOrdemAtividade()`
+  (`ordem_manual` quando definida em AMBOS os lados > `codigo_cronograma`
+  > `inicio_planejado`/nome como último fallback) pra atividades dentro
+  do mesmo pacote, mais a intercalação de nível raiz (pacotes raiz +
+  atividades órfãs COM `codigo_cronograma`, numa única sequência ordenada
+  por código — nunca joga órfãs sempre no fim). `ganttAtividades()` não
+  usa mais `orderBy('baseline_inicio')` (virou `orderBy('id')`, só pra
+  determinismo do teto `LIMITE_GANTT` em EAPs muito grandes) — a ordem
+  visual real é 100% derivada em PHP por esse algoritmo, a ordem de
+  fetch do banco não importa mais.
+
 ## Benchmarking entre obras
 
 - **`⚡benchmarking-obras.blade.php`** (rota `gestao.benchmarking`, slug

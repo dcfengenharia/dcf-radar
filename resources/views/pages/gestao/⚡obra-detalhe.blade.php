@@ -1,9 +1,12 @@
 <?php
 
+use App\Enums\TipoCronogramaImportacao;
 use App\Models\Atividade;
+use App\Models\AtividadeSnapshot;
 use App\Models\Client;
 use App\Models\Convite;
 use App\Models\CronogramaImportacao;
+use App\Models\LinhaBase;
 use App\Models\PacoteTrabalho;
 use App\Models\Perfil;
 use App\Models\Restricao;
@@ -43,6 +46,10 @@ new class extends Component {
     public string  $emailConvite     = '';
     public ?string $perfilConviteId  = null;
 
+    // ---- Gantt do Cronograma ----
+    public ?string $linhaBaseId          = null;
+    public ?string $tendenciaImportacaoId = null;
+
     public function mount(Work $obra): void
     {
         $this->obra = $obra;
@@ -61,6 +68,30 @@ new class extends Component {
     public function setAba(string $aba): void
     {
         $this->abaAtiva = $aba;
+
+        if ($aba === 'cronograma') {
+            $this->dispatch('cronograma-tab-ativada', ganttData: $this->dadosGantt);
+        }
+    }
+
+    // Troca de Linha de Base/Tendência com a aba Cronograma já aberta —
+    // precisa redespachar o mesmo evento do dhtmlxGantt (ver setAba()),
+    // senão o filtro muda o estado mas o Gantt na tela continua com os
+    // dados antigos até a próxima troca de aba.
+    public function updatedLinhaBaseId(): void
+    {
+        unset($this->dadosGantt);
+        if ($this->abaAtiva === 'cronograma') {
+            $this->dispatch('cronograma-tab-ativada', ganttData: $this->dadosGantt);
+        }
+    }
+
+    public function updatedTendenciaImportacaoId(): void
+    {
+        unset($this->dadosGantt);
+        if ($this->abaAtiva === 'cronograma') {
+            $this->dispatch('cronograma-tab-ativada', ganttData: $this->dadosGantt);
+        }
     }
 
     // =========================================================================
@@ -395,6 +426,326 @@ new class extends Component {
     // CRONOGRAMA
     // =========================================================================
 
+    // Teto de atividades no Gantt — dhtmlxGantt tem scroll virtual e aguenta
+    // volume real de projeto; só existe pra evitar um payload patológico.
+    private const LIMITE_GANTT = 1000;
+
+    /**
+     * Importações elegíveis pra "Tendência" — só as que gravam
+     * Realizado/Tendência (seção Relatórios → Importar Avanço), nunca uma
+     * importação Baseline pura. Mesmo filtro por tipo do Lookahead/
+     * `CurvaAvanco::resolverImportacaoId()`.
+     */
+    #[Computed]
+    public function importacoesDisponiveis()
+    {
+        return CronogramaImportacao::where('obra_id', $this->obra->id)
+            ->whereIn('tipo', [TipoCronogramaImportacao::Avanco->value, TipoCronogramaImportacao::Ambos->value])
+            ->orderByDesc('importado_em')
+            ->orderByDesc('id')
+            ->get(['id', 'arquivo', 'importado_em']);
+    }
+
+    #[Computed]
+    public function linhasBaseGantt()
+    {
+        return LinhaBase::where('obra_id', $this->obra->id)
+            ->with('importacao:id,importado_em,arquivo')
+            ->latest()
+            ->get(['id', 'nome', 'cronograma_importacao_id']);
+    }
+
+    /** Importação tratada como "tendência" — a selecionada, ou a mais recente (Avanço/Ambos). */
+    #[Computed]
+    public function importacaoTendenciaAtual(): ?CronogramaImportacao
+    {
+        if ($this->tendenciaImportacaoId) {
+            return $this->importacoesDisponiveis->firstWhere('id', $this->tendenciaImportacaoId);
+        }
+
+        return $this->importacoesDisponiveis->first();
+    }
+
+    #[Computed]
+    public function temImportacaoAvanco(): bool
+    {
+        return $this->importacoesDisponiveis->isNotEmpty();
+    }
+
+    #[Computed]
+    public function linhaBaseSelecionadaGantt(): ?LinhaBase
+    {
+        if (! $this->linhaBaseId) {
+            return null;
+        }
+
+        return $this->linhasBaseGantt->firstWhere('id', $this->linhaBaseId);
+    }
+
+    #[Computed]
+    public function ganttAtividades()
+    {
+        return Atividade::where('obra_id', $this->obra->id)
+            ->where('fora_do_cronograma', false)
+            ->orderBy('id')
+            ->limit(self::LIMITE_GANTT)
+            ->get();
+    }
+
+    /**
+     * Compara dois códigos de EAP (ex: "5.1.10" vs "5.1.3") segmento a
+     * segmento como números — mesmo helper usado no Lookahead/Linhas de
+     * Base (convenção do projeto: um comparador por arquivo, não
+     * compartilhado via trait), pra manter a mesma ordenação em todo o app.
+     */
+    private function compararCodigos(?string $a, ?string $b): int
+    {
+        $a = explode('.', $a ?? '');
+        $b = explode('.', $b ?? '');
+
+        foreach (range(0, max(count($a), count($b)) - 1) as $i) {
+            $x = (int) ($a[$i] ?? 0);
+            $y = (int) ($b[$i] ?? 0);
+            if ($x !== $y) {
+                return $x <=> $y;
+            }
+        }
+
+        return 0;
+    }
+
+    /**
+     * Ordena atividades dentro do mesmo pacote: por ordem_manual quando
+     * definida (mesmo campo usado pra reordenar no Lookahead); senão pelo
+     * código do cronograma (posição original no MS Project — fiel à
+     * sequência importada); só cai pra início planejado e nome quando não
+     * há nem reordenação manual nem código (dado legado ou atividade
+     * manual nunca importada).
+     */
+    private function compararOrdemAtividade(Atividade $a, Atividade $b): int
+    {
+        if ($a->ordem_manual !== null && $b->ordem_manual !== null) {
+            return $a->ordem_manual <=> $b->ordem_manual;
+        }
+        if ($a->ordem_manual !== null) {
+            return -1;
+        }
+        if ($b->ordem_manual !== null) {
+            return 1;
+        }
+
+        if ($a->codigo_cronograma !== null && $b->codigo_cronograma !== null) {
+            return $this->compararCodigos($a->codigo_cronograma, $b->codigo_cronograma);
+        }
+
+        $ia = $a->inicio_planejado?->timestamp ?? PHP_INT_MAX;
+        $ib = $b->inicio_planejado?->timestamp ?? PHP_INT_MAX;
+
+        return $ia !== $ib ? $ia <=> $ib : strcmp($a->nome, $b->nome);
+    }
+
+    /**
+     * Monta a árvore no formato do dhtmlxGantt: pacotes viram linhas
+     * `type=project` (resumo automático do dhtmlx, expandível/recolhível
+     * nativamente) e atividades viram linhas `type=task` penduradas no
+     * pacote via `parent`. As barras seguem a Linha de Base escolhida no
+     * filtro (`linhaBaseId`, ou "ao vivo" sem seleção — mesmo padrão do
+     * Lookahead) — datas do pacote = união (min início/max término) dos
+     * próprios descendentes NESSA seleção, calculada aqui, nunca inferida
+     * ao vivo pelo dhtmlx. Início/Término de Tendência (a importação de
+     * Avanço escolhida em `tendenciaImportacaoId`, ou a mais recente sem
+     * seleção) entram como colunas informativas extras — nunca viram uma
+     * segunda barra (recurso de baseline visual é Pro do dhtmlx).
+     */
+    #[Computed]
+    public function dadosGantt(): array
+    {
+        $atividades = $this->ganttAtividades;
+
+        if ($atividades->isEmpty()) {
+            return ['data' => [], 'links' => [], 'temTendencia' => $this->temImportacaoAvanco];
+        }
+
+        $lb = $this->linhaBaseSelecionadaGantt;
+        $snapshotsBaseline = $lb
+            ? AtividadeSnapshot::where('cronograma_importacao_id', $lb->cronograma_importacao_id)
+                ->whereIn('atividade_id', $atividades->pluck('id'))
+                ->get()->keyBy('atividade_id')
+            : collect();
+
+        $tendenciaIdEfetivo = $this->tendenciaImportacaoId ?: $this->importacaoTendenciaAtual?->id;
+        $snapshotsTendencia = $tendenciaIdEfetivo
+            ? AtividadeSnapshot::where('cronograma_importacao_id', $tendenciaIdEfetivo)
+                ->whereIn('atividade_id', $atividades->pluck('id'))
+                ->get()->keyBy('atividade_id')
+            : collect();
+
+        $datasPorAtividade = [];
+        foreach ($atividades as $at) {
+            if ($lb) {
+                $snapB = $snapshotsBaseline->get($at->id);
+                $inicioBase = $snapB?->baseline_inicio;
+                $terminoBase = $snapB?->baseline_termino;
+            } else {
+                $inicioBase = $at->baseline_inicio;
+                $terminoBase = $at->baseline_termino;
+            }
+
+            if ($tendenciaIdEfetivo) {
+                $snapT = $snapshotsTendencia->get($at->id);
+                $inicioTend = $snapT?->inicio_planejado;
+                $terminoTend = $snapT?->data_termino;
+            } else {
+                $inicioTend = null;
+                $terminoTend = null;
+            }
+
+            $datasPorAtividade[$at->id] = compact('inicioBase', 'terminoBase', 'inicioTend', 'terminoTend');
+        }
+
+        $pacotes = PacoteTrabalho::where('obra_id', $this->obra->id)->get(['id', 'nome', 'codigo', 'parent_id'])->keyBy('id');
+        $atividadesPorPacote = $atividades->groupBy(fn ($at) => $at->pacote_trabalho_id ?? 'sem_pacote');
+
+        // Só entram na árvore atividades com Linha de Base resolvida nessa
+        // seleção (sem isso não há de onde vir a barra) e os pacotes que
+        // têm alguma delas (direta ou em algum descendente) — nunca mostra
+        // pacote vazio só porque existe cadastrado.
+        $pacotesComAtividade = [];
+        foreach ($atividades as $at) {
+            if (! $datasPorAtividade[$at->id]['inicioBase'] || ! $at->pacote_trabalho_id) {
+                continue;
+            }
+            $pacoteId = $at->pacote_trabalho_id;
+            while ($pacoteId && ! isset($pacotesComAtividade[$pacoteId])) {
+                $pacotesComAtividade[$pacoteId] = true;
+                $pacoteId = $pacotes->get($pacoteId)?->parent_id;
+            }
+        }
+
+        $subPacotesPorPai = $pacotes->filter(fn ($p) => isset($pacotesComAtividade[$p->id]))->groupBy('parent_id');
+
+        $intervalos = [];
+        $calcularIntervalo = function ($pacoteId) use (&$calcularIntervalo, &$intervalos, $atividadesPorPacote, $subPacotesPorPai, $datasPorAtividade) {
+            if (array_key_exists($pacoteId, $intervalos)) {
+                return $intervalos[$pacoteId];
+            }
+            $min = null;
+            $max = null;
+            foreach ($atividadesPorPacote->get($pacoteId, collect()) as $at) {
+                $d = $datasPorAtividade[$at->id];
+                if (! $d['inicioBase']) {
+                    continue;
+                }
+                $min = $min === null || $d['inicioBase']->lt($min) ? $d['inicioBase'] : $min;
+                $max = $max === null || $d['terminoBase']->gt($max) ? $d['terminoBase'] : $max;
+            }
+            foreach ($subPacotesPorPai->get($pacoteId, collect()) as $sub) {
+                [$subMin, $subMax] = $calcularIntervalo($sub->id);
+                if ($subMin) {
+                    $min = $min === null || $subMin->lt($min) ? $subMin : $min;
+                    $max = $max === null || $subMax->gt($max) ? $subMax : $max;
+                }
+            }
+            return $intervalos[$pacoteId] = [$min, $max];
+        };
+
+        $linhaAtividade = function (Atividade $at) use ($datasPorAtividade, $pacotesComAtividade) {
+            $d = $datasPorAtividade[$at->id];
+            $pacoteId = $at->pacote_trabalho_id;
+
+            return [
+                'id' => "atividade_{$at->id}",
+                'text' => $at->nome,
+                'type' => 'task',
+                'parent' => ($pacoteId && isset($pacotesComAtividade[$pacoteId])) ? "pacote_{$pacoteId}" : 0,
+                'start_date' => $d['inicioBase']->format('Y-m-d'),
+                'duration' => max(1, $d['inicioBase']->diffInDays($d['terminoBase']) + 1),
+                'termino_lb' => $d['terminoBase']->format('Y-m-d'),
+                'inicio_tend' => $d['inicioTend']?->format('Y-m-d'),
+                'termino_tend' => $d['terminoTend']?->format('Y-m-d'),
+                'progress' => $at->percentual_concluido !== null ? $at->percentual_concluido / 100 : 0,
+                'color' => $at->caminho_critico ? '#ff4d49' : '#696cff',
+            ];
+        };
+
+        $ordenarGrupo = function ($grupo) {
+            return $grupo->sort(fn ($a, $b) => $this->compararOrdemAtividade($a, $b))->values();
+        };
+
+        // Achata a EAP na mesma ordem do MS Project importado — mesmo
+        // algoritmo de `⚡linhas-base.blade.php::arvoreAtividades()`
+        // (convenção do projeto: um comparador por arquivo, não
+        // compartilhado via trait): pacotes-irmãos por `codigo` natural,
+        // atividades dentro do pacote por `ordem_manual`/`codigo_cronograma`,
+        // e intercalação de nível raiz (pacotes raiz + atividades órfãs com
+        // código, na sequência real do cronograma). Sem isso, a ordem virava
+        // a de `baseline_inicio`, nada a ver com a EAP original.
+        $linhas = [];
+
+        $percorrer = function (string $pacoteId) use (&$percorrer, &$linhas, $pacotes, $subPacotesPorPai, $atividadesPorPacote, $calcularIntervalo, $ordenarGrupo, $linhaAtividade) {
+            $pacote = $pacotes->get($pacoteId);
+            [$min, $max] = $calcularIntervalo($pacoteId);
+            if (! $min) {
+                return;
+            }
+
+            $linhas[] = [
+                'id' => "pacote_{$pacote->id}",
+                'text' => trim(($pacote->codigo ? "{$pacote->codigo} · " : '') . $pacote->nome),
+                'type' => 'project',
+                'open' => true,
+                'parent' => $pacote->parent_id ? "pacote_{$pacote->parent_id}" : 0,
+                'start_date' => $min->format('Y-m-d'),
+                'duration' => max(1, $min->diffInDays($max) + 1),
+                'termino_lb' => $max->format('Y-m-d'),
+            ];
+
+            $filhos = $subPacotesPorPai->get($pacoteId, collect())
+                ->sort(fn ($a, $b) => $this->compararCodigos($a->codigo, $b->codigo));
+            foreach ($filhos as $filho) {
+                $percorrer($filho->id);
+            }
+
+            foreach ($ordenarGrupo($atividadesPorPacote->get($pacoteId, collect())) as $at) {
+                $linhas[] = $linhaAtividade($at);
+            }
+        };
+
+        // Nível raiz: intercala pacotes raiz E atividades sem pacote que
+        // tenham código do cronograma, numa única sequência ordenada — em
+        // vez de jogar as órfãs sempre no final (mesmo padrão de
+        // `arvoreAtividades()`).
+        $raizes = $subPacotesPorPai->get(null, collect());
+
+        $orfas = $atividadesPorPacote->get('sem_pacote', collect())
+            ->filter(fn ($at) => $datasPorAtividade[$at->id]['inicioBase']);
+        $orfasComCodigo = $orfas->filter(fn ($at) => $at->codigo_cronograma !== null);
+        $orfasSemCodigo = $orfas->filter(fn ($at) => $at->codigo_cronograma === null);
+
+        $entradasRaiz = collect();
+        foreach ($raizes as $pacote) {
+            $entradasRaiz->push(['codigo' => $pacote->codigo, 'tipo' => 'pacote', 'payload' => $pacote]);
+        }
+        foreach ($orfasComCodigo as $at) {
+            $entradasRaiz->push(['codigo' => $at->codigo_cronograma, 'tipo' => 'atividade', 'payload' => $at]);
+        }
+        $entradasRaiz = $entradasRaiz->sort(fn ($a, $b) => $this->compararCodigos($a['codigo'], $b['codigo']));
+
+        foreach ($entradasRaiz as $entrada) {
+            if ($entrada['tipo'] === 'pacote') {
+                $percorrer($entrada['payload']->id);
+                continue;
+            }
+            $linhas[] = $linhaAtividade($entrada['payload']);
+        }
+
+        foreach ($ordenarGrupo($orfasSemCodigo) as $at) {
+            $linhas[] = $linhaAtividade($at);
+        }
+
+        return ['data' => $linhas, 'links' => [], 'temTendencia' => $this->temImportacaoAvanco];
+    }
+
     #[Computed]
     public function resumoCronograma(): array
     {
@@ -405,6 +756,7 @@ new class extends Component {
                 ->where('fora_do_cronograma', false)
                 ->whereNotNull('baseline_inicio')
                 ->count(),
+            'limiteGantt' => self::LIMITE_GANTT,
         ];
     }
 
@@ -831,7 +1183,7 @@ new class extends Component {
      ABA: CRONOGRAMA
      ========================================================================= --}}
 @if ($abaAtiva === 'cronograma')
-<div class="card">
+<div class="card mb-4">
     <div class="card-body">
         <h5 class="mb-3">Estrutura do Cronograma</h5>
         <div class="row g-3 mb-4">
@@ -852,6 +1204,76 @@ new class extends Component {
         <a href="{{ route('radar.entrar', $obra) }}" class="btn btn-primary">
             <i class="bx bx-cog me-1"></i>Gerenciar cronograma no Radar
         </a>
+        @endif
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+            <h5 class="mb-0">Gantt do Cronograma</h5>
+            <div class="d-flex align-items-center gap-3 small text-muted flex-wrap">
+                <span><span class="d-inline-block rounded-1 me-1" style="width:10px;height:10px;background:#696cff"></span>Linha de Base</span>
+                <span><span class="d-inline-block rounded-1 me-1" style="width:10px;height:10px;background:#ff4d49"></span>Linha de Base — Caminho Crítico</span>
+                <span><span class="d-inline-block rounded-1 me-1" style="width:10px;height:5px;background:#ffab00"></span>Tendência</span>
+            </div>
+        </div>
+
+        <div class="row g-2 mb-3">
+            <div class="col-md-6">
+                <label class="form-label small text-muted mb-1">Linha de Base</label>
+                <select class="form-select form-select-sm" wire:model.live="linhaBaseId">
+                    <option value="">Linha de Base: ao vivo</option>
+                    @foreach ($this->linhasBaseGantt as $linhaBaseOpcao)
+                    <option value="{{ $linhaBaseOpcao->id }}">
+                        {{ $linhaBaseOpcao->nome }} ({{ $linhaBaseOpcao->importacao?->importado_em?->format('d/m/y') }})
+                    </option>
+                    @endforeach
+                </select>
+            </div>
+            <div class="col-md-6">
+                <label class="form-label small text-muted mb-1">Tendência (Avanço)</label>
+                <select class="form-select form-select-sm" wire:model.live="tendenciaImportacaoId">
+                    <option value="">Tendência: mais recente</option>
+                    @foreach ($this->importacoesDisponiveis as $importacaoOpcao)
+                    <option value="{{ $importacaoOpcao->id }}">
+                        {{ $importacaoOpcao->importado_em->format('d/m/y H:i') }} — {{ $importacaoOpcao->arquivo }}
+                    </option>
+                    @endforeach
+                </select>
+            </div>
+        </div>
+
+        @if (empty($this->dadosGantt['data']))
+        <div class="text-center text-muted py-5">
+            <i class="bx bx-bar-chart-alt-2 fs-1 d-block mb-2"></i>
+            Nenhuma atividade com Linha de Base definida ({{ $this->linhaBaseSelecionadaGantt?->nome ?? 'ao vivo' }})
+            nesta obra ainda.
+        </div>
+        @else
+        @if ($this->ganttAtividades->count() >= $this->resumoCronograma['limiteGantt'])
+        <p class="text-muted small">
+            Mostrando as {{ $this->resumoCronograma['limiteGantt'] }} atividades mais antigas (por
+            início da linha de base). Para a árvore EAP completa, veja
+            <a href="{{ route('radar.entrar', $obra) }}">Linhas de Base no Radar</a>.
+        </p>
+        @endif
+        <style>
+            #gantt-cronograma-{{ $obra->id }} { font-size: 12px; }
+            #gantt-cronograma-{{ $obra->id }} .gantt_grid_head_cell,
+            #gantt-cronograma-{{ $obra->id }} .gantt_cell,
+            #gantt-cronograma-{{ $obra->id }} .gantt_tree_content,
+            #gantt-cronograma-{{ $obra->id }} .gantt_scale_cell { font-size: 12px; }
+            #gantt-cronograma-{{ $obra->id }} .gantt-tendencia-bar {
+                position: absolute;
+                height: 6px;
+                border-radius: 3px;
+                background: #ffab00;
+                opacity: 0.9;
+                pointer-events: none;
+            }
+        </style>
+        <div wire:ignore id="gantt-cronograma-{{ $obra->id }}" style="width:100%; height:600px"></div>
         @endif
     </div>
 </div>
@@ -914,6 +1336,128 @@ new class extends Component {
         if (typeof toastr !== 'undefined') {
             toastr.options = { positionClass: 'toast-top-right', timeOut: 4000, closeButton: true, progressBar: true };
             toastr.success(message);
+        }
+    });
+
+    // dd/mm/aa pros 4 campos de data — "start_date" já vira Date nativo
+    // depois do gantt.parse() (governado por date_format), mas os campos
+    // extras (termino_lb/inicio_tend/termino_tend) são strings 'Y-m-d'
+    // cruas vindas do PHP, nunca convertidas pelo dhtmlx — por isso o
+    // helper aceita os dois formatos.
+    function formatarDataBR(valor) {
+        if (! valor) return '—';
+        if (typeof valor === 'string') {
+            const [ano, mes, dia] = valor.split('-');
+            return `${dia}/${mes}/${ano.slice(2)}`;
+        }
+        const dia = String(valor.getDate()).padStart(2, '0');
+        const mes = String(valor.getMonth() + 1).padStart(2, '0');
+        const ano = String(valor.getFullYear()).slice(2);
+        return `${dia}/${mes}/${ano}`;
+    }
+
+    const mesesPt = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+    // As colunas/tooltip são configuradas uma única vez (objetos de função
+    // do dhtmlx, não recriados a cada evento), mas o filtro de Tendência
+    // pode mudar a qualquer momento — por isso `temTendenciaAtual` é uma
+    // variável mutável fora do listener, sempre atualizada no evento, e é
+    // ela (não `ganttData` do primeiro disparo) que os templates capturam
+    // por closure.
+    let temTendenciaAtual = false;
+    function celulaTendencia(valor) {
+        return valor ? formatarDataBR(valor) : (temTendenciaAtual ? '—' : 'N/A');
+    }
+
+    // Cada troca pra aba Cronograma (ou troca de filtro de Linha de Base/
+    // Tendência com a aba já aberta — ver updatedLinhaBaseId()/
+    // updatedTendenciaImportacaoId()) manda os dados via evento (não fica
+    // dentro de uma condicional Blade) — o <div> some/reaparece no DOM a
+    // cada troca de aba, então sempre re-inicializa o dhtmlxGantt (instância
+    // global única `gantt`, sem "destroy" — reinit + clearAll é o padrão da
+    // própria lib pra remontar num container que pode ter mudado).
+    let ganttConfigurado = false;
+    $wire.on('cronograma-tab-ativada', ({ ganttData }) => {
+        const el = document.getElementById('gantt-cronograma-{{ $obra->id }}');
+        if (! el) return;
+
+        temTendenciaAtual = ganttData.temTendencia;
+
+        if (! ganttConfigurado) {
+            gantt.config.readonly = true;
+            gantt.config.date_format = '%Y-%m-%d';
+            gantt.config.scale_height = 36;
+            gantt.config.row_height = 34;
+            gantt.config.task_height = 16;
+            gantt.config.scales = [
+                { unit: 'year', step: 1, format: '%Y' },
+                { unit: 'month', step: 1, template: (date) => mesesPt[date.getMonth()] },
+            ];
+            gantt.config.columns = [
+                { name: 'text', label: 'Tarefa', tree: true, width: 220, resize: true },
+                { name: 'start_date', label: 'Início LB', align: 'center', width: 75, template: (task) => formatarDataBR(task.start_date) },
+                { name: 'termino_lb', label: 'Término LB', align: 'center', width: 75, template: (task) => formatarDataBR(task.termino_lb) },
+                {
+                    name: 'inicio_tend', label: 'Início Tend.', align: 'center', width: 75,
+                    template: (task) => task.type === 'project' ? '' : celulaTendencia(task.inicio_tend),
+                },
+                {
+                    name: 'termino_tend', label: 'Término Tend.', align: 'center', width: 80,
+                    template: (task) => task.type === 'project' ? '' : celulaTendencia(task.termino_tend),
+                },
+            ];
+            gantt.templates.tooltip_text = (start, end, task) => {
+                let html = `<strong>${task.text}</strong><br>Linha de Base: ${formatarDataBR(task.start_date)} — ${formatarDataBR(task.termino_lb)}`;
+                if (task.type !== 'project') {
+                    html += `<br>Tendência: ${celulaTendencia(task.inicio_tend)} — ${celulaTendencia(task.termino_tend)}`;
+                }
+                return html;
+            };
+
+            // Barra de Tendência sobreposta abaixo da barra principal (que
+            // representa a Linha de Base) — duas tentativas anteriores
+            // falharam por serem recurso Pro mesmo na edição MIT/Community:
+            // `gantt.addTaskLayer()` é literalmente apagado do objeto
+            // `gantt` dentro de `init()` (achado inspecionando o
+            // `dhtmlxgantt.js` vendorizado: `function bo(e){delete
+            // e.addTaskLayer,delete e.addLinkLayer}` chamada logo após o
+            // mixin que o registra); "split task" (`render:'split'` + filho
+            // com `parent` apontando pra própria atividade) É reconhecido
+            // internamente (`gantt.isSplitTask()`/`$split_subtask` batem),
+            // mas nenhum elemento chega a ser desenhado no DOM — mesmo com
+            // `open_split_tasks:false`. Funciona sim (e sem exigir mudança
+            // nenhuma no formato dos dados do PHP) via `onGanttRender`
+            // (evento público, dispara a cada render) + `getTaskPosition()`
+            // pra calcular a geometria e injetar um `<div>` absoluto direto
+            // em `gantt.$task_data` (mesmo container que a própria lib usa
+            // como destino padrão do addTaskLayer, achado lendo o código-
+            // fonte) — nenhuma API removida/gateada envolvida.
+            gantt.attachEvent('onGanttRender', function () {
+                const container = gantt.$task_data;
+                if (! container) return;
+                container.querySelectorAll('.gantt-tendencia-bar').forEach((el) => el.remove());
+                gantt.eachTask(function (task) {
+                    if (task.type === 'project' || ! task.inicio_tend || ! task.termino_tend) return;
+                    const inicio = gantt.date.parseDate(task.inicio_tend, '%Y-%m-%d');
+                    const fim = gantt.date.add(gantt.date.parseDate(task.termino_tend, '%Y-%m-%d'), 1, 'day');
+                    const posBase = gantt.getTaskPosition(task);
+                    const posTend = gantt.getTaskPosition(task, inicio, fim);
+                    const el = document.createElement('div');
+                    el.className = 'gantt-tendencia-bar';
+                    el.style.left = posTend.left + 'px';
+                    el.style.width = Math.max(posTend.width, 2) + 'px';
+                    el.style.top = (posBase.top + posBase.height + 1) + 'px';
+                    container.appendChild(el);
+                });
+            });
+
+            ganttConfigurado = true;
+        }
+
+        gantt.init(el);
+        gantt.clearAll();
+        if (ganttData.data.length) {
+            gantt.parse(ganttData);
         }
     });
 </script>
