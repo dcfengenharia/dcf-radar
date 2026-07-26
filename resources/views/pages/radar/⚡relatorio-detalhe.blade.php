@@ -72,6 +72,7 @@ new class extends Component {
             'comentarios.autor:id,first_name,last_name',
             'criador:id,first_name,last_name',
             'emissor:id,first_name,last_name',
+            'indicadoresSemana',
         ]);
 
         $this->tituloEdit = (string) $this->report->titulo;
@@ -176,6 +177,24 @@ new class extends Component {
     public function limiaresAderencia(): array
     {
         return [self::ADERENCIA_LIMIAR_ATENCAO, self::ADERENCIA_LIMIAR_OTIMO];
+    }
+
+    /** Indicadores da semana anterior (previsto×concluído), 1 por categoria, indexados por 'categoria'. */
+    #[Computed]
+    public function indicadoresSemanaAnterior(): \Illuminate\Support\Collection
+    {
+        return $this->report->indicadoresSemana
+            ->where('janela', 'semana_anterior')
+            ->keyBy('categoria');
+    }
+
+    /** Indicadores da próxima semana (só previsto), 1 por categoria, indexados por 'categoria'. */
+    #[Computed]
+    public function indicadoresSemanaProxima(): \Illuminate\Support\Collection
+    {
+        return $this->report->indicadoresSemana
+            ->where('janela', 'semana_proxima')
+            ->keyBy('categoria');
     }
 
     /**
@@ -451,6 +470,37 @@ new class extends Component {
     </div>
 
     {{-- ------------------------------------------------------------------ --}}
+    {{-- Desempenho da Semana Anterior (Restrições/Engenharia/Suprimentos) --}}
+    {{-- ------------------------------------------------------------------ --}}
+    <h6 class="mb-2"><i class="bx bx-history me-1"></i>Desempenho da Semana Anterior</h6>
+    <div class="row mb-2">
+        @include('pages.radar._partials.relatorio-indicadores-semana', [
+            'titulo' => 'Restrições',
+            'icone' => 'bx-shield-quarter',
+            'indicador' => $this->indicadoresSemanaAnterior['restricoes'] ?? null,
+            'colunas' => ['titulo' => 'Restrição', 'responsavel_nome' => 'Responsável', 'status' => 'Status', 'prazo_limite' => 'Prazo'],
+            'colunasData' => ['prazo_limite'],
+            'mensagemVazia' => 'Nenhuma restrição prevista para a semana anterior.',
+        ])
+        @include('pages.radar._partials.relatorio-indicadores-semana', [
+            'titulo' => 'Engenharia',
+            'icone' => 'bx-drafting-compass',
+            'indicador' => $this->indicadoresSemanaAnterior['engenharia'] ?? null,
+            'colunas' => ['codigo' => 'Código', 'descricao' => 'Descrição', 'status' => 'Status', 'data_planejada' => 'Previsto'],
+            'colunasData' => ['data_planejada'],
+            'mensagemVazia' => 'Nenhum documento de engenharia previsto para a semana anterior.',
+        ])
+        @include('pages.radar._partials.relatorio-indicadores-semana', [
+            'titulo' => 'Suprimentos',
+            'icone' => 'bx-package',
+            'indicador' => $this->indicadoresSemanaAnterior['suprimentos'] ?? null,
+            'colunas' => ['nome' => 'Item', 'fornecedor_nome' => 'Fornecedor', 'status' => 'Status', 'data_prevista' => 'Previsto'],
+            'colunasData' => ['data_prevista'],
+            'mensagemVazia' => 'Nenhum item de suprimento previsto para a semana anterior.',
+        ])
+    </div>
+
+    {{-- ------------------------------------------------------------------ --}}
     {{-- Curvas --}}
     {{-- ------------------------------------------------------------------ --}}
     @foreach($report->curvas as $i => $curva)
@@ -635,6 +685,40 @@ new class extends Component {
     @endforeach
 
     {{-- ------------------------------------------------------------------ --}}
+    {{-- Planejamento da Próxima Semana (Restrições/Engenharia/Suprimentos) --}}
+    {{-- ------------------------------------------------------------------ --}}
+    <h6 class="mb-2"><i class="bx bx-calendar-plus me-1"></i>Planejamento da Próxima Semana</h6>
+    <div class="row mb-4">
+        @include('pages.radar._partials.relatorio-indicadores-semana', [
+            'titulo' => 'Restrições',
+            'icone' => 'bx-shield-quarter',
+            'indicador' => $this->indicadoresSemanaProxima['restricoes'] ?? null,
+            'colunas' => ['titulo' => 'Restrição', 'responsavel_nome' => 'Responsável', 'status' => 'Status', 'prazo_limite' => 'Prazo'],
+            'colunasData' => ['prazo_limite'],
+            'mensagemVazia' => 'Nenhuma restrição prevista para a próxima semana.',
+            'mostrarConcluido' => false,
+        ])
+        @include('pages.radar._partials.relatorio-indicadores-semana', [
+            'titulo' => 'Engenharia',
+            'icone' => 'bx-drafting-compass',
+            'indicador' => $this->indicadoresSemanaProxima['engenharia'] ?? null,
+            'colunas' => ['codigo' => 'Código', 'descricao' => 'Descrição', 'disciplina_nome' => 'Disciplina', 'data_planejada' => 'Previsto'],
+            'colunasData' => ['data_planejada'],
+            'mensagemVazia' => 'Nenhum documento de engenharia previsto para a próxima semana.',
+            'mostrarConcluido' => false,
+        ])
+        @include('pages.radar._partials.relatorio-indicadores-semana', [
+            'titulo' => 'Suprimentos',
+            'icone' => 'bx-package',
+            'indicador' => $this->indicadoresSemanaProxima['suprimentos'] ?? null,
+            'colunas' => ['nome' => 'Item', 'fornecedor_nome' => 'Fornecedor', 'status' => 'Status', 'data_prevista' => 'Previsto'],
+            'colunasData' => ['data_prevista'],
+            'mensagemVazia' => 'Nenhum item de suprimento previsto para a próxima semana.',
+            'mostrarConcluido' => false,
+        ])
+    </div>
+
+    {{-- ------------------------------------------------------------------ --}}
     {{-- Galeria de fotos --}}
     {{-- ------------------------------------------------------------------ --}}
     <div class="card mb-4">
@@ -793,7 +877,6 @@ new class extends Component {
                     datasets: cfg.construirDatasets(curva[gran].barras, curva[gran].linhas),
                 },
                 options: cfg.opcoesDuploEixo(),
-                plugins: [cfg.pluginRotulosDados],
             });
         });
 

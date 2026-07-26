@@ -1214,7 +1214,6 @@ new class extends Component {
                 ],
             },
             options: opcoes,
-            plugins: [cfg.pluginRotulosDados],
         });
     }
 

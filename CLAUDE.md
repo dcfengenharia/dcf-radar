@@ -802,6 +802,107 @@ ReportComentario (só em reports emitidos). Reaproveita
   `wire:key` amarrado ao CONTEÚDO dessa lista, senão o estado sobrevive
   a trocas de dados que deveriam invalidá-lo.
 
+## Report Semanal — correção de emissão + indicadores de Restrições/Engenharia/Suprimentos
+
+- **Bug de emissão corrigido**: `Report::emitir()` chamava
+  `Notification::send($destinatarios, new ReportEmitidoNotification(...))`
+  fora de qualquer try/catch — como a notification implementa
+  `ShouldQueue`, `Notification::send()` já dispara o push pra fila
+  DENTRO da própria requisição HTTP; só o PROCESSAMENTO do canal
+  (mail/database/broadcast) acontece depois, no worker. Investigação
+  encontrou um defeito real e reproduzível nesse processamento
+  assíncrono: `ReportEmitidoNotification` usa o canal `broadcast`, e o
+  worker (rodando dentro do container) tenta falar com o Reverb via
+  `localhost:8080` — hostname que só resolve pro Reverb a partir do
+  NAVEGADOR (JS), nunca de dentro da rede Docker (precisaria ser
+  `reverb:8080`). Isso derruba o job silenciosamente
+  (`Illuminate\Broadcasting\BroadcastException`, visível em
+  `failed_jobs`), nunca como erro explícito na tela — **não foi possível
+  reproduzir ao vivo um erro síncrono na tela só clicando em "Emitir"**
+  (testado com Redis acessível e 2+ usuários na obra, sem exception
+  nenhuma na resposta HTTP). Mesmo sem confirmar 100% que essa é a causa
+  exata do sintoma original relatado, a correção aplicada cobre
+  qualquer falha de infraestrutura de fila/broadcast: `Notification::
+  send(...)` agora vive dentro de um `try/catch (\Throwable $e) {
+  report($e); }` em `Report::emitir()` — a transição de status
+  (`update([...])`, sempre ANTES do bloco de notificação) nunca mais
+  fica refém de uma falha nesse efeito colateral. **Ponto de atenção
+  em aberto**: se o sintoma original persistir, o próximo passo é
+  corrigir a configuração do Reverb pro worker resolver o host correto
+  (`REVERB_HOST`/broadcasting config), não mais o código de `emitir()`.
+- **`report_indicadores_semana`** (`App\Models\ReportIndicadorSemana`,
+  `BelongsToTenant`, `belongsTo(Report::class)`): tabela genérica (uma
+  linha por `categoria` × `janela`, não 3 tabelas dedicadas — mesmo
+  espírito de `report_curva_datapoints`) que grava os indicadores de
+  Restrições/Engenharia/Suprimentos da semana anterior e da próxima
+  semana, relativos ao `periodo_referencia` do Report. Mesma filosofia
+  de fotografia do resto do Report: `ReportGerador::
+  gerarIndicadoresSemana()` (chamado dentro da mesma transação de
+  `gerarRascunho()`, logo após o loop de curvas) calcula e grava UMA
+  ÚNICA VEZ — nada num Report já criado volta a consultar
+  Restricao/DocumentoEngenharia/ItemSuprimento ao vivo depois (ex.:
+  resolver uma restrição depois do report gerado não muda o indicador
+  já gravado). `janela` = `semana_anterior` (previsto × concluído,
+  `total_concluido` sempre preenchido) ou `semana_proxima` (só previsto,
+  `total_concluido` sempre `null` — não é possível "concluir" algo que
+  ainda não aconteceu). `detalhes` (json) grava as linhas individuais já
+  formatadas pra exibição (nomes/status como STRING congelada, nunca
+  FK viva). Datas de janela SEMPRE derivadas de `periodo_referencia`
+  (`->copy()->subWeek()`/`->addWeek()`), nunca de `now()` — mesmo report
+  reaberto meses depois mostra a mesma janela relativa de sempre.
+  Critério de "concluída" em Restrições da semana anterior: resolvida
+  **dentro do prazo** (`resolvida_em <= prazo_limite`) — mesmo critério
+  já usado em `ppcPorSemana()` (`⚡relatorios-restricoes.blade.php`). Em
+  Suprimentos, "previsto"/"realizado" usam a data da **última etapa** de
+  cada item (`$item->etapas->last()`), por ser o que é efetivamente
+  comparável entre as duas séries. Cada uma das 6 combinações
+  categoria×janela grava uma linha SEMPRE, mesmo com `total_previsto=0`
+  e `detalhes=[]` — é o que permite a view distinguir "sem dado" (mostra
+  mensagem amigável) de "não gerado ainda" (reports antigos, gerados
+  antes desta feature, não têm nenhuma linha em `indicadoresSemana` —
+  o mesmo `?? null` no Blade cai pro mesmo estado vazio, então reports
+  legados continuam abrindo normalmente).
+- **View**: partial compartilhado `resources/views/pages/radar/
+  _partials/relatorio-indicadores-semana.blade.php` (incluído via
+  `@include`, não Blade component — convenção já usada por
+  `relatorio-tabela-curva`/`relatorio-grafico-config` neste mesmo
+  diretório), reaproveitado 6x em `⚡relatorio-detalhe.blade.php`: bloco
+  "Desempenho da Semana Anterior" logo após o aviso de precisão do XML
+  e antes do `@foreach` de curvas; bloco "Planejamento da Próxima
+  Semana" logo depois do `@endforeach`, antes da Galeria de Fotos — os
+  cards de curva existentes ficam 100% intocados no meio dos dois
+  blocos novos (decisão de risco mínimo). Duas propriedades
+  `#[Computed]` novas no componente (`indicadoresSemanaAnterior()`/
+  `indicadoresSemanaProxima()`) indexam `$report->indicadoresSemana` por
+  `categoria` pra lookup direto no Blade. **Achado desta fase**:
+  `ReportGerador::gerarIndicadorRestricoes()` tentava exibir o pilar Lean
+  da restrição via `$r->categoria->pilar_lean->label()` — mas
+  `App\Enums\PilarLean` nunca teve método `label()` (só `StatusRestricao`/
+  `StatusDocumento` têm). Corrigido duplicando o mesmo `labelPilar()`
+  (match expression) já usado em `⚡dashboard.blade.php`/
+  `⚡benchmarking-obras.blade.php`/`⚡relatorios-restricoes.blade.php` —
+  mesma convenção do projeto de não compartilhar via trait. Não pego
+  pelos testes automatizados porque o teste unitário não setava
+  `categoria_id` na Restrição (o operador `?->` engolia o erro em
+  silêncio); só apareceu testando com dado realista no browser — reforça
+  a prática de QA manual mesmo com suíte verde.
+- **Rótulos de dados removidos dos gráficos**: o plugin próprio
+  `pluginRotulosDados` (`resources/views/pages/radar/_partials/
+  relatorio-grafico-config.blade.php`) desenhava um balão branco com o
+  valor (`${valor}%`) sobre cada barra/ponto do gráfico de eixo duplo
+  "Curva S" — removido por completo (junto do helper
+  `desenharRetanguloArredondado()` que ele usava), assim como o registro
+  `plugins: [cfg.pluginRotulosDados]` nas 2 chamadas `new Chart(...)`
+  de `⚡relatorio-detalhe.blade.php`/`⚡relatorio-novo.blade.php` e numa
+  TERCEIRA já existente em `⚡curvas.blade.php` (página "Curvas S", achado
+  via grep depois de apagar o plugin compartilhado — não fazia parte do
+  pedido original, mas precisava ser corrigido pra não quebrar aquela
+  página). Título, legenda, eixos com escala/unidade e o tooltip nativo
+  do Chart.js continuam intactos — só o rótulo fixo sobre o gráfico
+  saiu. O velocímetro de aderência NÃO foi tocado
+  (`pluginAgulha`/`pluginTextoCentral` continuam — são a agulha e o
+  readout central do próprio gauge, não rótulo por ponto de dado).
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:
@@ -863,6 +964,66 @@ Rode `php artisan test` antes de considerar qualquer tarefa concluída.
   duas árvores foram reconciliadas em 2026-07-20 (pequenas divergências
   de UI que existiam só num lado ou só no outro); a partir daqui, manter
   as duas em sincronia a cada mudança.
+
+## Suporte e Feedback (fase de testes)
+
+- **Canal de feedback interno** — tabela `feedbacks` (ULID, `tenant_id`
+  cascade, `user_id` restrict — mesma política de FK de autoria por
+  LGPD de sempre), enum `App\Enums\TipoFeedback` (`erro`|`melhoria`|
+  `critica`, com `label()`). `App\Models\Feedback` declara `tenant()` e
+  `user()` explicitamente — `BelongsToTenant` só dá o scope + auto-stamp
+  de `tenant_id`, nunca a relação em si.
+- **Dois pontos de entrada, um único popup**: o link "Suporte" no
+  rodapé (substituiu o link externo antigo do tema, `config('variables
+  .support')` ficou órfão de propósito) e o alerta "Sistema em testes"
+  na navbar (irmão do bloco do seletor de Empresa Ativa, fora do
+  `@if(!isset($hideEmpresaSwitcher))` — por isso aparece também em
+  `/admin`) chamam o MESMO componente Livewire persistido
+  (`resources/views/components/suporte/⚡popup.blade.php`,
+  `@persist('suporte-popup')` em `contentNavbarLayout.blade.php` e
+  `layoutAdmin.blade.php`) via `Livewire.dispatch('abrir-suporte',
+  { url: window.location.href })` — nenhum dos dois pontos precisa
+  estar dentro da árvore do componente.
+- **Achado desta fase — `$wire.on()` não recebe `Livewire.dispatch()`
+  disparado de FORA de qualquer componente**: só um listener `Livewire
+  .on()` (global, não scoped) recebe esse tipo de dispatch "anônimo".
+  `$wire.on()` (dentro do `@script` do próprio componente) só recebe
+  eventos disparados PARA aquele componente especificamente — o que já
+  funciona hoje para `fechar-modal-suporte`/`show-toast`, disparados
+  pelo próprio backend via `$this->dispatch()` dentro de `enviar()`.
+  Confirmado inspecionando o bundle vendorizado do Livewire (`effects
+  .scripts` só é processado uma vez, na hidratação inicial via
+  `processEffects()` no construtor do componente — depois disso, um
+  dispatch global de fora não acorda um `$wire.on()`, só um `Livewire
+  .on()` de verdade). Regra geral pro projeto: abrir um componente
+  persistido a partir de FORA da sua árvore (footer, navbar, qualquer
+  `onclick` solto) precisa de `Livewire.on(...)`, nunca `$wire.on(...)`.
+- **Dados capturados automaticamente** (usuário nunca preenche à mão):
+  tenant via `TenantContext::currentId()`, usuário via `Auth::id()`,
+  URL de origem capturada no clique (`window.location.href`) e enviada
+  pro backend via `abrir(string $url)` (chamado no mesmo listener que
+  abre o modal), timestamp via `created_at` de sempre.
+- **Dois e-mails, dois propósitos**: `NovoFeedbackNotification` pra
+  `contato@dcf.eng.br` (fixo, via `Notification::route('mail', ...)`,
+  mesmo padrão de `ConviteObraNotification`) com tipo/mensagem/usuário/
+  tenant/data/URL — informação técnica que só a equipe vê;
+  `AgradecimentoFeedbackNotification` pro próprio usuário (`Auth::user()
+  ->notify(...)`), tom amigável, sem prometer prazo/implementação, sem
+  nenhum dado técnico interno.
+- **Rate limit** (`RateLimiter`, chave `"enviar-feedback:".Auth::id()`,
+  5 tentativas/300s, mesmo padrão de `enviar-convite`) + validação via
+  `rules()` (`Rule::in()` sobre os valores do enum — sem precedente de
+  `Rule::enum()` no projeto, mantido o estilo já usado em todo lugar) +
+  `ExecutaComTransacaoSegura` (falha preserva a mensagem digitada, nunca
+  reseta o formulário nem confirma sucesso; toast de erro já é
+  automático do trait).
+- **Sem histórico/status/gamificação nesta fase** (decisão do usuário,
+  registrada pra não reinventar depois): a tabela já grava tudo que uma
+  evolução futura precisaria (tenant/usuário/tipo/mensagem/data), mas
+  não existe tela de acompanhamento, pontuação ou ranking — só o canal
+  de envio em si.
+- `feedbacks` entra em `App\Actions\ExportUserData::gerar()` (regra já
+  documentada acima pra toda tabela nova com FK de autoria pra `users`).
 
 ## Como trabalhar neste repositório
 

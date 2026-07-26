@@ -73,11 +73,8 @@
             return {
                 responsive: true,
                 maintainAspectRatio: false,
-                // Espaço reservado pra o balão do rótulo de dados (pluginRotulosDados)
-                // não ser cortado pela borda do canvas quando o ponto/barra está
-                // perto do topo (ex: % acumulado em 100%).
                 layout: {
-                    padding: { top: 28, right: 8 },
+                    padding: { top: 8, right: 8 },
                 },
                 interaction: { mode: 'index', intersect: false },
                 scales: {
@@ -177,85 +174,6 @@
                 ctx.fillStyle = '#37424a';
                 ctx.fill();
                 ctx.restore();
-            },
-        },
-
-        /** Caminho de retângulo arredondado — usado só pelo fundo do rótulo
-         *  de dados abaixo (ctx.roundRect nativo não está disponível em
-         *  todos os navegadores ainda, então desenha o caminho na mão). */
-        desenharRetanguloArredondado(ctx, x, y, largura, altura, raio) {
-            ctx.beginPath();
-            ctx.moveTo(x + raio, y);
-            ctx.lineTo(x + largura - raio, y);
-            ctx.quadraticCurveTo(x + largura, y, x + largura, y + raio);
-            ctx.lineTo(x + largura, y + altura - raio);
-            ctx.quadraticCurveTo(x + largura, y + altura, x + largura - raio, y + altura);
-            ctx.lineTo(x + raio, y + altura);
-            ctx.quadraticCurveTo(x, y + altura, x, y + altura - raio);
-            ctx.lineTo(x, y + raio);
-            ctx.quadraticCurveTo(x, y, x + raio, y);
-            ctx.closePath();
-        },
-
-        /**
-         * Rótulo de dados (%) em cima de cada barra e de cada ponto de
-         * linha do gráfico de eixo duplo — Chart.js não traz isso nativo,
-         * e o projeto não vendoriza chartjs-plugin-datalabels, então é um
-         * plugin inline simples (mesmo padrão de pluginAgulha/
-         * pluginTextoCentral abaixo). Pula valores null (períodos sem
-         * dado — gaps de barra ou de linha antes do primeiro ponto real).
-         * Cada rótulo ganha um "balão" branco com borda cinza atrás do
-         * texto, pra ficar legível mesmo em cima de barras/linhas coloridas.
-         */
-        pluginRotulosDados: {
-            id: 'rotulosDados',
-            afterDatasetsDraw(chart) {
-                const { ctx } = chart;
-                const cfg = window.RelatorioGraficoConfig;
-                const alturaFonte = 10;
-                const paddingH = 4;
-                const paddingV = 2;
-                const raio = 4;
-
-                chart.data.datasets.forEach((dataset, datasetIndex) => {
-                    const meta = chart.getDatasetMeta(datasetIndex);
-                    if (meta.hidden) return;
-
-                    ctx.save();
-                    ctx.font = `${alturaFonte}px sans-serif`;
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-
-                    meta.data.forEach((elemento, index) => {
-                        const valor = dataset.data[index];
-                        if (valor === null || valor === undefined) return;
-
-                        // Linha fica mais alta (acima do ponto) que a barra
-                        // (logo acima do topo), pra não colidir quando os
-                        // dois desenham no mesmo período.
-                        const deslocamento = dataset.type === 'line' ? 12 : 6;
-                        const texto = `${valor}%`;
-                        const x = elemento.x;
-                        const y = elemento.y - deslocamento;
-
-                        const larguraBalao = ctx.measureText(texto).width + paddingH * 2;
-                        const alturaBalao = alturaFonte + paddingV * 2;
-
-                        cfg.desenharRetanguloArredondado(
-                            ctx, x - larguraBalao / 2, y - alturaBalao / 2, larguraBalao, alturaBalao, raio
-                        );
-                        ctx.fillStyle = '#fff';
-                        ctx.fill();
-                        ctx.strokeStyle = '#d9dee3';
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
-
-                        ctx.fillStyle = '#566a7f';
-                        ctx.fillText(texto, x, y);
-                    });
-
-                    ctx.restore();
-                });
             },
         },
 

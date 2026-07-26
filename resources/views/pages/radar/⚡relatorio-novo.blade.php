@@ -768,7 +768,6 @@ new class extends Component {
                 datasets: cfg.construirDatasets(dados.barras, dados.linhas),
             },
             options: cfg.opcoesDuploEixo(),
-            plugins: [cfg.pluginRotulosDados],
         });
     };
 

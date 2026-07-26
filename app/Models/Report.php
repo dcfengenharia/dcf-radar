@@ -95,6 +95,11 @@ class Report extends Model
         return $this->hasMany(ReportComentario::class)->latest();
     }
 
+    public function indicadoresSemana(): HasMany
+    {
+        return $this->hasMany(ReportIndicadorSemana::class);
+    }
+
     public function estaRascunho(): bool
     {
         return $this->status === StatusReport::Rascunho;
@@ -124,7 +129,16 @@ class Report extends Model
             ->get();
 
         if ($destinatarios->isNotEmpty()) {
-            Notification::send($destinatarios, new ReportEmitidoNotification($this, $usuario));
+            // Notificar os demais usuários é efeito colateral, não o efeito
+            // principal desta ação — uma falha de infraestrutura (fila/
+            // broadcast indisponível) nunca pode impedir a emissão de valer,
+            // já que o status já foi transicionado acima. Best-effort: loga
+            // e segue.
+            try {
+                Notification::send($destinatarios, new ReportEmitidoNotification($this, $usuario));
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
     }
 

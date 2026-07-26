@@ -9,6 +9,7 @@ use App\Models\AtividadeItemProntidao;
 use App\Models\Client;
 use App\Models\DocumentoEngenharia;
 use App\Models\DocumentoEngenhariaReprogramacao;
+use App\Models\Feedback;
 use App\Models\Feriado;
 use App\Models\FluxoSuprimento;
 use App\Models\Fornecedor;
@@ -17,6 +18,8 @@ use App\Models\ItemSuprimento;
 use App\Models\Plano;
 use App\Models\ProgramacaoSemanal;
 use App\Models\ProgramacaoSemanalItem;
+use App\Models\Report;
+use App\Models\ReportIndicadorSemana;
 use App\Models\Restricao;
 use App\Models\Tenant;
 use App\Models\User;
@@ -390,5 +393,49 @@ class TenantIsolationTest extends TestCase
         $assinaturasFiltradas = Assinatura::where('tenant_id', $tenantA->id)->pluck('id');
         $this->assertContains($assinaturaA->id, $assinaturasFiltradas);
         $this->assertNotContains($assinaturaB->id, $assinaturasFiltradas);
+    }
+
+    public function test_feedback_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $feedbackB = Feedback::create([
+            'tenant_id' => $tenantB->id,
+            'user_id' => $userB->id,
+            'tipo' => 'erro',
+            'mensagem' => 'Mensagem do tenant B',
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(Feedback::find($feedbackB->id));
+    }
+
+    public function test_report_indicador_semana_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $importacaoB = \App\Models\CronogramaImportacao::create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+            'data_status' => now(),
+            'importado_em' => now(),
+        ]);
+        $reportB = Report::factory()->create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+            'cronograma_importacao_id' => $importacaoB->id,
+        ]);
+        $indicadorB = ReportIndicadorSemana::factory()->create([
+            'tenant_id' => $tenantB->id,
+            'report_id' => $reportB->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(ReportIndicadorSemana::find($indicadorB->id));
     }
 }

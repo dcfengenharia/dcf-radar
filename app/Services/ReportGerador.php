@@ -3,17 +3,23 @@
 namespace App\Services;
 
 use App\Enums\GranularidadePeriodo;
+use App\Enums\PilarLean;
 use App\Enums\SerieAvanco;
 use App\Enums\StatusAtividade;
+use App\Enums\StatusRestricao;
 use App\Enums\TipoCronogramaImportacao;
 use App\Models\Atividade;
 use App\Models\AvancoPeriodo;
 use App\Models\CronogramaImportacao;
+use App\Models\DocumentoEngenharia;
+use App\Models\ItemSuprimento;
 use App\Models\LinhaBase;
 use App\Models\PacoteTrabalho;
 use App\Models\Report;
 use App\Models\ReportCurva;
 use App\Models\ReportDesvio;
+use App\Models\ReportIndicadorSemana;
+use App\Models\Restricao;
 use App\Models\User;
 use App\Models\Work;
 use Illuminate\Support\Carbon;
@@ -112,13 +118,168 @@ class ReportGerador
                 $this->gerarCurva($report, $obra, $dadosCurva, $periodoReferencia, $linhaBaseId, $avancoImportacaoId, $dataStatus);
             }
 
-            return $report->fresh(['curvas.datapoints', 'curvas.desvios', 'curvas.pontosAtencao']);
+            $this->gerarIndicadoresSemana($report, $obra, $periodoReferencia);
+
+            return $report->fresh(['curvas.datapoints', 'curvas.desvios', 'curvas.pontosAtencao', 'indicadoresSemana']);
         });
     }
 
     public function emitir(Report $report, User $usuario): void
     {
         $report->emitir($usuario);
+    }
+
+    // =========================================================================
+    // Indicadores de Restrições/Engenharia/Suprimentos — semana anterior e
+    // próxima semana, relativas ao periodo_referencia. Mesma filosofia de
+    // fotografia do resto do report: calculado uma vez aqui, gravado em
+    // ReportIndicadorSemana, nunca recalculado depois.
+    // =========================================================================
+
+    private function gerarIndicadoresSemana(Report $report, Work $obra, Carbon $periodoReferencia): void
+    {
+        $semanaAnteriorInicio = $periodoReferencia->copy()->subWeek();
+        $semanaAnteriorFim = $semanaAnteriorInicio->copy()->endOfWeek();
+        $semanaProximaInicio = $periodoReferencia->copy()->addWeek();
+        $semanaProximaFim = $semanaProximaInicio->copy()->endOfWeek();
+
+        $this->gerarIndicadorRestricoes($report, $obra, $semanaAnteriorInicio, $semanaAnteriorFim, 'semana_anterior');
+        $this->gerarIndicadorRestricoes($report, $obra, $semanaProximaInicio, $semanaProximaFim, 'semana_proxima');
+
+        $this->gerarIndicadorEngenharia($report, $obra, $semanaAnteriorInicio, $semanaAnteriorFim, 'semana_anterior');
+        $this->gerarIndicadorEngenharia($report, $obra, $semanaProximaInicio, $semanaProximaFim, 'semana_proxima');
+
+        $this->gerarIndicadorSuprimentos($report, $obra, $semanaAnteriorInicio, $semanaAnteriorFim, 'semana_anterior');
+        $this->gerarIndicadorSuprimentos($report, $obra, $semanaProximaInicio, $semanaProximaFim, 'semana_proxima');
+    }
+
+    private function gerarIndicadorRestricoes(Report $report, Work $obra, Carbon $inicio, Carbon $fim, string $janela): void
+    {
+        $restricoes = Restricao::whereHas('atividade', fn ($q) => $q->where('obra_id', $obra->id))
+            ->whereBetween('prazo_limite', [$inicio->toDateString(), $fim->toDateString()])
+            ->with(['categoria', 'responsavel'])
+            ->get();
+
+        $totalConcluido = $janela === 'semana_anterior'
+            ? $restricoes->filter(fn (Restricao $r) => $r->status === StatusRestricao::Resolvida
+                && $r->resolvida_em !== null
+                && $r->resolvida_em->lessThanOrEqualTo($r->prazo_limite))->count()
+            : null;
+
+        $detalhes = $restricoes->map(fn (Restricao $r) => [
+            'titulo' => $r->descricao,
+            'categoria_nome' => $r->categoria?->nome,
+            'pilar_lean' => $r->categoria?->pilar_lean ? $this->labelPilar($r->categoria->pilar_lean) : null,
+            'responsavel_nome' => $r->responsavel ? trim("{$r->responsavel->first_name} {$r->responsavel->last_name}") : null,
+            'status' => $r->status->label(),
+            'prazo_limite' => $r->prazo_limite?->toDateString(),
+            'resolvida_em' => $r->resolvida_em?->toDateString(),
+        ])->values()->all();
+
+        ReportIndicadorSemana::create([
+            'report_id' => $report->id,
+            'categoria' => 'restricoes',
+            'janela' => $janela,
+            'periodo_inicio' => $inicio->toDateString(),
+            'periodo_fim' => $fim->toDateString(),
+            'total_previsto' => $restricoes->count(),
+            'total_concluido' => $totalConcluido,
+            'detalhes' => $detalhes,
+        ]);
+    }
+
+    /** Mesmo idioma de labelPilar() já duplicado em várias telas (Dashboard, Benchmarking, Relatórios de Restrições) — convenção do projeto de não compartilhar via trait. */
+    private function labelPilar(PilarLean $pilar): string
+    {
+        return match ($pilar) {
+            PilarLean::Materiais => 'Materiais',
+            PilarLean::MaoDeObra => 'Mão de Obra',
+            PilarLean::Equipamentos => 'Equipamentos',
+            PilarLean::Informacoes => 'Informações',
+            PilarLean::CondicoesPrecedentes => 'Condições Precedentes',
+        };
+    }
+
+    private function gerarIndicadorEngenharia(Report $report, Work $obra, Carbon $inicio, Carbon $fim, string $janela): void
+    {
+        $documentos = DocumentoEngenharia::where('obra_id', $obra->id)
+            ->whereBetween('data_planejada', [$inicio->toDateString(), $fim->toDateString()])
+            ->with(['disciplina', 'latestRevisao.statusDocumento', 'primeiraRevisao'])
+            ->get();
+
+        if ($janela === 'semana_proxima') {
+            $documentos = $documentos->reject(fn (DocumentoEngenharia $d) => $d->estaEmitido());
+        }
+
+        $totalConcluido = $janela === 'semana_anterior'
+            ? $documentos->filter(fn (DocumentoEngenharia $d) => (bool) $d->statusAtual()?->conclusivo)->count()
+            : null;
+
+        $detalhes = $documentos->map(fn (DocumentoEngenharia $d) => [
+            'codigo' => $d->codigo,
+            'descricao' => $d->descricao,
+            'disciplina_nome' => $d->disciplina?->nome,
+            'data_planejada' => $d->data_planejada?->toDateString(),
+            'data_emissao' => $d->dataEmissaoReal()?->toDateString(),
+            'status' => $d->statusAtual()?->nome ?? 'Não Emitido',
+        ])->values()->all();
+
+        ReportIndicadorSemana::create([
+            'report_id' => $report->id,
+            'categoria' => 'engenharia',
+            'janela' => $janela,
+            'periodo_inicio' => $inicio->toDateString(),
+            'periodo_fim' => $fim->toDateString(),
+            'total_previsto' => $documentos->count(),
+            'total_concluido' => $totalConcluido,
+            'detalhes' => $detalhes,
+        ]);
+    }
+
+    private function gerarIndicadorSuprimentos(Report $report, Work $obra, Carbon $inicio, Carbon $fim, string $janela): void
+    {
+        $itens = ItemSuprimento::where('obra_id', $obra->id)
+            ->with(['etapas.datas', 'fornecedor'])
+            ->get()
+            ->filter(function (ItemSuprimento $item) use ($inicio, $fim) {
+                $ultimaEtapa = $item->etapas->last();
+                $previsto = $ultimaEtapa?->previsto()?->data;
+
+                return $previsto !== null && $previsto->betweenIncluded($inicio, $fim);
+            })
+            ->values();
+
+        $totalConcluido = $janela === 'semana_anterior'
+            ? $itens->filter(function (ItemSuprimento $item) use ($inicio, $fim) {
+                $realizado = $item->etapas->last()?->realizado()?->data;
+
+                return $realizado !== null && $realizado->betweenIncluded($inicio, $fim);
+            })->count()
+            : null;
+
+        $detalhes = $itens->map(function (ItemSuprimento $item) {
+            $ultimaEtapa = $item->etapas->last();
+
+            return [
+                'nome' => $item->nome,
+                'codigo' => $item->codigo,
+                'fornecedor_nome' => $item->fornecedor?->nome,
+                'data_prevista' => $ultimaEtapa?->previsto()?->data?->toDateString(),
+                'data_realizada' => $ultimaEtapa?->realizado()?->data?->toDateString(),
+                'status' => $item->status->label(),
+            ];
+        })->values()->all();
+
+        ReportIndicadorSemana::create([
+            'report_id' => $report->id,
+            'categoria' => 'suprimentos',
+            'janela' => $janela,
+            'periodo_inicio' => $inicio->toDateString(),
+            'periodo_fim' => $fim->toDateString(),
+            'total_previsto' => $itens->count(),
+            'total_concluido' => $totalConcluido,
+            'detalhes' => $detalhes,
+        ]);
     }
 
     // =========================================================================
