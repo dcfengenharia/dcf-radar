@@ -229,14 +229,24 @@ new class extends Component {
                                     </a>
                                     @if ($prog->estaFechada())
                                         <button type="button" class="btn btn-xs btn-outline-primary py-0 px-2"
-                                                wire:click="criarRevisao('{{ $prog->id }}')"
-                                                wire:confirm="Criar uma revisão desta programação? A nova versão nasce com as mesmas atividades, com datas/HH atualizados.">
+                                                onclick="confirmarAcao(this, {
+                                                    mensagem: 'Criar uma revisão desta programação? A nova versão nasce com as mesmas atividades, com datas/HH atualizados.',
+                                                    metodo: 'criarRevisao',
+                                                    args: ['{{ $prog->id }}'],
+                                                    corBotao: 'primary',
+                                                    icone: 'bx-git-branch',
+                                                })">
                                             <i class="bx bx-git-branch"></i> Criar Revisão
                                         </button>
                                     @elseif ($prog->itens_count > 0)
                                         <button type="button" class="btn btn-xs btn-outline-success py-0 px-2"
-                                                wire:click="fecharProgramacao('{{ $prog->id }}')"
-                                                wire:confirm="Fechar a programação desta semana?">
+                                                onclick="confirmarAcao(this, {
+                                                    mensagem: 'Fechar a programação desta semana?',
+                                                    metodo: 'fecharProgramacao',
+                                                    args: ['{{ $prog->id }}'],
+                                                    corBotao: 'success',
+                                                    icone: 'bx-lock-alt',
+                                                })">
                                             <i class="bx bx-lock-alt"></i> Gerar Programação
                                         </button>
                                     @endif

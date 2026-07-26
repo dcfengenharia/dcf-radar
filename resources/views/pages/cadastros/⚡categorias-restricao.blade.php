@@ -181,9 +181,13 @@ new class extends Component {
                                         wire:click="editar('{{ $cat->id }}')">
                                     <i class="bx bx-pencil"></i>
                                 </button>
-                                <button class="btn btn-xs btn-outline-danger py-0 px-2"
-                                        wire:click="excluir('{{ $cat->id }}')"
-                                        wire:confirm="Remover '{{ $cat->nome }}'? Restrições vinculadas perderão esta categoria.">
+                                <button type="button" class="btn btn-xs btn-outline-danger py-0 px-2"
+                                        onclick="confirmarAcao(this, {
+                                            mensagem: 'Remover \'{{ $cat->nome }}\'? Restrições vinculadas perderão esta categoria.',
+                                            metodo: 'excluir',
+                                            args: ['{{ $cat->id }}'],
+                                            icone: 'bx-trash',
+                                        })">
                                     <i class="bx bx-trash"></i>
                                 </button>
                             </td>

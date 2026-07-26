@@ -170,8 +170,13 @@ new class extends Component {
                     </button>
                 </div>
                 <div class="col-md-3 text-end">
-                    <button class="btn btn-outline-danger" wire:click="excluirPerfil('{{ $abaAtiva }}')"
-                            wire:confirm="Excluir este perfil? Só é possível se ele não estiver em uso.">
+                    <button type="button" class="btn btn-outline-danger"
+                            onclick="confirmarAcao(this, {
+                                mensagem: 'Excluir este perfil? Só é possível se ele não estiver em uso.',
+                                metodo: 'excluirPerfil',
+                                args: ['{{ $abaAtiva }}'],
+                                icone: 'bx-trash',
+                            })">
                         <i class="bx bx-trash me-1"></i>Excluir perfil
                     </button>
                 </div>

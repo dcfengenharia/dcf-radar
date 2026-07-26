@@ -968,9 +968,13 @@ new class extends Component {
                                 </button>
                                 @endif
                                 @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('engenharia.pacotes', 'excluir'))
-                                <button class="btn btn-xs btn-outline-danger py-0 px-1" title="Excluir"
-                                        wire:click.stop="excluirDocumento('{{ $documento->id }}')"
-                                        wire:confirm="Remover o documento '{{ $documento->codigo }}'?">
+                                <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" title="Excluir"
+                                        onclick="event.stopPropagation(); confirmarAcao(this, {
+                                            mensagem: 'Remover o documento \'{{ $documento->codigo }}\'?',
+                                            metodo: 'excluirDocumento',
+                                            args: ['{{ $documento->id }}'],
+                                            icone: 'bx-trash',
+                                        })">
                                     <i class="bx bx-trash"></i>
                                 </button>
                                 @endif
@@ -1104,7 +1108,13 @@ new class extends Component {
                         <button class="btn btn-xs btn-outline-secondary py-0 px-1" wire:click="iniciarEdicaoPacote('{{ $pacote->id }}')"><i class="bx bx-pencil"></i></button>
                         @endif
                         @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('engenharia.pacotes', 'excluir'))
-                        <button class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="excluirPacote('{{ $pacote->id }}')" wire:confirm="Remover o pacote '{{ $pacote->nome }}'? Os documentos vinculados ficam sem pacote.">
+                        <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                onclick="confirmarAcao(this, {
+                                    mensagem: 'Remover o pacote \'{{ $pacote->nome }}\'? Os documentos vinculados ficam sem pacote.',
+                                    metodo: 'excluirPacote',
+                                    args: ['{{ $pacote->id }}'],
+                                    icone: 'bx-trash',
+                                })">
                             <i class="bx bx-trash"></i>
                         </button>
                         @endif

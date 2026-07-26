@@ -121,6 +121,12 @@ $container = ($configData['contentLayout'] === 'compact') ? 'container-xxl' : 'c
     <x-radar-loading />
     @endpersist
 
+    {{-- Modal de confirmação genérico (substitui wire:confirm nativo do
+         navegador) — ver resources/views/components/confirmacao-acao.blade.php --}}
+    @persist('confirmacao-acao')
+    <x-confirmacao-acao />
+    @endpersist
+
     @if ($isMenu)
     <!-- Overlay -->
     <div class="layout-overlay layout-menu-toggle"></div>

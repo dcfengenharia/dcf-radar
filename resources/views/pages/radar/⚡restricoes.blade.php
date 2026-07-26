@@ -1287,10 +1287,15 @@ new class extends Component {
 
                         @if($sv === 'resolvida')
                         @can('reabrir', $r)
-                        <button class="btn btn-xs btn-outline-secondary py-0 px-1"
-                                wire:click="reabrirRestricao('{{ $r->id }}')"
-                                wire:confirm="Reabrir esta restrição? Ela volta para o status Aberta."
-                                title="Reabrir">
+                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-1"
+                                title="Reabrir"
+                                onclick="confirmarAcao(this, {
+                                    mensagem: 'Reabrir esta restrição? Ela volta para o status Aberta.',
+                                    metodo: 'reabrirRestricao',
+                                    args: ['{{ $r->id }}'],
+                                    corBotao: 'primary',
+                                    icone: 'bx-history',
+                                })">
                             <i class="bx bx-history"></i>
                         </button>
                         @endcan
@@ -1305,10 +1310,14 @@ new class extends Component {
                         @endcan
 
                         @can('delete', $r)
-                        <button class="btn btn-xs btn-outline-danger py-0 px-1"
-                                wire:click="excluirRestricao('{{ $r->id }}')"
-                                wire:confirm="Remover esta restrição? A ação não pode ser desfeita."
-                                title="Excluir">
+                        <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                title="Excluir"
+                                onclick="confirmarAcao(this, {
+                                    mensagem: 'Remover esta restrição? A ação não pode ser desfeita.',
+                                    metodo: 'excluirRestricao',
+                                    args: ['{{ $r->id }}'],
+                                    icone: 'bx-trash',
+                                })">
                             <i class="bx bx-trash"></i>
                         </button>
                         @endcan
@@ -1540,9 +1549,14 @@ new class extends Component {
             </div>
             @can('notificar', [\App\Models\Restricao::class, $obra->id])
             <div class="col-12">
-                <button class="btn btn-outline-warning btn-sm w-100" wire:click="notificarResponsaveis"
-                        wire:confirm="Enviar notificação (e-mail + app) para todos os responsáveis com restrições pendentes nesta obra?"
-                        wire:loading.attr="disabled" wire:target="notificarResponsaveis">
+                <button type="button" class="btn btn-outline-warning btn-sm w-100"
+                        wire:loading.attr="disabled" wire:target="notificarResponsaveis"
+                        onclick="confirmarAcao(this, {
+                            mensagem: 'Enviar notificação (e-mail + app) para todos os responsáveis com restrições pendentes nesta obra?',
+                            metodo: 'notificarResponsaveis',
+                            corBotao: 'warning',
+                            icone: 'bx-bell',
+                        })">
                     <i class="bx bx-bell me-1"></i>Notificar Responsáveis
                 </button>
             </div>

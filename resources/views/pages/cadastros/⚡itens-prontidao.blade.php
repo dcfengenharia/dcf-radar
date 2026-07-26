@@ -250,9 +250,13 @@ new class extends Component {
                             </button>
                             @endif
                             @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('cadastros.itens_prontidao', 'excluir'))
-                            <button class="btn btn-xs btn-outline-danger py-0 px-1"
-                                    wire:click="excluir('{{ $item->id }}')"
-                                    wire:confirm="Remover '{{ $item->nome }}'?">
+                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Remover \'{{ $item->nome }}\'?',
+                                        metodo: 'excluir',
+                                        args: ['{{ $item->id }}'],
+                                        icone: 'bx-trash',
+                                    })">
                                 <i class="bx bx-trash"></i>
                             </button>
                             @endif

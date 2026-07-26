@@ -1038,9 +1038,13 @@ new class extends Component {
                                 </button>
                                 @endif
                                 @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'excluir'))
-                                <button class="btn btn-xs btn-outline-danger py-0 px-1" title="Excluir"
-                                        wire:click="excluirItem('{{ $item->id }}')"
-                                        wire:confirm="Remover o item '{{ $item->nome }}'? As restrições vinculadas a ele serão resolvidas automaticamente.">
+                                <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" title="Excluir"
+                                        onclick="confirmarAcao(this, {
+                                            mensagem: 'Remover o item \'{{ $item->nome }}\'? As restrições vinculadas a ele serão resolvidas automaticamente.',
+                                            metodo: 'excluirItem',
+                                            args: ['{{ $item->id }}'],
+                                            icone: 'bx-trash',
+                                        })">
                                     <i class="bx bx-trash"></i>
                                 </button>
                                 @endif

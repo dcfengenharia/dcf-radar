@@ -132,8 +132,13 @@ new class extends Component {
                                 @if ($usuario->id !== auth()->id())
                                     <button type="button"
                                             class="btn btn-xs btn-outline-{{ $usuario->ativo ? 'danger' : 'success' }} py-0 px-2"
-                                            wire:click="alternarStatus('{{ $usuario->id }}')"
-                                            wire:confirm="{{ $usuario->ativo ? 'Desativar este usuário? Ele perde acesso à plataforma no próximo acesso.' : 'Reativar este usuário?' }}">
+                                            onclick="confirmarAcao(this, {
+                                                mensagem: '{{ $usuario->ativo ? 'Desativar este usuário? Ele perde acesso à plataforma no próximo acesso.' : 'Reativar este usuário?' }}',
+                                                metodo: 'alternarStatus',
+                                                args: ['{{ $usuario->id }}'],
+                                                corBotao: '{{ $usuario->ativo ? 'danger' : 'success' }}',
+                                                icone: '{{ $usuario->ativo ? 'bx-block' : 'bx-check' }}',
+                                            })">
                                         <i class="bx {{ $usuario->ativo ? 'bx-block' : 'bx-check' }}"></i>
                                         {{ $usuario->ativo ? 'Desativar' : 'Reativar' }}
                                     </button>

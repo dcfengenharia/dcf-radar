@@ -155,8 +155,14 @@ new class extends Component {
                             <i class="bx bx-pencil"></i> Editar
                         </button>
                         @if ($plano->ativo)
-                            <button class="btn btn-xs btn-outline-warning py-1 px-2" wire:click="descontinuar('{{ $plano->id }}')"
-                                    wire:confirm="Descontinuar '{{ $plano->nome }}'? Contas que já usam continuam funcionando.">
+                            <button type="button" class="btn btn-xs btn-outline-warning py-1 px-2"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Descontinuar \'{{ $plano->nome }}\'? Contas que já usam continuam funcionando.',
+                                        metodo: 'descontinuar',
+                                        args: ['{{ $plano->id }}'],
+                                        corBotao: 'warning',
+                                        icone: 'bx-block',
+                                    })">
                                 <i class="bx bx-block"></i> Descontinuar
                             </button>
                         @else
@@ -164,8 +170,13 @@ new class extends Component {
                                 <i class="bx bx-check"></i> Reativar
                             </button>
                         @endif
-                        <button class="btn btn-xs btn-outline-danger py-1 px-2" wire:click="excluir('{{ $plano->id }}')"
-                                wire:confirm="Excluir '{{ $plano->nome }}' definitivamente?">
+                        <button type="button" class="btn btn-xs btn-outline-danger py-1 px-2"
+                                onclick="confirmarAcao(this, {
+                                    mensagem: 'Excluir \'{{ $plano->nome }}\' definitivamente?',
+                                    metodo: 'excluir',
+                                    args: ['{{ $plano->id }}'],
+                                    icone: 'bx-trash',
+                                })">
                             <i class="bx bx-trash"></i>
                         </button>
                     </div>

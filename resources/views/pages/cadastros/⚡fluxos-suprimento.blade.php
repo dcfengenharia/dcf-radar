@@ -234,9 +234,13 @@ new class extends Component {
                             </button>
                             @endif
                             @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('cadastros.fluxos_suprimento', 'excluir'))
-                            <button class="btn btn-xs btn-outline-danger py-0 px-1"
-                                    wire:click="excluir('{{ $fluxo->id }}')"
-                                    wire:confirm="Remover '{{ $fluxo->nome }}'? Itens de suprimento já criados não são afetados.">
+                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Remover \'{{ $fluxo->nome }}\'? Itens de suprimento já criados não são afetados.',
+                                        metodo: 'excluir',
+                                        args: ['{{ $fluxo->id }}'],
+                                        icone: 'bx-trash',
+                                    })">
                                 <i class="bx bx-trash"></i>
                             </button>
                             @endif

@@ -206,9 +206,13 @@ new class extends Component {
                             </button>
                             @endif
                             @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('cadastros.feriados', 'excluir'))
-                            <button class="btn btn-xs btn-outline-danger py-0 px-1"
-                                    wire:click="excluir('{{ $feriado->id }}')"
-                                    wire:confirm="Remover o feriado de {{ $feriado->data->format('d/m/Y') }}?">
+                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Remover o feriado de {{ $feriado->data->format('d/m/Y') }}?',
+                                        metodo: 'excluir',
+                                        args: ['{{ $feriado->id }}'],
+                                        icone: 'bx-trash',
+                                    })">
                                 <i class="bx bx-trash"></i>
                             </button>
                             @endif

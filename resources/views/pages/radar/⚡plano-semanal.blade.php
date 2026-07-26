@@ -1143,8 +1143,13 @@ new class extends Component {
         </span>
         @endif
         @if (! $this->semanaEstaFechada)
-        <button type="button" class="btn btn-outline-primary btn-sm" wire:click="fecharProgramacao"
-                wire:confirm="Fechar a programação desta semana? Depois disso só será possível marcar concluída/não concluído — pra comprometer mais atividades será preciso criar uma revisão.">
+        <button type="button" class="btn btn-outline-primary btn-sm"
+                onclick="confirmarAcao(this, {
+                    mensagem: 'Fechar a programação desta semana? Depois disso só será possível marcar concluída/não concluído — pra comprometer mais atividades será preciso criar uma revisão.',
+                    metodo: 'fecharProgramacao',
+                    corBotao: 'primary',
+                    icone: 'bx-lock-alt',
+                })">
             <i class="bx bx-lock-alt me-1"></i>Gerar Programação
         </button>
         @endif

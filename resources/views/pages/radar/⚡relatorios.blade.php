@@ -104,9 +104,13 @@ new class extends Component {
                                 <i class="bx bx-show"></i>
                             </a>
                             @can('delete', $report)
-                            <button class="btn btn-sm btn-outline-danger"
-                                    wire:click="excluir('{{ $report->id }}')"
-                                    wire:confirm="Remover este report? Esta ação não pode ser desfeita.">
+                            <button type="button" class="btn btn-sm btn-outline-danger"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Remover este report? Esta ação não pode ser desfeita.',
+                                        metodo: 'excluir',
+                                        args: ['{{ $report->id }}'],
+                                        icone: 'bx-trash',
+                                    })">
                                 <i class="bx bx-trash"></i>
                             </button>
                             @endcan

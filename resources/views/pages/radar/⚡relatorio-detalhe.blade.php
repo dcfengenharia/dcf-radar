@@ -774,8 +774,12 @@ new class extends Component {
                                 <button type="button" class="btn btn-sm btn-outline-primary flex-fill py-0"
                                         wire:click="salvarLegendaFoto('{{ $foto->id }}')">Salvar</button>
                                 <button type="button" class="btn btn-sm btn-outline-danger py-0"
-                                        wire:click="removerFoto('{{ $foto->id }}')"
-                                        wire:confirm="Remover esta foto?">
+                                        onclick="confirmarAcao(this, {
+                                            mensagem: 'Remover esta foto?',
+                                            metodo: 'removerFoto',
+                                            args: ['{{ $foto->id }}'],
+                                            icone: 'bx-trash',
+                                        })">
                                     <i class="bx bx-trash"></i>
                                 </button>
                             </div>

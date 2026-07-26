@@ -278,9 +278,13 @@ new class extends Component {
                             </button>
                             @endif
                             @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('cadastros.status_documentos', 'excluir'))
-                            <button class="btn btn-xs btn-outline-danger py-0 px-1"
-                                    wire:click="excluir('{{ $status->id }}')"
-                                    wire:confirm="Remover '{{ $status->nome }}'?">
+                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Remover \'{{ $status->nome }}\'?',
+                                        metodo: 'excluir',
+                                        args: ['{{ $status->id }}'],
+                                        icone: 'bx-trash',
+                                    })">
                                 <i class="bx bx-trash"></i>
                             </button>
                             @endif

@@ -651,10 +651,15 @@ new class extends Component {
                                 <i class="bx bx-pencil"></i>
                             </button>
                             @if($p['ajustado'])
-                            <button class="btn btn-sm btn-outline-danger py-0 ms-1"
-                                    wire:click="removerAjuste('{{ $p['ajuste_id'] }}')"
+                            <button type="button" class="btn btn-sm btn-outline-danger py-0 ms-1"
                                     title="Remover ajuste (volta ao valor calculado)"
-                                    wire:confirm="Remover o ajuste manual e voltar ao valor calculado?">
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Remover o ajuste manual e voltar ao valor calculado?',
+                                        metodo: 'removerAjuste',
+                                        args: ['{{ $p['ajuste_id'] }}'],
+                                        corBotao: 'warning',
+                                        icone: 'bx-reset',
+                                    })">
                                 <i class="bx bx-x"></i>
                             </button>
                             @endif

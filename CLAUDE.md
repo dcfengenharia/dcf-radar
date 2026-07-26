@@ -802,6 +802,44 @@ ReportComentario (só em reports emitidos). Reaproveita
   `wire:key` amarrado ao CONTEÚDO dessa lista, senão o estado sobrevive
   a trocas de dados que deveriam invalidá-lo.
 
+## Popup de confirmação genérico (substitui o confirm() nativo do navegador)
+
+- **`resources/views/components/confirmacao-acao.blade.php`**: modal
+  Bootstrap único, registrado UMA VEZ nos dois layouts
+  (`contentNavbarLayout.blade.php`/`layoutAdmin.blade.php`, dentro de
+  `@persist('confirmacao-acao')` — mesmo motivo já documentado em
+  `radar-loading.blade.php`), que substitui **todos** os `wire:confirm`
+  do sistema (o alerta genérico `confirm()` do navegador). Qualquer botão
+  que antes fazia `wire:click="metodo(args)" wire:confirm="mensagem"`
+  agora faz só `onclick="confirmarAcao(this, { mensagem, metodo, args,
+  corBotao, icone })"` — a função global (definida no componente)
+  resolve o componente Livewire mais próximo do botão clicado via
+  `btn.closest('[wire\\:id]')` + `Livewire.find(id)`, guarda a ação
+  pendente, popula o modal (título/ícone/mensagem/cor do botão) e só
+  chama `component.call(metodo, ...args)` de fato quando o usuário clica
+  em "Confirmar" — cancelar simplesmente fecha o modal sem chamar nada.
+  Extraído como componente reutilizável (em vez de 27 modais bespoke
+  copiados) porque a alternativa — duplicar handler+modal em cada uma
+  das ~27 telas que usavam `wire:confirm` — seria massivo e frágil;
+  esse componente único cobre TODAS elas.
+- **Botões com `wire:click.stop`** (ex.: linha de tabela clicável por
+  trás) viram `onclick="event.stopPropagation(); confirmarAcao(...)"` —
+  o `event` implícito do atributo inline substitui o `.stop` do wire.
+- **Mensagens condicionais** (ex.: "Desativar"/"Reativar" usuário,
+  "Marcar"/"Desmarcar" Conta Operadora) continuam resolvidas em Blade
+  (`{{ $cond ? 'A' : 'B' }}`) dentro do literal JS passado pro
+  `confirmarAcao(...)` — nenhuma lógica nova no JS, só interpolação.
+- **Duas exceções deliberadas, NÃO convertidas**: o botão "Emitir" de
+  `⚡relatorio-detalhe.blade.php` já tinha ganho um modal bespoke próprio
+  antes deste componente existir (primeira iteração, pedida
+  isoladamente) — mantido como está, não fazia sentido duplicar. Os
+  modais de exclusão de Obra (`⚡obras/index.blade.php`,
+  `workDeleteModal`/`workBulkDeleteModal`) e o "Confirmar Programação"/
+  "Não Cumprimento" de `⚡plano-semanal.blade.php` já eram modais
+  bespoke com estado próprio (nome da obra a excluir, contagem de
+  selecionadas, textarea de causa) — não usavam `wire:confirm` pra
+  início de conversa, então ficaram de fora do escopo desta troca.
+
 ## Report Semanal — correção de emissão + indicadores de Restrições/Engenharia/Suprimentos
 
 - **Bug de emissão corrigido**: `Report::emitir()` chamava

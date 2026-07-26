@@ -798,10 +798,14 @@ new class extends Component {
                        title="Ver curvas usando esta linha de base">
                         <i class="bx bx-line-chart"></i>
                     </a>
-                    <button class="btn btn-sm btn-outline-danger"
-                            wire:click="excluir('{{ $lb->id }}')"
-                            wire:confirm="Remover a linha de base '{{ $lb->nome }}'? Esta ação não apaga os dados do cronograma."
-                            title="Remover linha de base">
+                    <button type="button" class="btn btn-sm btn-outline-danger"
+                            title="Remover linha de base"
+                            onclick="confirmarAcao(this, {
+                                mensagem: 'Remover a linha de base \'{{ $lb->nome }}\'? Esta ação não apaga os dados do cronograma.',
+                                metodo: 'excluir',
+                                args: ['{{ $lb->id }}'],
+                                icone: 'bx-trash',
+                            })">
                         <i class="bx bx-trash"></i>
                     </button>
                 </div>

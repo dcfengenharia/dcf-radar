@@ -136,7 +136,13 @@ new class extends Component {
                         @endif
                     </h5>
                     <div class="d-flex gap-2">
-                        <button type="button" class="btn btn-sm btn-outline-secondary" wire:click="alternarContaOperadora" wire:confirm="{{ $tenant->eh_conta_operadora ? 'Remover a marcação de Conta Operadora?' : 'Marcar esta conta como a Conta Operadora da plataforma? Ela sai das métricas de clientes e nunca ganha trial automático.' }}">
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="confirmarAcao(this, {
+                                    mensagem: '{{ $tenant->eh_conta_operadora ? 'Remover a marcação de Conta Operadora?' : 'Marcar esta conta como a Conta Operadora da plataforma? Ela sai das métricas de clientes e nunca ganha trial automático.' }}',
+                                    metodo: 'alternarContaOperadora',
+                                    corBotao: 'warning',
+                                    icone: 'bx-crown',
+                                })">
                             <i class="bx bx-crown"></i> {{ $tenant->eh_conta_operadora ? 'Desmarcar' : 'Marcar' }} Conta Operadora
                         </button>
                         <form method="POST" action="{{ route('admin.tenants.impersonar', $tenant) }}">

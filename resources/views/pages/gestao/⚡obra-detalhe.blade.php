@@ -1046,9 +1046,13 @@ new class extends Component {
                         @can('update', $obra)
                         <td class="text-center">
                             @unless ($criadorBloqueadoAqui)
-                            <button class="btn btn-xs btn-outline-danger py-0 px-1"
-                                    wire:click="removerMembro('{{ $membro->id }}')"
-                                    wire:confirm="Remover {{ $membro->first_name }} da equipe desta obra?">
+                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Remover {{ $membro->first_name }} da equipe desta obra?',
+                                        metodo: 'removerMembro',
+                                        args: ['{{ $membro->id }}'],
+                                        icone: 'bx-trash',
+                                    })">
                                 <i class="bx bx-trash"></i>
                             </button>
                             @endunless
@@ -1162,9 +1166,13 @@ new class extends Component {
                                     wire:click="reenviarConvite('{{ $convite->id }}')">
                                 <i class="bx bx-refresh"></i>
                             </button>
-                            <button class="btn btn-xs btn-outline-danger py-0 px-1" title="Cancelar"
-                                    wire:click="cancelarConvite('{{ $convite->id }}')"
-                                    wire:confirm="Cancelar o convite para {{ $convite->email }}?">
+                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" title="Cancelar"
+                                    onclick="confirmarAcao(this, {
+                                        mensagem: 'Cancelar o convite para {{ $convite->email }}?',
+                                        metodo: 'cancelarConvite',
+                                        args: ['{{ $convite->id }}'],
+                                        icone: 'bx-x-circle',
+                                    })">
                                 <i class="bx bx-x"></i>
                             </button>
                         </td>
