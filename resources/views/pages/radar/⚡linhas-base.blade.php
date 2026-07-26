@@ -177,27 +177,40 @@ new class extends Component {
 
     $atividades = Atividade::where('obra_id', $this->obra->id)
       ->where('fora_do_cronograma', false)
-      ->when($this->buscaAtividade !== '', fn ($q) => $q->where(function ($q2) {
-        $q2->where('nome', 'like', "%{$this->buscaAtividade}%")
-          ->orWhere('external_uid', 'like', "%{$this->buscaAtividade}%");
-      }))
-      ->when($this->disciplinaIdFiltro, fn ($q) => $q->where('disciplina_id', $this->disciplinaIdFiltro))
-      ->when($this->etapaIdFiltro, fn ($q) => $q->where('etapa_id', $this->etapaIdFiltro))
+      ->when(
+        $this->buscaAtividade !== '',
+        fn($q) => $q->where(function ($q2) {
+          $q2
+            ->where('nome', 'like', "%{$this->buscaAtividade}%")
+            ->orWhere('external_uid', 'like', "%{$this->buscaAtividade}%");
+        })
+      )
+      ->when($this->disciplinaIdFiltro, fn($q) => $q->where('disciplina_id', $this->disciplinaIdFiltro))
+      ->when($this->etapaIdFiltro, fn($q) => $q->where('etapa_id', $this->etapaIdFiltro))
       ->when(
         $this->faturamentoDiretoFiltro !== null && $this->faturamentoDiretoFiltro !== '',
-        fn ($q) => $q->where('faturamento_direto', $this->faturamentoDiretoFiltro === '1')
+        fn($q) => $q->where('faturamento_direto', $this->faturamentoDiretoFiltro === '1')
       )
-      ->when($this->entregavelIdFiltro, fn ($q) => $q->where('entregavel_id', $this->entregavelIdFiltro))
-      ->when($this->equipeResponsavelIdFiltro, fn ($q) => $q->where('equipe_responsavel_id', $this->equipeResponsavelIdFiltro))
-      ->when($this->personalizado1IdFiltro, fn ($q) => $q->where('personalizado_1_id', $this->personalizado1IdFiltro))
-      ->when($this->personalizado2IdFiltro, fn ($q) => $q->where('personalizado_2_id', $this->personalizado2IdFiltro))
-      ->when($this->personalizado3IdFiltro, fn ($q) => $q->where('personalizado_3_id', $this->personalizado3IdFiltro))
-      ->when($this->personalizado4IdFiltro, fn ($q) => $q->where('personalizado_4_id', $this->personalizado4IdFiltro))
-      ->when($this->personalizado5IdFiltro, fn ($q) => $q->where('personalizado_5_id', $this->personalizado5IdFiltro))
-      ->when($this->caminhoCriticoFiltro !== '', fn ($q) => $q->where('caminho_critico', $this->caminhoCriticoFiltro === '1'))
+      ->when($this->entregavelIdFiltro, fn($q) => $q->where('entregavel_id', $this->entregavelIdFiltro))
+      ->when(
+        $this->equipeResponsavelIdFiltro,
+        fn($q) => $q->where('equipe_responsavel_id', $this->equipeResponsavelIdFiltro)
+      )
+      ->when($this->personalizado1IdFiltro, fn($q) => $q->where('personalizado_1_id', $this->personalizado1IdFiltro))
+      ->when($this->personalizado2IdFiltro, fn($q) => $q->where('personalizado_2_id', $this->personalizado2IdFiltro))
+      ->when($this->personalizado3IdFiltro, fn($q) => $q->where('personalizado_3_id', $this->personalizado3IdFiltro))
+      ->when($this->personalizado4IdFiltro, fn($q) => $q->where('personalizado_4_id', $this->personalizado4IdFiltro))
+      ->when($this->personalizado5IdFiltro, fn($q) => $q->where('personalizado_5_id', $this->personalizado5IdFiltro))
+      ->when(
+        $this->caminhoCriticoFiltro !== '',
+        fn($q) => $q->where('caminho_critico', $this->caminhoCriticoFiltro === '1')
+      )
       ->with('disciplina:id,nome')
       ->withCount('restricoes')
-      ->when($this->temRestricoesFiltro !== '', fn ($q) => $q->having('restricoes_count', $this->temRestricoesFiltro === '1' ? '>' : '=', 0))
+      ->when(
+        $this->temRestricoesFiltro !== '',
+        fn($q) => $q->having('restricoes_count', $this->temRestricoesFiltro === '1' ? '>' : '=', 0)
+      )
       ->get();
 
     if ($atividades->isEmpty()) {
@@ -251,9 +264,7 @@ new class extends Component {
     // Agrupa os filhos relevantes por parent_id UMA vez, em vez de
     // refiltrar toda a coleção de pacotes a cada chamada de percorrer()
     // (era O(pacotes²) — o gargalo real da árvore em obras grandes).
-    $filhosPorPai = $todosPacotes
-      ->filter(fn($p) => $idsRelevantes->has($p->id))
-      ->groupBy('parent_id');
+    $filhosPorPai = $todosPacotes->filter(fn($p) => $idsRelevantes->has($p->id))->groupBy('parent_id');
 
     $ordenarGrupo = function ($grupo) {
       return $grupo->sort(fn($a, $b) => $this->compararOrdemAtividade($a['atividade'], $b['atividade']))->values();
@@ -363,49 +374,65 @@ new class extends Component {
   #[Computed]
   public function etapas(): \Illuminate\Support\Collection
   {
-    return Etapa::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Etapa::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function entregaveis(): \Illuminate\Support\Collection
   {
-    return Entregavel::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Entregavel::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function equipesResponsaveis(): \Illuminate\Support\Collection
   {
-    return EquipeResponsavel::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return EquipeResponsavel::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados1(): \Illuminate\Support\Collection
   {
-    return Personalizado1::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado1::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados2(): \Illuminate\Support\Collection
   {
-    return Personalizado2::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado2::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados3(): \Illuminate\Support\Collection
   {
-    return Personalizado3::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado3::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados4(): \Illuminate\Support\Collection
   {
-    return Personalizado4::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado4::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados5(): \Illuminate\Support\Collection
   {
-    return Personalizado5::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado5::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   /**
@@ -419,7 +446,9 @@ new class extends Component {
   #[Computed]
   public function podeEditarAtividades(): bool
   {
-    return auth()->user()->temPermissaoNaObra($this->obra->id, 'restricoes.lookahead', 'editar');
+    return auth()
+      ->user()
+      ->temPermissaoNaObra($this->obra->id, 'restricoes.lookahead', 'editar');
   }
 
   public function exportarAtividadesPdf()
@@ -432,10 +461,7 @@ new class extends Component {
       'linhas' => $this->arvoreAtividades,
     ])->setPaper('a4', 'landscape');
 
-    return response()->streamDownload(
-      fn () => print $pdf->output(),
-      "linha-base-{$lb->id}-atividades.pdf"
-    );
+    return response()->streamDownload(fn() => print $pdf->output(), "linha-base-{$lb->id}-atividades.pdf");
   }
 
   public function exportarAtividadesExcel()
@@ -446,10 +472,7 @@ new class extends Component {
       ->where('tipo', 'atividade')
       ->pluck('row');
 
-    return Excel::download(
-      new LinhaBaseAtividadesExport($linhas),
-      "linha-base-{$lb->id}-atividades.xlsx"
-    );
+    return Excel::download(new LinhaBaseAtividadesExport($linhas), "linha-base-{$lb->id}-atividades.xlsx");
   }
 
   public function salvar(): void
@@ -466,13 +489,15 @@ new class extends Component {
       ]
     );
 
-    $this->transacaoSegura(fn () => LinhaBase::create([
-      'obra_id' => $this->obra->id,
-      'nome' => $this->nome,
-      'descricao' => $this->descricao ?: null,
-      'cronograma_importacao_id' => $this->importacaoSelecionada,
-      'criado_por' => auth()->id(),
-    ]));
+    $this->transacaoSegura(
+      fn() => LinhaBase::create([
+        'obra_id' => $this->obra->id,
+        'nome' => $this->nome,
+        'descricao' => $this->descricao ?: null,
+        'cronograma_importacao_id' => $this->importacaoSelecionada,
+        'criado_por' => auth()->id(),
+      ])
+    );
 
     if ($this->transacaoSeguraFalhou()) {
       return;
@@ -487,7 +512,7 @@ new class extends Component {
   {
     $lb = LinhaBase::findOrFail($id);
 
-    $this->transacaoSegura(fn () => $lb->delete());
+    $this->transacaoSegura(fn() => $lb->delete());
 
     if ($this->transacaoSeguraFalhou()) {
       return;
@@ -509,19 +534,19 @@ new class extends Component {
 
   public function temFiltrosAtividadesAtivos(): bool
   {
-    return $this->buscaAtividade !== ''
-      || $this->disciplinaIdFiltro !== null
-      || $this->etapaIdFiltro !== null
-      || ($this->faturamentoDiretoFiltro !== null && $this->faturamentoDiretoFiltro !== '')
-      || $this->entregavelIdFiltro !== null
-      || $this->equipeResponsavelIdFiltro !== null
-      || $this->personalizado1IdFiltro !== null
-      || $this->personalizado2IdFiltro !== null
-      || $this->personalizado3IdFiltro !== null
-      || $this->personalizado4IdFiltro !== null
-      || $this->personalizado5IdFiltro !== null
-      || $this->caminhoCriticoFiltro !== ''
-      || $this->temRestricoesFiltro !== '';
+    return $this->buscaAtividade !== '' ||
+      $this->disciplinaIdFiltro !== null ||
+      $this->etapaIdFiltro !== null ||
+      ($this->faturamentoDiretoFiltro !== null && $this->faturamentoDiretoFiltro !== '') ||
+      $this->entregavelIdFiltro !== null ||
+      $this->equipeResponsavelIdFiltro !== null ||
+      $this->personalizado1IdFiltro !== null ||
+      $this->personalizado2IdFiltro !== null ||
+      $this->personalizado3IdFiltro !== null ||
+      $this->personalizado4IdFiltro !== null ||
+      $this->personalizado5IdFiltro !== null ||
+      $this->caminhoCriticoFiltro !== '' ||
+      $this->temRestricoesFiltro !== '';
   }
 
   public function limparFiltrosAtividades(): void
@@ -576,11 +601,13 @@ new class extends Component {
       ['editNome' => 'nome']
     );
 
-    $this->transacaoSegura(fn () => $atividade->update([
-      'nome' => $this->editNome,
-      'disciplina_id' => $this->editDisciplinaId ?: null,
-      'caminho_critico' => $this->editCaminhoCritico,
-    ]));
+    $this->transacaoSegura(
+      fn() => $atividade->update([
+        'nome' => $this->editNome,
+        'disciplina_id' => $this->editDisciplinaId ?: null,
+        'caminho_critico' => $this->editCaminhoCritico,
+      ])
+    );
 
     if ($this->transacaoSeguraFalhou()) {
       return;
@@ -638,20 +665,22 @@ new class extends Component {
       ]
     );
 
-    $this->transacaoSegura(fn () => Restricao::create([
-      'atividade_id' => $this->atividadeParaRestricao,
-      'descricao' => $this->restricaoDescricao,
-      'prazo_limite' => $this->restricaoPrazo,
-      'bloqueante' => $this->restricaoBloqueante,
-      'categoria_id' => $this->restricaoCategoriaId ?: null,
-      'responsavel_id' => !$this->restricaoRespExterno ? ($this->restricaoResponsavelId ?: null) : null,
-      'responsavel_externo' => $this->restricaoRespExterno ? ($this->restricaoResponsavelExt ?: null) : null,
-      'probabilidade' => $this->restricaoProbabilidade,
-      'impacto' => $this->restricaoImpacto,
-      'status' => StatusRestricao::Aberta->value,
-      'aberta_em' => now(),
-      'created_by_id' => auth()->id(),
-    ]));
+    $this->transacaoSegura(
+      fn() => Restricao::create([
+        'atividade_id' => $this->atividadeParaRestricao,
+        'descricao' => $this->restricaoDescricao,
+        'prazo_limite' => $this->restricaoPrazo,
+        'bloqueante' => $this->restricaoBloqueante,
+        'categoria_id' => $this->restricaoCategoriaId ?: null,
+        'responsavel_id' => !$this->restricaoRespExterno ? ($this->restricaoResponsavelId ?: null) : null,
+        'responsavel_externo' => $this->restricaoRespExterno ? ($this->restricaoResponsavelExt ?: null) : null,
+        'probabilidade' => $this->restricaoProbabilidade,
+        'impacto' => $this->restricaoImpacto,
+        'status' => StatusRestricao::Aberta->value,
+        'aberta_em' => now(),
+        'created_by_id' => auth()->id(),
+      ])
+    );
 
     if ($this->transacaoSeguraFalhou()) {
       return;
@@ -686,8 +715,8 @@ new class extends Component {
      class="position-fixed top-0 start-0 w-100 h-100 align-items-start justify-content-center"
      style="z-index:9999;background:rgba(255,255,255,.4);padding-top:80px">
     <div class="d-flex align-items-center gap-2 bg-white shadow rounded px-4 py-2 border">
-        <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-        <span class="small text-muted">Carregando atividades...</span>
+      <img src="{{ asset('assets/img/loader/dcf_logo.gif') }}" alt="DCF" height="50">
+      <span class="text-muted">Calma bb... Carregando atividades...</span>
     </div>
 </div>
 

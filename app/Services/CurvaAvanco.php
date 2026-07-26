@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\SerieAvanco;
 use App\Enums\TipoCronogramaImportacao;
+use App\Models\AtividadeSnapshot;
 use App\Models\AvancoPeriodo;
 use App\Models\CronogramaImportacao;
 use App\Models\CurvaAjuste;
@@ -265,15 +266,36 @@ class CurvaAvanco
             }
         });
 
-        $linhas = $query->with('atividade:id,nome,codigo_cronograma,disciplina_id,etapa_id,frente_trabalho_id')
+        $linhasBrutas = $query->with('atividade:id,nome,codigo_cronograma,pacote_trabalho_id,disciplina_id,etapa_id,frente_trabalho_id,baseline_inicio,baseline_termino')
             ->with('atividade.disciplina:id,nome')
             ->with('atividade.etapa:id,nome')
             ->with('atividade.frenteTrabalho:id,nome')
             ->get()
-            ->groupBy('atividade_id')
-            ->map(function ($grupo) {
+            ->groupBy('atividade_id');
+
+        // Datas de linha de base por atividade vêm do snapshot gravado na
+        // importação da PRÓPRIA linha de base (histórico fiel) — mesma fonte
+        // que ⚡linhas-base.blade.php::arvoreAtividades() usa —, caindo pros
+        // campos ao vivo da Atividade só se não houver snapshot (dado
+        // antigo). Quando $serie não é Previsto (Realizado/Tendência), a
+        // importação relevante pra baseline não é necessariamente
+        // $importacaoId, então resolve separadamente.
+        $importacaoBaselineId = $serie === SerieAvanco::Previsto
+            ? $importacaoId
+            : $this->resolverImportacaoId($obra, SerieAvanco::Previsto, $linhaBaseId);
+
+        $snapshots = $importacaoBaselineId
+            ? AtividadeSnapshot::where('cronograma_importacao_id', $importacaoBaselineId)
+                ->whereIn('atividade_id', $linhasBrutas->keys())
+                ->get(['atividade_id', 'baseline_inicio', 'baseline_termino'])
+                ->keyBy('atividade_id')
+            : collect();
+
+        $linhas = $linhasBrutas
+            ->map(function ($grupo, $atividadeId) use ($snapshots) {
                 $atividade = $grupo->first()->atividade;
                 $horas     = (float) $grupo->sum('horas');
+                $snap      = $snapshots->get($atividadeId);
 
                 return [
                     'atividade_id'       => $atividade?->id,
@@ -284,6 +306,8 @@ class CurvaAvanco
                     'etapa'              => $atividade?->etapa?->nome,
                     'frente'             => $atividade?->frenteTrabalho?->nome,
                     'horas'              => round($horas, 2),
+                    'baseline_inicio'    => $snap?->baseline_inicio ?? $atividade?->baseline_inicio,
+                    'baseline_termino'   => $snap?->baseline_termino ?? $atividade?->baseline_termino,
                 ];
             })
             ->sortByDesc('horas')

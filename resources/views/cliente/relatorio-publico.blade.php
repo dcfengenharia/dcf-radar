@@ -47,11 +47,11 @@
                         @foreach($curva->desvios as $desvio)
                         <tr class="{{ $desvio->eh_nivel_pai ? 'fw-semibold table-light' : '' }}">
                             <td>{{ $desvio->titulo_exibicao }}</td>
-                            <td class="text-end">{{ number_format($desvio->peso * 100, 1) }}%</td>
-                            <td class="text-end">{{ number_format($desvio->percentual_previsto, 1) }}%</td>
-                            <td class="text-end">{{ number_format($desvio->percentual_real, 1) }}%</td>
-                            <td class="text-end">{{ number_format($desvio->percentual_desvio, 1) }}%</td>
-                            <td class="text-end">{{ number_format($desvio->percentual_impacto, 1) }}%</td>
+                            <td class="text-end">{{ number_format($desvio->peso * 100, 1, ',', '.') }}%</td>
+                            <td class="text-end">{{ number_format($desvio->percentual_previsto, 1, ',', '.') }}%</td>
+                            <td class="text-end">{{ number_format($desvio->percentual_real, 1, ',', '.') }}%</td>
+                            <td class="text-end">{{ number_format($desvio->percentual_desvio, 1, ',', '.') }}%</td>
+                            <td class="text-end">{{ number_format($desvio->percentual_impacto, 1, ',', '.') }}%</td>
                         </tr>
                         @endforeach
                     </tbody>

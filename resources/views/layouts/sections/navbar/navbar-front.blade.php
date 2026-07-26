@@ -35,10 +35,13 @@
             <a class="nav-link fw-medium" href="{{url('front-pages/landing')}}#landingFeatures">Sobre a DCF</a>
           </li>
           <li class="nav-item">
+            <a class="nav-link fw-medium" href="{{url('front-pages/landing')}}#landingFeatures">Serviços</a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link fw-medium" href="{{url('front-pages/landing')}}#landingTeam">Obras</a>
           </li>
           <li class="nav-item">
-            <a class="nav-link fw-medium" href="{{url('front-pages/landing')}}#landingFAQ">FAQ</a>
+            <a class="nav-link fw-medium" href="#landingFAQ">FAQ</a>
           </li>
           <li class="nav-item">
             <a class="nav-link fw-medium" href="{{url('front-pages/landing')}}#landingContact">Nossa Plataforma</a>

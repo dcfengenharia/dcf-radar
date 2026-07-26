@@ -125,25 +125,19 @@ class OnboardingChecklistTest extends TestCase
             ->assertDontSee('Configuração Pendente');
     }
 
-    public function test_passo_restricao_cadastrada_fica_pendente_com_atividade_mas_sem_restricao(): void
-    {
-        $obra = Work::factory()->create(['tenant_id' => $this->user->tenant_id]);
-        Atividade::factory()->create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $obra->id]);
-
-        $pendentes = $this->chaves(OnboardingChecklist::pendentesObrigatorios(OnboardingChecklist::passosObra($obra)));
-
-        $this->assertContains('restricao_cadastrada', $pendentes);
-    }
-
-    public function test_passo_restricao_cadastrada_conclui_apos_criar_a_primeira_restricao(): void
+    public function test_passo_restricao_e_recomendado_nao_obrigatorio(): void
     {
         $obra = Work::factory()->create(['tenant_id' => $this->user->tenant_id]);
         $atividade = Atividade::factory()->create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $obra->id]);
+
+        $passos = OnboardingChecklist::passosObra($obra);
+        $restricao = collect($passos)->firstWhere('chave', 'restricao_cadastrada');
+
+        $this->assertFalse($restricao->obrigatorio);
+        $this->assertFalse($restricao->estaConcluido());
+
         Restricao::factory()->create(['tenant_id' => $this->user->tenant_id, 'atividade_id' => $atividade->id]);
-
-        $pendentes = $this->chaves(OnboardingChecklist::pendentesObrigatorios(OnboardingChecklist::passosObra($obra)));
-
-        $this->assertNotContains('restricao_cadastrada', $pendentes);
+        $this->assertTrue($restricao->estaConcluido());
     }
 
     public function test_quadro_de_restricoes_fica_acessivel_mesmo_com_restricao_cadastrada_pendente(): void

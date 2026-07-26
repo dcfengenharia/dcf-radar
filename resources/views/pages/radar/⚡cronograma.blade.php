@@ -462,7 +462,7 @@ new class extends Component {
                                     <div class="small">
                                         <strong>Arquivo grande demais para o seu plano.</strong>
                                         @if($tamanhoArquivoMb)
-                                            O arquivo selecionado tem aproximadamente {{ number_format($tamanhoArquivoMb, 1) }} MB
+                                            O arquivo selecionado tem aproximadamente {{ number_format($tamanhoArquivoMb, 1, ',', '.') }} MB
                                         @else
                                             O arquivo selecionado
                                         @endif
@@ -568,7 +568,7 @@ new class extends Component {
                         <tbody>
                             <tr>
                                 <td>Previsto (Baseline)</td>
-                                <td class="text-end font-monospace">{{ number_format($totalBaselineHh, 2) }}</td>
+                                <td class="text-end font-monospace">{{ number_format($totalBaselineHh, 2, ',', '.') }}</td>
                                 <td class="text-center">
                                     @if($totalBaselineHh > 0)
                                         <span class="badge bg-success" title="Totais conferem">✓ OK</span>
@@ -693,7 +693,12 @@ new class extends Component {
                         <th class="text-center">Arquivadas</th>
                         <th class="text-center">Início Linha de Base</th>
                         <th class="text-center">Término Linha de Base</th>
-                        <th class="text-end">Total HH (Previsto)</th>
+                        <th class="text-end">
+                            Total HH (Previsto)
+                            <i class="bx bx-info-circle text-muted ms-1"
+                               data-bs-toggle="tooltip"
+                               title="Valor reconstruído a partir da distribuição mensal (ponto médio de cada bloco faseado do MSPDI) — pode ter desvio de fronteira de até ~0,3%/mês em relação ao total exato do MS Project. Isso é esperado; veja o aviso de precisão na prévia da importação."></i>
+                        </th>
                     </tr>
                 </thead>
                 <tbody>
@@ -728,14 +733,14 @@ new class extends Component {
                           @endif
                         </td>
                         <td class="text-center">
-                            <span class="badge bg-label-success">{{ number_format($imp->criadas) }}</span>
+                            <span class="badge bg-label-success">{{ number_format($imp->criadas, 0, ',', '.') }}</span>
                         </td>
                         <td class="text-center">
-                            <span class="badge bg-label-primary">{{ number_format($imp->atualizadas) }}</span>
+                            <span class="badge bg-label-primary">{{ number_format($imp->atualizadas, 0, ',', '.') }}</span>
                         </td>
                         <td class="text-center">
                             @if($imp->removidas > 0)
-                                <span class="badge bg-label-warning">{{ number_format($imp->removidas) }}</span>
+                                <span class="badge bg-label-warning">{{ number_format($imp->removidas, 0, ',', '.') }}</span>
                             @else
                                 <span class="text-muted">—</span>
                             @endif

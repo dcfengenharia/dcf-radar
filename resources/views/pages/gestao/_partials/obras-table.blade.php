@@ -51,7 +51,7 @@
                         </td>
                         <td class="text-center" style="min-width: 100px;">
                             <div class="d-flex justify-content-center align-items-center gap-2">
-                                <ul class="avatar-group d-flex align-items-center mb-0">
+                                <ul class="avatar-group d-flex align-items-center mb-0" style="list-style-type: none;">
                                     @foreach ($work->users->take(3) as $membro)
                                         <li class="avatar avatar-xs pull-up" data-bs-toggle="tooltip" title="{{ $membro->first_name }} {{ $membro->last_name }}">
                                             <img src="{{ $membro->profile_photo_url }}" alt="{{ $membro->first_name }} {{ $membro->last_name }}" class="rounded-circle">

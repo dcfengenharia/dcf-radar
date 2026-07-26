@@ -17,7 +17,9 @@
       themesPath: '',
       defaultStyle: "{{$configData['styleOpt']}}",
       displayCustomizer: "{{$configData['displayCustomizer']}}",
-      lang: '{{ app()->getLocale() }}',
+      {{-- Mesmo ajuste de scriptsIncludes.blade.php: template-customizer.js
+           só reconhece en/fr/ar/de — pt_BR quebrava a inicialização. --}}
+      lang: 'en',
       pathResolver: function(path) {
         var resolvedPaths = {
           // Core stylesheets

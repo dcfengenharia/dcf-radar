@@ -21,7 +21,15 @@ $menuCollapsed = ($configData['menuCollapsed'] === 'layout-menu-collapsed') ? js
     defaultStyle: "{{$configData['styleOpt']}}",
     defaultShowDropdownOnHover: "{{$configData['showDropdownOnHover']}}", // true/false (for horizontal layout only)
     displayCustomizer: "{{$configData['displayCustomizer']}}",
-    lang: '{{ app()->getLocale() }}',
+    {{-- template-customizer.js só reconhece en/fr/ar/de (ver
+         resources/assets/vendor/js/template-customizer.js,
+         TemplateCustomizer.LANGUAGES) — português não existe na lista,
+         então usar app()->getLocale() (pt_BR) lançava "Language pt_BR
+         not found!" e travava a inicialização do resto dos scripts da
+         página. Fixo em 'en': afeta só o texto interno deste widget de
+         customização visual (uso interno/dev), não é conteúdo do
+         produto voltado pro usuário final. --}}
+    lang: 'en',
     pathResolver: function(path) {
       var resolvedPaths = {
         // Core stylesheets

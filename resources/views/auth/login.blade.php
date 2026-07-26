@@ -26,10 +26,6 @@ $customizerHidden = 'customizer-hide';
       <!-- CONTENT -->
       <div class="w-100 px-5 py-5 text-white position-relative z-2">
 
-          <!-- BADGE -->
-          <div class="auth-badge mb-4">
-            #planejamentoSemChatice
-          </div>
 
           <!-- HEADLINE -->
           <div class="mb-5">
@@ -43,7 +39,7 @@ $customizerHidden = 'customizer-hide';
 
               <p class="auth-left-subtitle">
                   Restrição mapeada, plano semanal limpo e curva de avanço
-                  sempre atualizada — sem depender de planilha paralela.
+                  sempre atualizada, sem depender de planilha paralela!
               </p>
 
           </div>
@@ -132,8 +128,8 @@ $customizerHidden = 'customizer-hide';
           </a>
         </div>
         <!-- /Logo -->
-        <h4 class="mb-2">Bem-vindo de volta ao DCF Radar! 👋</h4>
-        <p class="mb-4">Entre pra ver o que trava e o que está pronto pra semana.</p>
+        <h4 class="mb-2">Bem-vindo(a) de volta! 👋</h4>
+        <p class="mb-4">Acesse para bater as metas da semana e antecipar os gargalos da sua obra.</p>
 
           @if (session('status'))
           <div class="alert alert-success mb-1 rounded-0" role="alert">

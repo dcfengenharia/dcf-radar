@@ -54,14 +54,14 @@
             @foreach($curva->desvios as $desvio)
             <tr class="{{ $desvio->eh_nivel_pai ? 'nivel-pai' : '' }}">
                 <td>{{ $desvio->titulo_exibicao }}</td>
-                <td>{{ number_format($desvio->peso * 100, 1) }}%</td>
-                <td>{{ number_format($desvio->percentual_previsto, 1) }}%</td>
-                <td>{{ number_format($desvio->percentual_real, 1) }}%</td>
+                <td>{{ number_format($desvio->peso * 100, 1, ',', '.') }}%</td>
+                <td>{{ number_format($desvio->percentual_previsto, 1, ',', '.') }}%</td>
+                <td>{{ number_format($desvio->percentual_real, 1, ',', '.') }}%</td>
                 <td class="{{ $desvio->percentual_desvio < 0 ? 'desvio-neg' : 'desvio-pos' }}">
-                    {{ number_format($desvio->percentual_desvio, 1) }}%
+                    {{ number_format($desvio->percentual_desvio, 1, ',', '.') }}%
                 </td>
                 <td class="{{ $desvio->percentual_impacto < 0 ? 'desvio-neg' : 'desvio-pos' }}">
-                    {{ number_format($desvio->percentual_impacto, 1) }}%
+                    {{ number_format($desvio->percentual_impacto, 1, ',', '.') }}%
                 </td>
             </tr>
             @endforeach

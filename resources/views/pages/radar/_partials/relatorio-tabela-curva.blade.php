@@ -34,14 +34,14 @@
             @foreach($tabela as $linha)
             <tr>
                 <td>{{ $linha['label'] }}</td>
-                <td class="text-end">{{ $linha['previsto_pct_periodo'] !== null ? number_format($linha['previsto_pct_periodo'], 1) . '%' : '—' }}</td>
-                <td class="text-end">{{ $linha['tendencia_pct_periodo'] !== null ? number_format($linha['tendencia_pct_periodo'], 1) . '%' : '—' }}</td>
-                <td class="text-end">{{ $linha['realizado_pct_periodo'] !== null ? number_format($linha['realizado_pct_periodo'], 1) . '%' : '—' }}</td>
-                <td class="text-end">{{ $linha['previsto_pct'] !== null ? number_format($linha['previsto_pct'], 1) . '%' : '—' }}</td>
-                <td class="text-end">{{ $linha['tendencia_pct'] !== null ? number_format($linha['tendencia_pct'], 1) . '%' : '—' }}</td>
-                <td class="text-end">{{ $linha['realizado_pct'] !== null ? number_format($linha['realizado_pct'], 1) . '%' : '—' }}</td>
+                <td class="text-end">{{ $linha['previsto_pct_periodo'] !== null ? number_format($linha['previsto_pct_periodo'], 1, ',', '.') . '%' : '—' }}</td>
+                <td class="text-end">{{ $linha['tendencia_pct_periodo'] !== null ? number_format($linha['tendencia_pct_periodo'], 1, ',', '.') . '%' : '—' }}</td>
+                <td class="text-end">{{ $linha['realizado_pct_periodo'] !== null ? number_format($linha['realizado_pct_periodo'], 1, ',', '.') . '%' : '—' }}</td>
+                <td class="text-end">{{ $linha['previsto_pct'] !== null ? number_format($linha['previsto_pct'], 1, ',', '.') . '%' : '—' }}</td>
+                <td class="text-end">{{ $linha['tendencia_pct'] !== null ? number_format($linha['tendencia_pct'], 1, ',', '.') . '%' : '—' }}</td>
+                <td class="text-end">{{ $linha['realizado_pct'] !== null ? number_format($linha['realizado_pct'], 1, ',', '.') . '%' : '—' }}</td>
                 @if($comAderencia)
-                <td class="text-end fw-semibold">{{ $linha['aderencia_periodo'] !== null ? number_format($linha['aderencia_periodo'], 0) . '%' : '—' }}</td>
+                <td class="text-end fw-semibold">{{ $linha['aderencia_periodo'] !== null ? number_format($linha['aderencia_periodo'], 0, ',', '.') . '%' : '—' }}</td>
                 @endif
             </tr>
             @endforeach

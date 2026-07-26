@@ -783,6 +783,24 @@ ReportComentario (só em reports emitidos). Reaproveita
   detalhe" linka pro Plano Semanal daquela semana via `#[Url(as:
   'semana')]` novo em `⚡plano-semanal.blade.php::semanaInicio`
   (`?semana=YYYY-MM-DD`), normalizado pro início da semana no `mount()`.
+- **Achado — Alpine (`recolhidos`, estado de colapsar/expandir pacote)
+  preso na semana antiga ao navegar**: reportado como "o filtro de
+  período não funciona" — o backend filtrava certinho a cada
+  `semanaSeguinte()`/`semanAnterior()` (PHP recalcula `arvoreAtividades()`
+  do zero a cada request), mas o `<div>` que declara `x-data="{
+  recolhidos: [...] }"` não tinha `wire:key`, então o Livewire nunca
+  recriava esse escopo Alpine entre renders — um pacote recolhido numa
+  semana (mesmo `id` de pacote, é a mesma EAP da obra inteira)
+  continuava "recolhido" na semana seguinte, escondendo TODAS as
+  atividades daquela semana atrás de um `x-show` que nunca reabre
+  sozinho. Corrigido com `wire:key="arvore-{{ md5(...pluck('id')
+  ->implode(',')) }}"` no `<div>` — muda sempre que o CONJUNTO de linhas
+  visíveis muda (troca de semana OU de filtro), forçando o Alpine a
+  reiniciar do zero (`recolhidos: []`). Regra geral (mesma classe de bug
+  já documentada alhures neste arquivo): qualquer `x-data` que guarda
+  estado derivado de uma lista renderizada pelo Livewire precisa de
+  `wire:key` amarrado ao CONTEÚDO dessa lista, senão o estado sobrevive
+  a trocas de dados que deveriam invalidá-lo.
 
 ## Convenções
 

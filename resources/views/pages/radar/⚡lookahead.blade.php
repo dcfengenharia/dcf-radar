@@ -2245,10 +2245,18 @@ new class extends Component {
          z-index:1075) e ABAIXO dos modais do Bootstrap (z-index:1090) — ver
          explicação completa no mesmo bloco em ⚡restricoes.blade.php. --}}
     <style>
+    /* transform:translateX (não right/left) de propósito — animar `right`
+       força recálculo de layout do documento inteiro a cada frame; o
+       painel podia ficar "grudado" fora da tela em navegadores/condições
+       que não repaginam a tempo. `transform` é resolvido só pelo
+       compositor (GPU), nunca depende de reflow — mesmo motivo pelo qual
+       o comentário original deste bloco (replicado de
+       ⚡restricoes.blade.php) já dizia "transform:translateX" mesmo a
+       implementação antiga não usando de fato. */
     .canva-filtros-lookahead {
         position: fixed;
         top: 0;
-        right: -360px;
+        right: 0;
         height: 100%;
         z-index: 1080;
         display: flex;
@@ -2257,11 +2265,12 @@ new class extends Component {
         max-width: 90vw;
         background: var(--bs-body-bg, #fff);
         box-shadow: 0 0 20px 0 rgba(0, 0, 0, .2);
-        transition: right .25s ease-in-out;
+        transform: translateX(100%);
+        transition: transform .25s ease-in-out;
     }
 
     .canva-filtros-lookahead.canva-filtros-lookahead-aberto {
-        right: 0;
+        transform: translateX(0);
     }
 
     .canva-filtros-lookahead-body {
@@ -2293,11 +2302,6 @@ new class extends Component {
     @media (max-width: 575.98px) {
         .canva-filtros-lookahead {
             width: 300px;
-            right: -300px;
-        }
-
-        .canva-filtros-lookahead.canva-filtros-lookahead-aberto {
-            right: 0;
         }
     }
     </style>

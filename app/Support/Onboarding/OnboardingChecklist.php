@@ -65,7 +65,7 @@ class OnboardingChecklist
                 chave: 'restricao_cadastrada',
                 titulo: 'Cadastrar 1ª Restrição',
                 descricao: 'Registre a primeira restrição no Quadro de Restrições — é o coração do Last Planner System.',
-                obrigatorio: true,
+                obrigatorio: false,
                 rotaAcao: 'radar.restricoes',
                 rotuloAcao: 'Ir para o Quadro de Restrições',
                 verificar: fn () => Restricao::whereHas('atividade', fn ($q) => $q->where('obra_id', $obra->id))->exists(),

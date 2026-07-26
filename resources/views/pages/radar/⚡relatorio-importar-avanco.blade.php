@@ -222,7 +222,7 @@ new class extends Component {
                         <tbody>
                             <tr>
                                 <td>Realizado (Actual)</td>
-                                <td class="text-end font-monospace">{{ number_format($totalRealHh, 2) }}</td>
+                                <td class="text-end font-monospace">{{ number_format($totalRealHh, 2, ',', '.') }}</td>
                                 <td class="text-center">
                                     @if($totalRealHh > 0)
                                         <span class="badge bg-success" title="Totais conferem">✓ OK</span>
@@ -233,7 +233,7 @@ new class extends Component {
                             </tr>
                             <tr>
                                 <td>Tendência (Work atual)</td>
-                                <td class="text-end font-monospace">{{ number_format($totalWorkHh, 2) }}</td>
+                                <td class="text-end font-monospace">{{ number_format($totalWorkHh, 2, ',', '.') }}</td>
                                 <td class="text-center">
                                     @if($totalWorkHh > 0)
                                         <span class="badge bg-success" title="Totais conferem">✓ OK</span>

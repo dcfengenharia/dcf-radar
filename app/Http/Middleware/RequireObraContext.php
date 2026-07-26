@@ -40,10 +40,9 @@ class RequireObraContext
         // Qualquer outra rota só fica liberada se TODA pendência obrigatória
         // restante for resolvida justamente nesta página — senão o usuário
         // ficaria trancado fora da tela que precisa visitar pra concluir o
-        // passo (ex.: faltar "1ª Restrição" não pode bloquear o próprio
-        // Quadro de Restrições). Mas se ainda falta um passo anterior (ex.:
-        // nenhuma atividade cadastrada), continua bloqueado mesmo que a
-        // rota atual resolvesse um passo diferente.
+        // passo. Mas se ainda falta um passo anterior (ex.: nenhuma
+        // atividade cadastrada), continua bloqueado mesmo que a rota atual
+        // resolvesse um passo diferente.
         $existePendenciaQueEstaRotaNaoResolve = collect($pendenciasObrigatorias)
             ->contains(fn ($passo) => ! $request->routeIs($passo->rotaAcao));
 

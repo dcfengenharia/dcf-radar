@@ -22,9 +22,11 @@ use Livewire\Livewire;
 use Tests\TestCase;
 
 /**
- * Coluna "% do Projeto": HH previsto da atividade nesta semana ÷ HH total
- * do projeto (Previsto/Mensal, via App\Services\CurvaAvanco::totalCalculado,
- * já existente e reaproveitado sem alteração).
+ * Coluna "% de Avanço" (por atividade): HH previsto da atividade nesta
+ * semana ÷ HH total do projeto (Previsto/Mensal, via
+ * App\Services\CurvaAvanco::totalCalculado) — mesmas duas fontes
+ * (hhPrevistoSemanaPorAtividade/totalHhProjeto) também usadas pelos cards
+ * "% Previsto"/"% Avanço" no topo da página.
  */
 class PlanoSemanalPercentualProjetoTest extends TestCase
 {
@@ -114,7 +116,7 @@ class PlanoSemanalPercentualProjetoTest extends TestCase
 
         $this->assertEquals(200.0, $componente->instance()->totalHhProjeto);
         $this->assertEquals(20.0, (float) $componente->instance()->hhPrevistoSemanaPorAtividade->get($atividade->id));
-        $componente->assertSeeHtml('10.00%');
+        $componente->assertSeeHtml('10,00%');
     }
 
     public function test_mostra_traco_sem_avanco_periodo_mas_zero_por_cento_quando_horas_e_zero(): void
@@ -162,7 +164,7 @@ class PlanoSemanalPercentualProjetoTest extends TestCase
         $this->assertTrue($hh->has($comZero->id));
         $this->assertEquals(0.0, (float) $hh->get($comZero->id));
 
-        $this->componente()->assertSeeHtml('0.00%');
+        $this->componente()->assertSeeHtml('0,00%');
     }
 
     public function test_trocar_linha_de_base_muda_hh_total_e_percentual_exibido(): void

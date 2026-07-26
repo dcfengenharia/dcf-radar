@@ -12,9 +12,17 @@
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start mb-3">
                             <div class="d-flex align-items-center gap-2">
-                                <div class="avatar avatar-sm bg-label-primary rounded-circle d-flex align-items-center justify-content-center" style="width: 38px; height: 38px;">
-                                    <i class="bx bx-hard-hat"></i>
-                                </div>
+                                @if ($work->client?->logo_path)
+                                    <div class="avatar avatar-sm rounded-circle d-flex align-items-center justify-content-center bg-label-secondary" style="width: 38px; height: 38px; overflow: hidden;">
+                                        <img src="{{ \Illuminate\Support\Facades\Storage::disk('public')->url($work->client->logo_path) }}"
+                                             alt="Logo {{ $work->client->name }}"
+                                             style="width: 100%; height: 100%; object-fit: contain;">
+                                    </div>
+                                @else
+                                    <div class="avatar avatar-sm bg-label-primary rounded-circle d-flex align-items-center justify-content-center" style="width: 38px; height: 38px;">
+                                        <i class="bx bx-hard-hat"></i>
+                                    </div>
+                                @endif
                                 <div>
                                     <h6 class="mb-0">{{ $work->name }}</h6>
                                     <small class="text-muted">Cliente: {{ $work->client?->name ?? '—' }}</small>

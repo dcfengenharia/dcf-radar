@@ -572,4 +572,58 @@ class PlanoSemanalTest extends TestCase
 
         $this->assertEquals([0, 1], $niveis->all());
     }
+
+    /**
+     * Bug reportado pelo usuário: ao navegar de semana (avançar/retroceder),
+     * as atividades pareciam "não filtrar". Causa raiz — não era o backend
+     * (PHP filtra corretamente a cada `semanaSeguinte()`/`semanAnterior()`,
+     * ver os dois testes acima), era o `x-data` (Alpine) que guarda quais
+     * pacotes estão recolhidos: sem `wire:key` no `<div>` que o declara,
+     * Livewire nunca recria esse escopo Alpine entre renders — um pacote
+     * recolhido numa semana continuava "recolhido" (mesmo ID de pacote,
+     * reaparece em toda semana) escondendo TODA a lista da semana seguinte.
+     * Corrigido com `wire:key` derivado dos IDs realmente visíveis em
+     * `arvoreAtividades()` — muda sempre que o conjunto muda (troca de
+     * semana OU de filtro), forçando o Alpine a reiniciar com
+     * `recolhidos: []`. Este teste não executa JS/Alpine (Livewire::test()
+     * é só o lado PHP) — verifica que a keyed div de fato muda de valor
+     * entre duas semanas com atividades diferentes, o que é a condição
+     * necessária pro remount do Alpine acontecer no browser.
+     */
+    public function test_wire_key_da_arvore_muda_ao_trocar_de_semana(): void
+    {
+        $inicioSemana = Carbon::now()->startOfWeek();
+
+        Atividade::factory()->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Semana Atual',
+            'inicio_planejado' => $inicioSemana->copy(),
+            'data_termino' => $inicioSemana->copy()->addDays(2),
+        ]);
+
+        Atividade::factory()->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Semana Que Vem',
+            'inicio_planejado' => $inicioSemana->copy()->addWeek(),
+            'data_termino' => $inicioSemana->copy()->addWeek()->addDays(2),
+        ]);
+
+        $componente = $this->componente();
+
+        preg_match('/wire:key="(arvore-[a-f0-9]+)"/', $componente->html(), $matchAntes);
+        $this->assertNotEmpty($matchAntes, 'wire:key da árvore não encontrado na semana atual.');
+
+        $componente->call('semanaSeguinte');
+
+        preg_match('/wire:key="(arvore-[a-f0-9]+)"/', $componente->html(), $matchDepois);
+        $this->assertNotEmpty($matchDepois, 'wire:key da árvore não encontrado após navegar de semana.');
+
+        $this->assertNotEquals(
+            $matchAntes[1],
+            $matchDepois[1],
+            'wire:key da árvore não mudou ao trocar de semana — o Alpine (recolhidos) ficaria preso no estado da semana anterior.'
+        );
+    }
 }

@@ -55,6 +55,35 @@ class CurvaAvancoTest extends TestCase
 
     // -------------------------------------------------------------------------
 
+    public function test_detalhe_periodo_inclui_datas_de_linha_de_base_por_atividade(): void
+    {
+        $importacao = \App\Models\CronogramaImportacao::where('obra_id', $this->obra->id)->firstOrFail();
+        $lb = \App\Models\LinhaBase::create([
+            'obra_id'                  => $this->obra->id,
+            'nome'                     => 'LB teste',
+            'cronograma_importacao_id' => $importacao->id,
+        ]);
+
+        $periodos = $this->curva->calcular($this->obra, SerieAvanco::Previsto, GranularidadePeriodo::Mensal, null, $lb->id);
+        $periodo  = $periodos[0]['periodo_inicio'];
+
+        $linhas = $this->curva->detalhePeriodo(
+            $this->obra, SerieAvanco::Previsto, GranularidadePeriodo::Mensal, $periodo, null, $lb->id
+        );
+
+        $this->assertNotEmpty($linhas);
+        foreach ($linhas as $linha) {
+            $snap = \App\Models\AtividadeSnapshot::where('cronograma_importacao_id', $importacao->id)
+                ->where('atividade_id', $linha['atividade_id'])
+                ->first();
+
+            $this->assertNotNull($linha['baseline_inicio']);
+            $this->assertNotNull($linha['baseline_termino']);
+            $this->assertTrue($linha['baseline_inicio']->isSameDay($snap->baseline_inicio));
+            $this->assertTrue($linha['baseline_termino']->isSameDay($snap->baseline_termino));
+        }
+    }
+
     public function test_retorna_valores_calculados_sem_ajuste(): void
     {
         $periodos = $this->calcular();

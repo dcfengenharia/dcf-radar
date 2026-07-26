@@ -137,7 +137,10 @@ new class extends Component {
         fn($q) => $q->where('a.faturamento_direto', $this->filtroFaturamentoDireto === '1')
       )
       ->when($this->filtroEntregavelId, fn($q) => $q->where('a.entregavel_id', $this->filtroEntregavelId))
-      ->when($this->filtroEquipeResponsavelId, fn($q) => $q->where('a.equipe_responsavel_id', $this->filtroEquipeResponsavelId))
+      ->when(
+        $this->filtroEquipeResponsavelId,
+        fn($q) => $q->where('a.equipe_responsavel_id', $this->filtroEquipeResponsavelId)
+      )
       ->when($this->filtroPersonalizado1Id, fn($q) => $q->where('a.personalizado_1_id', $this->filtroPersonalizado1Id))
       ->when($this->filtroPersonalizado2Id, fn($q) => $q->where('a.personalizado_2_id', $this->filtroPersonalizado2Id))
       ->when($this->filtroPersonalizado3Id, fn($q) => $q->where('a.personalizado_3_id', $this->filtroPersonalizado3Id))
@@ -192,43 +195,57 @@ new class extends Component {
   #[Computed]
   public function entregaveis()
   {
-    return Entregavel::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Entregavel::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function equipesResponsaveis()
   {
-    return EquipeResponsavel::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return EquipeResponsavel::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados1()
   {
-    return Personalizado1::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado1::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados2()
   {
-    return Personalizado2::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado2::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados3()
   {
-    return Personalizado3::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado3::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados4()
   {
-    return Personalizado4::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado4::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
   public function personalizados5()
   {
-    return Personalizado5::where('obra_id', $this->obra->id)->orderBy('nome')->get(['id', 'nome']);
+    return Personalizado5::where('obra_id', $this->obra->id)
+      ->orderBy('nome')
+      ->get(['id', 'nome']);
   }
 
   #[Computed]
@@ -432,18 +449,16 @@ new class extends Component {
       'tendenciaImportacaoAtual' => $tendenciaImportacaoAtual,
       'inicioTendencia' => $snapshotTendencia?->inicio_planejado,
       'terminoTendencia' => $snapshotTendencia?->data_termino,
-      'checklist' => $itens->map(
-        function ($item) use ($registros) {
-          $registro = $registros->get($item->id);
-          return [
-            'id' => $item->id,
-            'nome' => $item->nome,
-            'concluido' => (bool) ($registro?->concluido ?? false),
-            'concluidoPor' => $registro?->conclusor,
-            'concluidoEm' => $registro?->concluido_em,
-          ];
-        }
-      ),
+      'checklist' => $itens->map(function ($item) use ($registros) {
+        $registro = $registros->get($item->id);
+        return [
+          'id' => $item->id,
+          'nome' => $item->nome,
+          'concluido' => (bool) ($registro?->concluido ?? false),
+          'concluidoPor' => $registro?->conclusor,
+          'concluidoEm' => $registro?->concluido_em,
+        ];
+      }),
     ];
   }
 
@@ -1182,7 +1197,24 @@ new class extends Component {
                 {{-- Responsável --}}
                 <td>
                     @if($r->responsavel)
-                    <small>{{ $r->responsavel->first_name }} {{ $r->responsavel->last_name }}</small>
+                    <div class="d-flex">
+                      <div class="flex-shrink-0 me-3">
+                        <div class="avatar">
+                          <img src="{{ $r->responsavel ? $r->responsavel->profile_photo_url : asset('assets/img/avatars/1.png') }}" alt class="rounded-circle">
+                        </div>
+                      </div>
+                      <div class="flex-grow-1">
+                        <span class="fw-medium d-block">
+                          {{ trim($r->responsavel->first_name . ' ' . $r->responsavel->last_name) }}
+                        </span>
+                        @php $obraAtualNavbar = \App\Support\ObraContext::current(); @endphp
+                        @if ($obraAtualNavbar)
+                        <small class="text-muted">
+                          {{ $r->responsavel->perfilNaObra($obraAtualNavbar)?->nome }}
+                        </small>
+                        @endif
+                      </div>
+                    </div>
                     @elseif($r->responsavel_externo)
                     <small class="text-muted fst-italic">{{ $r->responsavel_externo }}</small>
                     @else

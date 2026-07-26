@@ -321,9 +321,9 @@ new class extends Component {
         $linhas[] = ['Resumo do Período', '', ''];
         $linhas[] = ['Período', \Carbon\Carbon::parse($this->periodoDetalhado)->format('d/m/Y'), ''];
         $linhas[] = ['Linha de Base', $this->linhaBaseSelecionada()?->nome ?? '—', ''];
-        $linhas[] = ['% do Período', number_format($resumo['percentual_periodo'] ?? 0, 1) . '%', ''];
-        $linhas[] = ['% Acumulado', number_format($resumo['percentual'] ?? 0, 1) . '%', ''];
-        $linhas[] = ['HH do Período', number_format($resumo['horas_exibir'] ?? 0, 2), ''];
+        $linhas[] = ['% do Período', number_format($resumo['percentual_periodo'] ?? 0, 1, ',', '.') . '%', ''];
+        $linhas[] = ['% Acumulado', number_format($resumo['percentual'] ?? 0, 1, ',', '.') . '%', ''];
+        $linhas[] = ['HH do Período', number_format($resumo['horas_exibir'] ?? 0, 2, ',', '.'), ''];
         $linhas[] = ['Atividades no Período', count($this->atividadesPeriodo), ''];
         $linhas[] = ['', '', ''];
 
@@ -338,14 +338,14 @@ new class extends Component {
             $linhas[] = [
                 str_repeat('  ', $linha['nivel']) . ($a['codigo_cronograma'] ? "[{$a['codigo_cronograma']}] " : '') . $a['nome'],
                 trim(collect([$a['disciplina'], $a['etapa'], $a['frente']])->filter()->implode(' / ')),
-                number_format($a['horas'], 2) . ' HH (' . number_format($a['percentual'], 1) . '%)',
+                number_format($a['horas'], 2, ',', '.') . ' HH (' . number_format($a['percentual'], 1, ',', '.') . '%)',
             ];
         }
 
         $linhas[] = ['', '', ''];
         $linhas[] = ['Resumo por Disciplina', '', ''];
         foreach ($this->resumoDisciplinaPeriodo as $d) {
-            $linhas[] = [$d['disciplina'], '', number_format($d['horas'], 2) . ' HH (' . number_format($d['percentual'], 1) . '%)'];
+            $linhas[] = [$d['disciplina'], '', number_format($d['horas'], 2, ',', '.') . ' HH (' . number_format($d['percentual'], 1, ',', '.') . '%)'];
         }
 
         $cabecalho = ['Item', 'Classificação', 'Valor'];
@@ -617,14 +617,14 @@ new class extends Component {
                     @endphp
                     <tr class="{{ $p['obsoleto'] ? 'table-warning' : '' }}">
                         <td class="fw-semibold">{{ $labelPeriodo }}</td>
-                        <td class="text-end font-monospace">{{ number_format($p['horas'], 2) }}</td>
-                        <td class="text-end font-monospace text-muted">{{ number_format($p['acumulado_calculado'], 2) }}</td>
+                        <td class="text-end font-monospace">{{ number_format($p['horas'], 2, ',', '.') }}</td>
+                        <td class="text-end font-monospace text-muted">{{ number_format($p['acumulado_calculado'], 2, ',', '.') }}</td>
                         <td class="text-end font-monospace">
-                            {{ number_format($p['horas_exibir'], 2) }}
+                            {{ number_format($p['horas_exibir'], 2, ',', '.') }}
                             @if($p['ajustado'])
                                 <span class="badge bg-info text-dark ms-1"
                                       data-bs-toggle="tooltip"
-                                      title="Valor original (calculado): {{ number_format($p['valor_original'], 2) }} HH — ajustado por {{ $p['ajustado_por'] ?? 'n/a' }}">
+                                      title="Valor original (calculado): {{ number_format($p['valor_original'], 2, ',', '.') }} HH — ajustado por {{ $p['ajustado_por'] ?? 'n/a' }}">
                                     ajustado
                                 </span>
                                 @if($p['obsoleto'])
@@ -634,10 +634,10 @@ new class extends Component {
                                 @endif
                             @endif
                         </td>
-                        <td class="text-end font-monospace text-muted">{{ number_format($p['acumulado'], 2) }}</td>
-                        <td class="text-end">{{ number_format($p['percentual_periodo'], 1) }}%</td>
+                        <td class="text-end font-monospace text-muted">{{ number_format($p['acumulado'], 2, ',', '.') }}</td>
+                        <td class="text-end">{{ number_format($p['percentual_periodo'], 1, ',', '.') }}%</td>
                         <td class="text-end">
-                            <span class="fw-semibold">{{ number_format($p['percentual'], 1) }}%</span>
+                            <span class="fw-semibold">{{ number_format($p['percentual'], 1, ',', '.') }}%</span>
                         </td>
                         <td class="text-end text-nowrap">
                             <button class="btn btn-sm btn-outline-secondary py-0"
@@ -740,7 +740,7 @@ new class extends Component {
                             <div class="card h-100 bg-label-primary">
                                 <div class="card-body">
                                     <p class="text-muted mb-1">% do Período</p>
-                                    <h3 class="mb-0">{{ number_format($resumoPeriodo['percentual_periodo'] ?? 0, 1) }}%</h3>
+                                    <h3 class="mb-0">{{ number_format($resumoPeriodo['percentual_periodo'] ?? 0, 1, ',', '.') }}%</h3>
                                 </div>
                             </div>
                         </div>
@@ -748,7 +748,7 @@ new class extends Component {
                             <div class="card h-100 bg-label-success">
                                 <div class="card-body">
                                     <p class="text-muted mb-1">% Acumulado</p>
-                                    <h3 class="mb-0">{{ number_format($resumoPeriodo['percentual'] ?? 0, 1) }}%</h3>
+                                    <h3 class="mb-0">{{ number_format($resumoPeriodo['percentual'] ?? 0, 1, ',', '.') }}%</h3>
                                 </div>
                             </div>
                         </div>
@@ -756,7 +756,7 @@ new class extends Component {
                             <div class="card h-100 bg-label-secondary">
                                 <div class="card-body">
                                     <p class="text-muted mb-1">HH do Período</p>
-                                    <h3 class="mb-0">{{ number_format($resumoPeriodo['horas_exibir'] ?? 0, 2) }}</h3>
+                                    <h3 class="mb-0">{{ number_format($resumoPeriodo['horas_exibir'] ?? 0, 2, ',', '.') }}</h3>
                                 </div>
                             </div>
                         </div>
@@ -795,6 +795,8 @@ new class extends Component {
                                     <th>Disciplina</th>
                                     <th>Etapa</th>
                                     <th>Frente</th>
+                                    <th>Início LB</th>
+                                    <th>Término LB</th>
                                     <th class="text-end">HH</th>
                                     <th class="text-end">%</th>
                                 </tr>
@@ -803,7 +805,7 @@ new class extends Component {
                                 @foreach($arvorePeriodo as $linha)
                                 @if($linha['tipo'] === 'pacote')
                                 <tr class="table-light">
-                                    <td colspan="6" style="padding-left: {{ $linha['nivel'] * 20 }}px" class="fw-semibold">
+                                    <td colspan="8" style="padding-left: {{ $linha['nivel'] * 20 }}px" class="fw-semibold">
                                         <i class="bx bx-folder-open text-muted me-1"></i>
                                         {{ $linha['codigo'] ? "[{$linha['codigo']}] " : '' }}{{ $linha['nome'] }}
                                     </td>
@@ -811,7 +813,7 @@ new class extends Component {
                                 @else
                                 @php $a = $linha['dados']; @endphp
                                 <tr>
-                                    <td style="padding-left: {{ $linha['nivel'] * 20 }}px">
+                                    <td style="padding-left: 20px">
                                         @if($a['codigo_cronograma'])
                                         <span class="text-muted font-monospace small">[{{ $a['codigo_cronograma'] }}]</span>
                                         @endif
@@ -820,17 +822,19 @@ new class extends Component {
                                     <td>{{ $a['disciplina'] ?? '—' }}</td>
                                     <td>{{ $a['etapa'] ?? '—' }}</td>
                                     <td>{{ $a['frente'] ?? '—' }}</td>
-                                    <td class="text-end font-monospace">{{ number_format($a['horas'], 2) }}</td>
-                                    <td class="text-end">{{ number_format($a['percentual'], 1) }}%</td>
+                                    <td>{{ $a['baseline_inicio']?->format('d/m/y') ?? '—' }}</td>
+                                    <td>{{ $a['baseline_termino']?->format('d/m/y') ?? '—' }}</td>
+                                    <td class="text-end font-monospace">{{ number_format($a['horas'], 2, ',', '.') }}</td>
+                                    <td class="text-end">{{ number_format($a['percentual'], 1, ',', '.') }}%</td>
                                 </tr>
                                 @endif
                                 @endforeach
                             </tbody>
                             <tfoot>
                                 <tr class="fw-semibold">
-                                    <td colspan="4">Total</td>
-                                    <td class="text-end font-monospace">{{ number_format(collect($atividadesPeriodo)->sum('horas'), 2) }}</td>
-                                    <td class="text-end">100.0%</td>
+                                    <td colspan="6">Total</td>
+                                    <td class="text-end font-monospace">{{ number_format(collect($atividadesPeriodo)->sum('horas'), 2, ',', '.') }}</td>
+                                    <td class="text-end">100,0%</td>
                                 </tr>
                             </tfoot>
                         </table>

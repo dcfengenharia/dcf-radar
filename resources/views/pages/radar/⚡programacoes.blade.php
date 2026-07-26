@@ -2,7 +2,9 @@
 
 use App\Actions\ProgramacaoSemanal\CriarRevisaoProgramacaoSemanal;
 use App\Actions\ProgramacaoSemanal\FecharProgramacaoSemanal;
+use App\Actions\ProgramacaoSemanal\SalvarRealizadoProgramacaoSemanalItem;
 use App\Models\ProgramacaoSemanal;
+use App\Models\ProgramacaoSemanalItem;
 use App\Models\Work;
 use App\Support\Concerns\ExecutaComTransacaoSegura;
 use Illuminate\Support\Facades\Auth;
@@ -13,6 +15,11 @@ new class extends Component {
     use ExecutaComTransacaoSegura;
 
     public Work $obra;
+
+    // ---- Modal de itens / lançamento de HH Realizado ----
+    public ?string $programacaoDetalheId = null;
+    public array $hhRealizadoForm = [];
+    public array $erroRealizado = [];
 
     public function mount(Work $obra): void
     {
@@ -75,6 +82,90 @@ new class extends Component {
         unset($this->programacoes);
         $this->dispatch('show-toast', message: 'Revisão criada — abra o Plano Semanal desta semana pra ajustar.');
     }
+
+    /** Header (semana/status) da programação aberta no modal — reaproveita $this->programacoes já carregada, sem query extra. */
+    #[Computed]
+    public function programacaoDetalhe(): ?ProgramacaoSemanal
+    {
+        if (! $this->programacaoDetalheId) {
+            return null;
+        }
+
+        return $this->programacoes->firstWhere('id', $this->programacaoDetalheId);
+    }
+
+    /**
+     * Itens da programação aberta no modal de detalhe, com a atividade
+     * (disciplina/responsável/HH total) já carregada — evita N+1 ao
+     * montar a tabela do modal.
+     */
+    #[Computed]
+    public function itensDaProgramacaoDetalhe(): \Illuminate\Support\Collection
+    {
+        if (! $this->programacaoDetalheId) {
+            return collect();
+        }
+
+        return ProgramacaoSemanalItem::with(['atividade.disciplina', 'atividade.responsavel', 'realizadoPor'])
+            ->where('programacao_semanal_id', $this->programacaoDetalheId)
+            ->get();
+    }
+
+    public function abrirDetalhe(string $id): void
+    {
+        $this->programacaoDetalheId = $id;
+        $this->erroRealizado = [];
+        $this->hhRealizadoForm = $this->itensDaProgramacaoDetalhe
+            ->mapWithKeys(fn (ProgramacaoSemanalItem $item) => [
+                $item->id => $item->hh_realizado !== null ? (string) $item->hh_realizado : '',
+            ])
+            ->all();
+
+        // Modal só abre DEPOIS que os itens já foram carregados no
+        // servidor (round-trip completo) — nunca via data-bs-toggle puro
+        // no mesmo clique que dispara wire:click. Mesma correção de bug
+        // real já aplicada no Plano Semanal (⚡plano-semanal.blade.php):
+        // abrir o modal em paralelo com o morph do Livewire pode deixar
+        // o conteúdo do modal desatualizado ou disparar o mesmo bug de
+        // backdrop preso já documentado no layout base do projeto.
+        $this->dispatch('abrir-modal-itens-programacao');
+    }
+
+    public function fecharDetalhe(): void
+    {
+        $this->programacaoDetalheId = null;
+        $this->hhRealizadoForm = [];
+        $this->erroRealizado = [];
+    }
+
+    /**
+     * Lança o HH Realizado de UM item — salvamento por linha (não em
+     * lote), pra o erro de validação (ex.: HH acima do total) ficar
+     * isolado naquela linha específica, sem invalidar o que já foi
+     * digitado nas outras.
+     */
+    public function salvarRealizado(string $itemId): void
+    {
+        abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.minhas_programacoes', 'editar'), 403);
+
+        unset($this->erroRealizado[$itemId]);
+
+        $item = ProgramacaoSemanalItem::with(['atividade', 'programacaoSemanal'])->findOrFail($itemId);
+
+        $valorDigitado = trim($this->hhRealizadoForm[$itemId] ?? '');
+        $hhRealizado = $valorDigitado === '' ? null : (float) str_replace(',', '.', $valorDigitado);
+
+        try {
+            (new SalvarRealizadoProgramacaoSemanalItem)->execute($item, $hhRealizado, Auth::id());
+        } catch (\Throwable $e) {
+            $this->erroRealizado[$itemId] = $e->getMessage();
+            return;
+        }
+
+        unset($this->itensDaProgramacaoDetalhe);
+        unset($this->programacoes);
+        $this->dispatch('show-toast', message: 'HH realizado salvo.');
+    }
 };
 ?>
 
@@ -116,7 +207,7 @@ new class extends Component {
                                     <span class="text-muted">—</span>
                                 @else
                                     @php $cor = $aderencia >= 80 ? 'success' : ($aderencia >= 60 ? 'warning' : 'danger'); @endphp
-                                    <span class="badge bg-label-{{ $cor }}">{{ number_format($aderencia, 1) }}%</span>
+                                    <span class="badge bg-label-{{ $cor }}">{{ number_format($aderencia, 1, ',', '.') }}%</span>
                                 @endif
                             </td>
                             <td>
@@ -128,6 +219,10 @@ new class extends Component {
                             </td>
                             <td class="text-end">
                                 <div class="d-flex gap-1 justify-content-end">
+                                    <button type="button" class="btn btn-xs btn-outline-primary py-0 px-2"
+                                            wire:click="abrirDetalhe('{{ $prog->id }}')" wire:loading.attr="disabled">
+                                        <i class="bx bx-time-five"></i> Itens / Realizado
+                                    </button>
                                     <a href="{{ route('radar.plano-semanal', ['semana' => $prog->semana_inicio->toDateString()]) }}"
                                        class="btn btn-xs btn-outline-secondary py-0 px-2">
                                         <i class="bx bx-show"></i> Ver detalhe
@@ -157,6 +252,113 @@ new class extends Component {
             </table>
         </div>
     </div>
+
+    {{-- Modal Itens / Realizado — mesma estrutura visual dos demais
+         modais do sistema (Confirmar Programação, Não Concluído). --}}
+    <div class="modal fade" id="modalItensProgramacao" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bx bx-time-five me-2"></i>Itens da Programação
+                        @if ($this->programacaoDetalhe)
+                            — Semana {{ $this->programacaoDetalhe->semana_inicio->format('d/m/Y') }} a {{ $this->programacaoDetalhe->semana_fim->format('d/m/Y') }}
+                        @endif
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    @if ($this->programacaoDetalhe)
+                        @php $fechada = $this->programacaoDetalhe->estaFechada(); @endphp
+                        @if ($fechada)
+                            <div class="alert alert-secondary py-2 small mb-3">
+                                <i class="bx bx-lock-alt me-1"></i>Programação fechada — somente consulta, HH realizado não pode mais ser alterado.
+                            </div>
+                        @endif
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Atividade</th>
+                                        <th>Disciplina</th>
+                                        <th>Responsável</th>
+                                        <th class="text-end">HH Previsto</th>
+                                        <th class="text-end">% Previsto</th>
+                                        <th class="text-end" style="min-width: 140px">HH Realizado</th>
+                                        <th class="text-end">% Realizado</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse ($this->itensDaProgramacaoDetalhe as $item)
+                                        @php
+                                            $hhTotal = (float) ($item->atividade?->work_horas ?? 0);
+                                            $percentualPrevisto = ($item->horas_previstas_congeladas !== null && $hhTotal > 0)
+                                                ? round(((float) $item->horas_previstas_congeladas / $hhTotal) * 100, 2)
+                                                : null;
+                                            $percentualRealizado = $item->percentualRealizado();
+                                        @endphp
+                                        <tr wire:key="item-detalhe-{{ $item->id }}">
+                                            <td>{{ $item->atividade?->nome ?? '—' }}</td>
+                                            <td>{{ $item->atividade?->disciplina?->nome ?? '—' }}</td>
+                                            <td>{{ $item->atividade?->responsavel?->name ?? '—' }}</td>
+                                            <td class="text-end">
+                                                <small>{{ $item->horas_previstas_congeladas !== null ? number_format((float) $item->horas_previstas_congeladas, 2, ',', '.') : '—' }}</small>
+                                            </td>
+                                            <td class="text-end">
+                                                <small class="{{ $percentualPrevisto === null ? 'text-muted' : '' }}">
+                                                    {{ $percentualPrevisto !== null ? number_format($percentualPrevisto, 2, ',', '.') . '%' : '—' }}
+                                                </small>
+                                            </td>
+                                            <td>
+                                                @if ($fechada)
+                                                    <div class="text-end">
+                                                        <small>{{ $item->hh_realizado !== null ? number_format((float) $item->hh_realizado, 2, ',', '.') : '—' }}</small>
+                                                    </div>
+                                                @else
+                                                    <div class="input-group input-group-sm">
+                                                        <input type="text" inputmode="decimal" class="form-control text-end"
+                                                               wire:model="hhRealizadoForm.{{ $item->id }}"
+                                                               placeholder="0,00">
+                                                        <button type="button" class="btn btn-outline-success"
+                                                                wire:click="salvarRealizado('{{ $item->id }}')"
+                                                                wire:loading.attr="disabled" title="Salvar HH realizado">
+                                                            <i class="bx bx-check"></i>
+                                                        </button>
+                                                    </div>
+                                                    @if (isset($erroRealizado[$item->id]))
+                                                        <small class="text-danger d-block mt-1">{{ $erroRealizado[$item->id] }}</small>
+                                                    @endif
+                                                @endif
+                                            </td>
+                                            <td class="text-end">
+                                                @if ($percentualRealizado === null)
+                                                    <small class="text-muted">—</small>
+                                                @else
+                                                    @php $corRealizado = $percentualRealizado >= 100 ? 'success' : 'warning'; @endphp
+                                                    <span class="badge bg-label-{{ $corRealizado }}">{{ number_format($percentualRealizado, 2, ',', '.') }}%</span>
+                                                @endif
+                                            </td>
+                                        </tr>
+                                    @empty
+                                        <tr>
+                                            <td colspan="7" class="text-center text-muted py-3">Nenhum item nesta programação.</td>
+                                        </tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                        <small class="text-muted d-block mt-2">
+                            % Previsto e % Realizado usam o HH da Tendência (Work atual) da atividade como referência —
+                            atividade sem HH cadastrado no cronograma mostra "—" em vez de calcular.
+                        </small>
+                    @endif
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 @script
@@ -164,6 +366,28 @@ new class extends Component {
     $wire.on('show-toast', ({ message, type = 'success' }) => {
         toastr.options = { positionClass: 'toast-top-right', timeOut: 4000, closeButton: true, progressBar: true };
         (toastr[type] || toastr.success)(message);
+    });
+
+    // Modal só abre DEPOIS que os itens já foram carregados no servidor
+    // (abrirDetalhe) — mesma correção de bug real já aplicada no Plano
+    // Semanal (⚡plano-semanal.blade.php): nunca via data-bs-toggle puro
+    // no mesmo clique que dispara wire:click.
+    $wire.on('abrir-modal-itens-programacao', () => {
+        const modalEl = document.getElementById('modalItensProgramacao');
+        if (modalEl) {
+            bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        }
+    });
+
+    // Limpa o estado (programacaoDetalheId/hhRealizadoForm) só DEPOIS que
+    // o Bootstrap confirma que o modal já terminou de fechar de verdade
+    // (evento nativo hidden.bs.modal) — nunca via wire:click no mesmo
+    // botão que dispara data-bs-dismiss, pela mesma razão já documentada
+    // no Plano Semanal: essa combinação corre em paralelo com o morph do
+    // Livewire e pode deixar o .modal-backdrop preso.
+    const modalItensEl = document.getElementById('modalItensProgramacao');
+    modalItensEl?.addEventListener('hidden.bs.modal', () => {
+        $wire.call('fecharDetalhe');
     });
 </script>
 @endscript

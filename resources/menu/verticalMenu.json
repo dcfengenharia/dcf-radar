@@ -24,7 +24,7 @@
     },
     {
       "url": "/app/gestao/benchmarking",
-      "name": "Benchmarking entre Obras",
+      "name": "Benchmarking",
       "icon": "menu-icon tf-icons bx bx-bar-chart-alt-2",
       "slug": "gestao.benchmarking",
       "funcionalidade": "gestao.benchmarking"

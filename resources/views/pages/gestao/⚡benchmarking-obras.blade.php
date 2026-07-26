@@ -167,7 +167,7 @@ new class extends Component {
                     <td class="fw-semibold">PPC histórico</td>
                     @foreach($this->indicadoresPorObra as $linha)
                     <td class="text-center">
-                        {{ $linha['ppcHistorico'] !== null ? number_format($linha['ppcHistorico'], 1) . '%' : '—' }}
+                        {{ $linha['ppcHistorico'] !== null ? number_format($linha['ppcHistorico'], 1, ',', '.') . '%' : '—' }}
                     </td>
                     @endforeach
                 </tr>
@@ -175,7 +175,7 @@ new class extends Component {
                     <td class="fw-semibold">% Avanço atual</td>
                     @foreach($this->indicadoresPorObra as $linha)
                     <td class="text-center">
-                        {{ $linha['avancoAtual'] !== null ? number_format($linha['avancoAtual'], 1) . '%' : '—' }}
+                        {{ $linha['avancoAtual'] !== null ? number_format($linha['avancoAtual'], 1, ',', '.') . '%' : '—' }}
                     </td>
                     @endforeach
                 </tr>
@@ -183,7 +183,7 @@ new class extends Component {
                     <td class="fw-semibold">Tempo médio de resolução</td>
                     @foreach($this->indicadoresPorObra as $linha)
                     <td class="text-center">
-                        {{ $linha['tempoMedioResolucaoDias'] !== null ? number_format($linha['tempoMedioResolucaoDias'], 1) . ' dias' : '—' }}
+                        {{ $linha['tempoMedioResolucaoDias'] !== null ? number_format($linha['tempoMedioResolucaoDias'], 1, ',', '.') . ' dias' : '—' }}
                     </td>
                     @endforeach
                 </tr>

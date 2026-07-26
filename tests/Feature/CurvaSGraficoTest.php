@@ -311,6 +311,76 @@ class CurvaSGraficoTest extends TestCase
             ->assertFileDownloaded();
     }
 
+    public function test_modal_detalhe_periodo_mostra_datas_de_linha_de_base_por_atividade(): void
+    {
+        $component = Livewire::test('pages::radar.curvas', ['obra' => $this->obra]);
+        $periodo   = $component->get('periodos')[0]['periodo_inicio'];
+
+        $component->call('abrirDetalhePeriodo', $periodo)
+            ->assertSee('Início LB')
+            ->assertSee('Término LB');
+
+        $atividades = $component->get('atividadesPeriodo');
+        $this->assertNotEmpty($atividades);
+        foreach ($atividades as $a) {
+            $this->assertNotNull($a['baseline_inicio']);
+            $this->assertNotNull($a['baseline_termino']);
+        }
+    }
+
+    public function test_linhas_de_atividade_no_modal_nao_tem_indentacao_em_escada(): void
+    {
+        // Monta uma EAP com 2 níveis de pacote (raiz > subpacote) na mão —
+        // nenhuma fixture XML do projeto tem esse nível de aninhamento —
+        // pra ter uma atividade em nivel=2, onde o bug antigo (padding
+        // cascateado por $linha['nivel']) e o comportamento novo (padding
+        // fixo) produzem valores DIFERENTES e o teste vira significativo.
+        $pacoteRaiz = \App\Models\PacoteTrabalho::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id'   => $this->obra->id,
+            'nome'      => 'Raiz',
+            'codigo'    => '1',
+        ]);
+        $subPacote = \App\Models\PacoteTrabalho::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id'   => $this->obra->id,
+            'parent_id' => $pacoteRaiz->id,
+            'nome'      => 'Sub',
+            'codigo'    => '1.1',
+        ]);
+        $atividade = \App\Models\Atividade::factory()->create([
+            'tenant_id'          => $this->obra->tenant_id,
+            'obra_id'            => $this->obra->id,
+            'pacote_trabalho_id' => $subPacote->id,
+            'baseline_inicio'    => '2024-01-01',
+            'baseline_termino'   => '2024-01-10',
+        ]);
+
+        \App\Models\AvancoPeriodo::create([
+            'tenant_id'                => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $this->linhaBase->cronograma_importacao_id,
+            'atividade_id'             => $atividade->id,
+            'granularidade'            => \App\Enums\GranularidadePeriodo::Mensal,
+            'serie'                    => \App\Enums\SerieAvanco::Previsto,
+            'periodo_inicio'           => '2024-01-01',
+            'horas'                    => 10,
+        ]);
+
+        $component = Livewire::test('pages::radar.curvas', ['obra' => $this->obra])
+            ->set('linhaBaseId', $this->linhaBase->id)
+            ->set('granularidade', 'mensal');
+
+        $component->call('abrirDetalhePeriodo', '2024-01-01');
+
+        // Pacote raiz (nivel 0) e subpacote (nivel 1) continuam indentando
+        // por nível — mostra a hierarquia da EAP. Atividade (nivel 2) usa
+        // padding FIXO de 20px — mesmo padrão do Lookahead — nunca 40px
+        // (o que o cálculo antigo, nivel*20, teria produzido).
+        $component->assertSeeHtml('padding-left: 0px')
+            ->assertSeeHtml('padding-left: 20px')
+            ->assertDontSeeHtml('padding-left: 40px');
+    }
+
     public function test_detalhe_periodo_respeita_filtro_ativo_na_tela(): void
     {
         $disciplina = Disciplina::where('nome', 'Estrutura')->firstOrFail();

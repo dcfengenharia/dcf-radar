@@ -51,8 +51,13 @@ new class extends Component {
     public ?string $naoConcluindoId   = null;
     public string  $descricaoCausa    = '';
 
-    // Seleção manual pra "Inserir na Programação" (só Planejado + liberada)
+    // Seleção manual pra "Programar selecionadas" (só Planejado + liberada + não concluída no cronograma)
     public array $selecionadas = [];
+
+    // Banner de validação (mais visível que o toast, some sozinho quando a
+    // seleção muda) exibido acima do botão "Programar selecionadas" quando
+    // o usuário clica sem nenhuma atividade válida marcada.
+    public ?string $erroSelecao = null;
 
     // ---- Filtros (mesmos do Lookahead, mesmos nomes de campo/lógica) ----
     public string $search = '';
@@ -68,7 +73,18 @@ new class extends Component {
     public ?string $personalizado5IdFiltro = null;
     public bool $ocultarConcluidas = false;
 
-    // Referência de HH total do projeto pra coluna "% do Projeto".
+    // Fonte das datas usadas pra decidir QUAIS atividades caem dentro da
+    // semana visualizada (queryAtividadesPeriodo) — 'tendencia' (padrão,
+    // preserva o comportamento de sempre) usa inicio_planejado/
+    // data_termino "ao vivo" (cronograma atual, já refletindo a última
+    // reimportação); 'baseline' usa baseline_inicio/baseline_termino "ao
+    // vivo" (a Linha de Base, mesma fonte que o Lookahead usa sem
+    // seletor explícito). Não confundir com linhaBaseId abaixo, que só
+    // troca o DENOMINADOR dos cards "% Previsto"/"% Avanço" — este aqui
+    // muda quais atividades entram na lista/cards, não é comparável.
+    public string $fonteDatasPeriodo = 'tendencia';
+
+    // Referência de HH total do projeto pros cards "% Previsto"/"% Avanço".
     // null = importação Baseline/Ambos mais recente (não "ao vivo" —
     // ver App\Services\CurvaAvanco::resolverImportacaoId()).
     public ?string $linhaBaseId = null;
@@ -151,7 +167,7 @@ new class extends Component {
         return $this->linhasBase->firstWhere('id', $this->linhaBaseId);
     }
 
-    /** HH total do projeto (Previsto/Mensal) — denominador da coluna "% do Projeto". */
+    /** HH total do projeto (Previsto/Mensal) — denominador dos cards "% Previsto"/"% Avanço". */
     #[Computed]
     public function totalHhProjeto(): float
     {
@@ -165,7 +181,8 @@ new class extends Component {
      * semana já está fechada (mesmo HH do momento do commit, imune a
      * reimportação futura); senão lê `AvancoPeriodo` ao vivo. Chave ausente
      * (não `pluck` retornando 0) é o que distingue "sem HH cadastrado" de
-     * "HH cadastrado como zero" na célula da tabela.
+     * "HH cadastrado como zero" nos cards que somam esta coleção
+     * (percentualAvancoPrevistoPeriodo/percentualAvancoLiberadasPeriodo).
      */
     #[Computed]
     public function hhPrevistoSemanaPorAtividade(): \Illuminate\Support\Collection
@@ -193,17 +210,19 @@ new class extends Component {
 
     /**
      * Query-base (sem ->get()) das atividades COMPREENDIDAS no intervalo
-     * da semana, segundo as datas de tendência (inicio_planejado/
-     * data_termino — o cronograma atual, já refletindo a última
-     * reimportação; ver App\Models\Atividade e a filosofia "tendência =
-     * Work atual" no CLAUDE.md). "Compreendida" é sobreposição de
-     * intervalo, não só início OU término dentro da semana — senão uma
-     * atividade de 3 semanas que começou antes e termina depois da
-     * semana em questão nunca apareceria, mesmo estando em execução bem
-     * no meio dela. QUALQUER status entra aqui (inclusive Planejado) —
-     * é o próprio Lookahead da semana, não só o que já foi comprometido;
-     * reaproveitada por atividades()/idsProntas() pra não duplicar as
-     * condições de data.
+     * da semana, segundo `fonteDatasPeriodo`: 'tendencia' (padrão) usa
+     * inicio_planejado/data_termino — o cronograma atual, já refletindo
+     * a última reimportação; ver App\Models\Atividade e a filosofia
+     * "tendência = Work atual" no CLAUDE.md — ou 'baseline', que usa
+     * baseline_inicio/baseline_termino "ao vivo" (a Linha de Base, mesma
+     * fonte que o Lookahead usa sem seletor explícito). "Compreendida" é
+     * sobreposição de intervalo, não só início OU término dentro da
+     * semana — senão uma atividade de 3 semanas que começou antes e
+     * termina depois da semana em questão nunca apareceria, mesmo
+     * estando em execução bem no meio dela. QUALQUER status entra aqui
+     * (inclusive Planejado) — é o próprio Lookahead da semana, não só o
+     * que já foi comprometido; reaproveitada por atividades()/
+     * idsProntas() pra não duplicar as condições de data.
      *
      * Filtros de busca/etapa/frente/terceirizados — mesmos campos e mesma
      * lógica do Lookahead (⚡lookahead.blade.php::atividades()) — entram
@@ -215,12 +234,16 @@ new class extends Component {
      */
     private function queryAtividadesPeriodo()
     {
+        [$colunaInicio, $colunaTermino] = $this->fonteDatasPeriodo === 'baseline'
+            ? ['baseline_inicio', 'baseline_termino']
+            : ['inicio_planejado', 'data_termino'];
+
         $query = Atividade::where('obra_id', $this->obra->id)
             ->where('fora_do_cronograma', false)
-            ->whereNotNull('inicio_planejado')
-            ->whereNotNull('data_termino')
-            ->where('inicio_planejado', '<=', $this->semanaFim)
-            ->where('data_termino', '>=', $this->semanaInicio);
+            ->whereNotNull($colunaInicio)
+            ->whereNotNull($colunaTermino)
+            ->where($colunaInicio, '<=', $this->semanaFim)
+            ->where($colunaTermino, '>=', $this->semanaInicio);
 
         if ($this->search !== '') {
             $query->where('nome', 'like', '%' . $this->search . '%');
@@ -389,14 +412,123 @@ new class extends Component {
         return $this->queryAtividadesPeriodo()->prontas()->pluck('id');
     }
 
-    /** Só pode entrar na seleção pra "Inserir na Programação": ainda Planejado E liberada. */
+    /**
+     * Só pode entrar na seleção pra "Programar selecionadas": ainda
+     * Planejado, liberada E não concluída no cronograma importado
+     * (`percentual_concluido` — o "Percent Complete" do MSPDI, valor
+     * independente do `status` do app; ver `App\Support\
+     * ConclusaoAutomaticaAtividades`, que já reconhece 100% como sinal
+     * de conclusão real vindo da importação). Não confundir com "Ocultar
+     * concluídas" (preferência de exibição da árvore, baseada em
+     * `status`) — aqui é regra de ELEGIBILIDADE pra nova programação.
+     */
     #[Computed]
     public function idsSelecionaveis(): array
     {
         return $this->atividades
-            ->filter(fn ($at) => $at->status === StatusAtividade::Planejado && $this->idsProntas->contains($at->id))
+            ->filter(fn ($at) => $at->status === StatusAtividade::Planejado
+                && $this->idsProntas->contains($at->id)
+                && (float) ($at->percentual_concluido ?? 0) < 100)
             ->pluck('id')
             ->all();
+    }
+
+    /**
+     * IDs das atividades (do conjunto atualmente filtrado) que já
+     * estiveram em QUALQUER programação semanal salva antes — histórico
+     * real via `programacao_semanal_itens`, não só a semana/edição
+     * atual. Uma linha nessa tabela só existe depois de um
+     * comprometimento de verdade (`RegistrarComprometimentoSemanal`),
+     * então qualquer atividade com pelo menos uma linha aqui já foi
+     * "programada" alguma vez — inclusive a própria semana vigente,
+     * se já tiver sido comprometida. Consulta única agregada (mesmo
+     * cuidado de idsProntas), nunca N+1 por linha.
+     */
+    #[Computed]
+    public function idsJaProgramadas(): \Illuminate\Support\Collection
+    {
+        $ids = $this->atividades->pluck('id');
+        if ($ids->isEmpty()) {
+            return collect();
+        }
+
+        return ProgramacaoSemanalItem::whereIn('atividade_id', $ids)->distinct()->pluck('atividade_id');
+    }
+
+    /**
+     * % Previsto do período filtrado = HH da Linha de Base (série
+     * Previsto/Baseline Work) das atividades visíveis (via
+     * `hhPrevistoSemanaPorAtividade`, mesma coleção reaproveitada pelos
+     * outros cards de HH) ÷
+     * HH total do projeto (`totalHhProjeto`, já respeita `linhaBaseId`).
+     * Reaproveita as duas fontes existentes — não recalcula HH por conta
+     * própria.
+     */
+    #[Computed]
+    public function percentualAvancoPrevistoPeriodo(): ?float
+    {
+        if ($this->totalHhProjeto <= 0) {
+            return null;
+        }
+
+        $hhPeriodo = $this->atividades->sum(
+            fn ($at) => (float) ($this->hhPrevistoSemanaPorAtividade->get($at->id) ?? 0)
+        );
+
+        return round(($hhPeriodo / $this->totalHhProjeto) * 100, 2);
+    }
+
+    /**
+     * HH da Tendência (série Work atual, não a Linha de Base) desta
+     * semana por atividade — mesmo formato/fonte de
+     * `hhPrevistoSemanaPorAtividade`, só trocando a série. Sem
+     * equivalente congelado: `ProgramacaoSemanalItem` só guarda o HH
+     * Previsto no momento do commit (`horas_previstas_congeladas`), não
+     * um snapshot de Tendência — numa semana congelada, o percentual
+     * correspondente vira `null` (mesmo idioma de "não reavaliado" já
+     * usado por `idsProntas`/liberação nesse cenário).
+     */
+    #[Computed]
+    public function hhTendenciaSemanaPorAtividade(): \Illuminate\Support\Collection
+    {
+        if ($this->semanaEstaCongelada) {
+            return collect();
+        }
+
+        $ids = $this->atividades->pluck('id');
+        if ($ids->isEmpty()) {
+            return collect();
+        }
+
+        return AvancoPeriodo::where('serie', SerieAvanco::Tendencia->value)
+            ->where('granularidade', GranularidadePeriodo::Semanal->value)
+            ->where('periodo_inicio', $this->semanaInicio)
+            ->whereIn('atividade_id', $ids)
+            ->pluck('horas', 'atividade_id');
+    }
+
+    /** HH total do projeto (Tendência/Mensal) — mesma resolução de importação mais recente elegível já usada no Lookahead. */
+    #[Computed]
+    public function totalHhTendenciaProjeto(): float
+    {
+        return app(CurvaAvanco::class)->totalCalculado(
+            $this->obra, SerieAvanco::Tendencia, GranularidadePeriodo::Mensal
+        );
+    }
+
+    /** % da Tendência do período filtrado = HH de Tendência das atividades visíveis ÷ HH total de Tendência do projeto. */
+    #[Computed]
+    public function percentualTendenciaPeriodo(): ?float
+    {
+        if ($this->semanaEstaCongelada || $this->totalHhTendenciaProjeto <= 0) {
+            return null;
+        }
+
+        $hhPeriodo = $this->atividades->sum(
+            fn ($at) => (float) ($this->hhTendenciaSemanaPorAtividade->get($at->id) ?? 0)
+        );
+
+        return round(($hhPeriodo / $this->totalHhTendenciaProjeto) * 100, 2);
     }
 
     #[Computed]
@@ -417,20 +549,28 @@ new class extends Component {
         return $this->totalAtividadesPeriodo - $this->totalSemRestricao;
     }
 
-    /** Distribuição por disciplina das tarefas do período — alimenta o gráfico de pizza. */
+    /**
+     * % de avanço das atividades LIBERADAS do período = HH previsto
+     * (Linha de Base) só das atividades sem restrição/prontidão pendente
+     * (`idsProntas`) ÷ HH total do projeto (`totalHhProjeto`) — mesmo
+     * estilo do card "% Previsto", só que restrito ao subconjunto
+     * liberado. Reaproveita `hhPrevistoSemanaPorAtividade`, nunca
+     * recalcula HH por conta própria. `null` numa semana congelada
+     * (liberação não é reavaliada nesse cenário — mesmo idioma de
+     * `idsProntas`/`percentualTendenciaPeriodo`).
+     */
     #[Computed]
-    public function distribuicaoPorDisciplina(): array
+    public function percentualAvancoLiberadasPeriodo(): ?float
     {
-        return $this->atividades
-            ->groupBy(fn ($at) => $at->disciplina?->nome ?? 'Sem disciplina')
-            ->map->count()
-            ->sortDesc()
-            ->all();
-    }
+        if ($this->semanaEstaCongelada || $this->totalHhProjeto <= 0) {
+            return null;
+        }
 
-    public function dadosGraficoDisciplinaParaJs(): array
-    {
-        return $this->distribuicaoPorDisciplina;
+        $hhLiberadas = $this->atividades
+            ->filter(fn ($at) => $this->idsProntas->contains($at->id))
+            ->sum(fn ($at) => (float) ($this->hhPrevistoSemanaPorAtividade->get($at->id) ?? 0));
+
+        return round(($hhLiberadas / $this->totalHhProjeto) * 100, 2);
     }
 
     /**
@@ -626,10 +766,9 @@ new class extends Component {
 
     /**
      * Invalida todos os computeds derivados de atividades() — chamado
-     * sempre que a semana ou os dados mudam. Os cards de número/tabela
-     * reagem sozinhos (Blade re-renderiza a cada ação); o gráfico de
-     * disciplina é Chart.js imperativo, então precisa do dispatch pro
-     * @script (que só roda uma vez no mount) redesenhar via $wire.on.
+     * sempre que a semana ou os dados mudam. Os cards e a tabela reagem
+     * sozinhos (Blade re-renderiza a cada ação), sem nenhum gráfico
+     * imperativo pra redesenhar via evento.
      */
     private function invalidarComputeds(): void
     {
@@ -638,10 +777,15 @@ new class extends Component {
             $this->atividadesComprometidas,
             $this->idsProntas,
             $this->idsSelecionaveis,
+            $this->idsJaProgramadas,
+            $this->percentualAvancoPrevistoPeriodo,
+            $this->hhTendenciaSemanaPorAtividade,
+            $this->totalHhTendenciaProjeto,
+            $this->percentualTendenciaPeriodo,
             $this->totalAtividadesPeriodo,
             $this->totalSemRestricao,
             $this->totalComRestricao,
-            $this->distribuicaoPorDisciplina,
+            $this->percentualAvancoLiberadasPeriodo,
             $this->ppc,
             $this->arvoreAtividades,
             $this->programacaoDaSemana,
@@ -652,8 +796,6 @@ new class extends Component {
             $this->totalHhProjeto,
             $this->linhaBaseSelecionada,
         );
-
-        $this->dispatch('disciplina-periodo-atualizada', dados: $this->dadosGraficoDisciplinaParaJs());
     }
 
     /** Hooks do Livewire (updated{Propriedade}) — disparam a cada troca de filtro via wire:model.live. */
@@ -669,11 +811,16 @@ new class extends Component {
     public function updatedPersonalizado4IdFiltro(): void { $this->invalidarComputeds(); }
     public function updatedPersonalizado5IdFiltro(): void { $this->invalidarComputeds(); }
     public function updatedOcultarConcluidas(): void { $this->invalidarComputeds(); }
+    public function updatedFonteDatasPeriodo(): void { $this->invalidarComputeds(); }
+
+    /** Some sozinho assim que o usuário mexe na seleção de novo, em vez de ficar preso na tela. */
+    public function updatedSelecionadas(): void { $this->erroSelecao = null; }
 
     public function semanAnterior(): void
     {
         $this->semanaInicio = Carbon::parse($this->semanaInicio)->subWeek()->toDateString();
         $this->selecionadas = [];
+        $this->erroSelecao = null;
         $this->invalidarComputeds();
     }
 
@@ -681,6 +828,7 @@ new class extends Component {
     {
         $this->semanaInicio = Carbon::parse($this->semanaInicio)->addWeek()->toDateString();
         $this->selecionadas = [];
+        $this->erroSelecao = null;
         $this->invalidarComputeds();
     }
 
@@ -746,27 +894,91 @@ new class extends Component {
     }
 
     /**
-     * "Inserir na Programação": comprometer as atividades selecionadas
-     * manualmente. Reforça no servidor a mesma regra do Lookahead
-     * (App\Enums\Papel/CLAUDE.md: só vai pro plano quem está pronta) —
-     * a UI já desabilita o checkbox das bloqueadas, mas nunca confia só
-     * nisso; filtra de novo contra idsProntas antes de gravar.
+     * Reforça no servidor a mesma regra do Lookahead (App\Enums\Papel/
+     * CLAUDE.md: só vai pro plano quem está pronta) — a UI já desabilita
+     * o checkbox das bloqueadas/concluídas no cronograma, mas nunca
+     * confia só nisso; filtra de novo contra idsSelecionaveis (Planejado
+     * + liberada + não concluída no cronograma). Usada tanto pra abrir o
+     * modal de confirmação quanto (de novo, defesa em profundidade) no
+     * commit de verdade — nunca confia que "se o modal abriu, a seleção
+     * ainda é válida agora".
+     *
+     * @return \Illuminate\Support\Collection|null null = inválida (erroSelecao já setado)
+     */
+    private function idsValidosSelecionados(): ?\Illuminate\Support\Collection
+    {
+        if (empty($this->selecionadas)) {
+            $this->erroSelecao = 'Selecione pelo menos uma atividade para programar.';
+            return null;
+        }
+
+        $idsValidos = collect($this->selecionadas)
+            ->intersect($this->idsSelecionaveis)
+            ->values();
+
+        if ($idsValidos->isEmpty()) {
+            $this->erroSelecao = 'Nenhuma atividade liberada selecionada — atividades bloqueadas ou já concluídas no cronograma não podem ser programadas.';
+            return null;
+        }
+
+        $this->erroSelecao = null;
+
+        return $idsValidos;
+    }
+
+    /**
+     * Passo 1 do fluxo "Programar selecionadas": valida a seleção NO
+     * SERVIDOR (round-trip completo, garante que `selecionadas` já
+     * sincronizou de verdade antes de decidir se abre o modal) e só
+     * então dispara o evento que abre o modal de confirmação via JS.
+     * Corrige um bug real: abrir o modal direto no clique (Bootstrap
+     * puro, sem passar pelo servidor) podia mostrar/usar uma contagem de
+     * `selecionadas` desatualizada se o wire:model.live do checkbox
+     * ainda não tivesse terminado de sincronizar.
+     */
+    public function abrirConfirmacaoProgramar(): void
+    {
+        if ($this->semanaEstaCongelada || $this->semanaEstaFechada) {
+            $this->erroSelecao = 'Esta semana já está congelada; não é possível alterá-la.';
+            return;
+        }
+
+        if ($this->idsValidosSelecionados() === null) {
+            return;
+        }
+
+        $this->dispatch('abrir-modal-confirmar-programacao');
+    }
+
+    /**
+     * "Programar selecionadas": comprometer as atividades selecionadas
+     * manualmente. Chamado pelo botão "Confirmar" dentro do modal.
+     *
+     * IMPORTANTE — fechamento do modal NUNCA usa data-bs-dismiss no mesmo
+     * botão que dispara wire:click: o layout base deste projeto já
+     * documenta (ver resources/views/layouts/sections/scripts.blade.php,
+     * comentário "Rede de segurança contra backdrop de modal Bootstrap
+     * travado") um bug real de outros modais em que o dismiss do
+     * Bootstrap corre em paralelo com o morph do Livewire e deixa um
+     * .modal-backdrop órfão em <body>, cobrindo a tela inteira e
+     * bloqueando QUALQUER clique — inclusive em elementos sem nenhuma
+     * relação com o modal. Em vez disso, o fechamento é feito só depois
+     * que o servidor confirma que a ação rodou (evento dedicado, tratado
+     * no @script), nunca em paralelo com o próprio clique.
      */
     public function comprometerSelecionadas(): void
     {
         abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.lookahead', 'editar'), 403);
+
+        $this->dispatch('fechar-modal-confirmar-programacao');
 
         if ($this->semanaEstaCongelada || $this->semanaEstaFechada) {
             $this->dispatch('show-toast', message: 'Esta semana já está congelada; não é possível alterá-la.', type: 'error');
             return;
         }
 
-        $idsValidos = collect($this->selecionadas)
-            ->intersect($this->idsProntas)
-            ->values();
-
-        if ($idsValidos->isEmpty()) {
-            $this->dispatch('show-toast', message: 'Nenhuma atividade liberada selecionada.');
+        $idsValidos = $this->idsValidosSelecionados();
+        if ($idsValidos === null) {
             return;
         }
 
@@ -845,37 +1057,53 @@ new class extends Component {
 ?>
 
 <div>
-    {{-- Navegação de semana + PPC --}}
-    <div class="row g-3 mb-4 align-items-center">
-        <div class="col-md-6">
-            <div class="d-flex align-items-center gap-2 flex-wrap">
-                <button class="btn btn-outline-secondary btn-sm" wire:click="semanAnterior">
-                    <i class="bx bx-chevron-left"></i>
-                </button>
-                <div class="text-center px-3">
-                    <div class="fw-bold">
-                        {{ \Carbon\Carbon::parse($semanaInicio)->format('d/m/Y') }}
-                        até
-                        {{ \Carbon\Carbon::parse($this->semanaFim)->format('d/m/Y') }}
-                    </div>
-                    <small class="text-muted">Semana {{ \Carbon\Carbon::parse($semanaInicio)->weekOfYear }}</small>
+    {{-- Navegação de semana + Datas do Período + Exportação + PPC, tudo na mesma linha --}}
+    <div class="d-flex align-items-center gap-3 flex-wrap mb-4">
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-outline-secondary btn-sm" wire:click="semanAnterior">
+                <i class="bx bx-chevron-left"></i>
+            </button>
+            <div class="text-center px-3">
+                <div class="fw-bold">
+                    {{ \Carbon\Carbon::parse($semanaInicio)->format('d/m/Y') }}
+                    até
+                    {{ \Carbon\Carbon::parse($this->semanaFim)->format('d/m/Y') }}
                 </div>
-                <button class="btn btn-outline-secondary btn-sm" wire:click="semanaSeguinte">
-                    <i class="bx bx-chevron-right"></i>
-                </button>
-                @if ($this->atividades->count() > 0)
-                <button class="btn btn-outline-danger btn-sm ms-2" wire:click="exportarPdf">
-                    <i class="bx bxs-file-pdf me-1"></i>PDF
-                </button>
-                <button class="btn btn-outline-success btn-sm" wire:click="exportarExcel">
-                    <i class="bx bxs-file-export me-1"></i>Excel
-                </button>
-                @endif
+                <small class="text-muted">Semana {{ \Carbon\Carbon::parse($semanaInicio)->weekOfYear }}</small>
             </div>
+            <button class="btn btn-outline-secondary btn-sm" wire:click="semanaSeguinte">
+                <i class="bx bx-chevron-right"></i>
+            </button>
         </div>
 
+        @unless ($this->semanaEstaCongelada)
+        <div class="d-flex align-items-center gap-2">
+            <small class="text-muted">Datas do período:</small>
+            <select class="form-select form-select-sm w-auto" wire:model.live="fonteDatasPeriodo"
+                    title="Define quais atividades caem dentro da semana visualizada">
+                <option value="tendencia">Tendência (cronograma atual)</option>
+                <option value="baseline">Linha de Base</option>
+            </select>
+        </div>
+        @else
+        <small class="text-muted" title="Semana congelada: a lista vem do que foi comprometido, não das datas de tendência/baseline">
+            <i class="bx bx-lock-alt me-1"></i>Datas do período: fixadas pela programação congelada
+        </small>
+        @endunless
+
+        @if ($this->atividades->count() > 0)
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-outline-danger btn-sm" wire:click="exportarPdf">
+                <i class="bx bxs-file-pdf me-1"></i>PDF
+            </button>
+            <button class="btn btn-outline-success btn-sm" wire:click="exportarExcel">
+                <i class="bx bxs-file-export me-1"></i>Excel
+            </button>
+        </div>
+        @endif
+
         {{-- PPC --}}
-        <div class="col-md-6">
+        <div class="flex-grow-1" style="min-width: 260px;">
             @if ($this->ppc['total'] > 0)
                 @php
                     $ppc = $this->ppc['percentual'];
@@ -935,64 +1163,58 @@ new class extends Component {
     {{-- Filtros: ver canva lateral (.canva-filtros-plano) perto do fim do
          arquivo, antes do fechamento da div raiz. --}}
 
-    {{-- Cards de totais + gráfico por disciplina — reativos ao filtro de semana --}}
-    <div class="row g-3 mb-4">
-        <div class="col-6 col-md-3">
+    {{-- Cards de totais — reativos ao filtro de semana --}}
+    <div class="row g-3 mb-4 row-cols-2 row-cols-md-4">
+        <div>
             <div class="card h-100">
                 <div class="card-body text-center py-3">
-                    <div class="display-6 fw-bold">{{ $this->totalAtividadesPeriodo }}</div>
-                    <small class="text-muted">Atividades do Período</small>
+                    @if ($this->percentualAvancoPrevistoPeriodo !== null)
+                        <div class="display-6 fw-bold">{{ number_format($this->percentualAvancoPrevistoPeriodo, 2, ',', '.') }}%</div>
+                    @else
+                        <div class="display-6 fw-bold text-muted">—</div>
+                    @endif
+                    <small class="text-muted" title="HH da Linha de Base (Previsto) das atividades do período ÷ HH total do projeto">% Previsto</small>
                 </div>
             </div>
         </div>
-        @if ($this->semanaEstaCongelada)
-        <div class="col-6 col-md-3">
+        <div>
             <div class="card h-100">
                 <div class="card-body text-center py-3">
-                    <div class="display-6 fw-bold text-muted">—</div>
-                    <small class="text-muted" title="Semana congelada: liberação não é reavaliada">Restrição (não reavaliado)</small>
+                    @if ($this->percentualTendenciaPeriodo !== null)
+                        <div class="display-6 fw-bold">{{ number_format($this->percentualTendenciaPeriodo, 2, ',', '.') }}%</div>
+                    @else
+                        <div class="display-6 fw-bold text-muted" title="{{ $this->semanaEstaCongelada ? 'Semana congelada: tendência não é reavaliada' : 'Sem HH de tendência cadastrado' }}">—</div>
+                    @endif
+                    <small class="text-muted" title="HH da Tendência (Work atual) das atividades do período ÷ HH total do projeto">% da Tendência</small>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
+        <div>
+            <div class="card h-100 {{ ! $this->semanaEstaCongelada && $this->totalComRestricao > 0 ? 'border-danger' : '' }}">
                 <div class="card-body text-center py-3">
-                    <div class="display-6 fw-bold text-muted">—</div>
-                    <small class="text-muted" title="Semana congelada: liberação não é reavaliada">Liberação (não reavaliado)</small>
+                    @if ($this->semanaEstaCongelada)
+                        <div class="display-6 fw-bold text-muted" title="Semana congelada: liberação não é reavaliada">{{ $this->totalAtividadesPeriodo }}/—</div>
+                    @else
+                        <div class="display-6 fw-bold {{ $this->totalComRestricao > 0 ? 'text-danger' : '' }}">
+                            {{ $this->totalAtividadesPeriodo }}/{{ $this->totalComRestricao }}
+                        </div>
+                    @endif
+                    <small class="text-muted">Atividades do Período / Bloqueadas</small>
                 </div>
             </div>
         </div>
-        @else
-        <div class="col-6 col-md-3">
-            <div class="card h-100 {{ $this->totalComRestricao > 0 ? 'border-danger' : '' }}">
-                <div class="card-body text-center py-3">
-                    <div class="display-6 fw-bold {{ $this->totalComRestricao > 0 ? 'text-danger' : '' }}">
-                        {{ $this->totalComRestricao }}
-                    </div>
-                    <small class="text-muted">Com Restrição (Bloqueadas)</small>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3">
+        <div>
             <div class="card h-100 border-success">
                 <div class="card-body text-center py-3">
-                    <div class="display-6 fw-bold text-success">{{ $this->totalSemRestricao }}</div>
-                    <small class="text-muted">Sem Restrição (Liberadas)</small>
-                </div>
-            </div>
-        </div>
-        @endif
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-header py-2"><small class="text-muted mb-0">Por Disciplina</small></div>
-                <div class="card-body py-2">
-                    @if (count($this->distribuicaoPorDisciplina) > 0)
-                    <div style="height: 110px;">
-                        <canvas id="graficoDisciplinaPeriodo"></canvas>
-                    </div>
+                    @if ($this->semanaEstaCongelada)
+                        <div class="display-6 fw-bold text-muted" title="Semana congelada: liberação não é reavaliada">—</div>
                     @else
-                    <p class="text-muted text-center small mb-0 py-4">Sem dados.</p>
+                        <div class="display-6 fw-bold text-success">
+                            {{ $this->totalSemRestricao }}
+                            <span class="fs-6">({{ number_format($this->percentualAvancoLiberadasPeriodo ?? 0, 2, ',', '.') }}%)</span>
+                        </div>
                     @endif
+                    <small class="text-muted" title="Quantidade de atividades liberadas do período; entre parênteses, o HH previsto dessas atividades ÷ HH total do projeto">Atividades Liberadas (% Avanço)</small>
                 </div>
             </div>
         </div>
@@ -1002,13 +1224,19 @@ new class extends Component {
     @if ($this->atividades->count() > 0)
         @unless ($this->semanaEstaCongelada || $this->semanaEstaFechada)
         @if (count($this->idsSelecionaveis) > 0)
+        @if ($erroSelecao)
+        <div class="alert alert-danger d-flex align-items-center gap-2 py-2 mb-2">
+            <i class="bx bx-error-circle fs-5"></i>
+            <strong>{{ $erroSelecao }}</strong>
+        </div>
+        @endif
         <div class="d-flex align-items-center gap-2 mb-2">
-            <button class="btn btn-success btn-sm" wire:click="comprometerSelecionadas"
-                    wire:loading.attr="disabled" @disabled(count($selecionadas) === 0)>
+            <button type="button" class="btn btn-success btn-sm"
+                    wire:click="abrirConfirmacaoProgramar" wire:loading.attr="disabled">
                 <i class="bx bx-list-check me-1"></i>
-                Inserir na Programação ({{ count($selecionadas) }})
+                Programar selecionadas ({{ count($selecionadas) }})
             </button>
-            <small class="text-muted">Só atividades liberadas e ainda Planejadas podem ser selecionadas.</small>
+            <small class="text-muted">Só atividades liberadas, ainda Planejadas e não concluídas no cronograma podem ser selecionadas.</small>
         </div>
         @endif
         @endunless
@@ -1021,6 +1249,7 @@ new class extends Component {
                 ->values();
         @endphp
         <div class="card table-responsive"
+             wire:key="arvore-{{ md5(collect($this->arvoreAtividades)->pluck('id')->implode(',')) }}"
              x-data="{
                 recolhidos: [],
                 niveisIds: {{ json_encode(
@@ -1057,24 +1286,27 @@ new class extends Component {
             <table class="table table-hover align-middle mb-0">
                 <thead class="table-dark">
                     <tr>
-                        <th class="text-center" style="width: 36px">
+                        <th>Atividade</th>
+                        <th>Disciplina</th>
+                        <th class="text-center">Início da Linha de Base</th>
+                        <th class="text-center">Término da Linha de Base</th>
+                        <th class="text-center">Início Tendência</th>
+                        <th class="text-center">Término Tendência</th>
+                        <th class="text-center">% de Avanço</th>
+                        <th class="text-center">Liberação</th>
+                        <th class="text-center">Status</th>
+                        <th class="text-center">Histórico</th>
+                        <th class="text-center" style="width: 90px">
+                            Programar
                             @unless ($this->semanaEstaCongelada || $this->semanaEstaFechada)
                             @if (count($this->idsSelecionaveis) > 0)
+                            <br>
                             <input type="checkbox" class="form-check-input" wire:click="toggleSelecionarTodas"
                                    @checked(count($selecionadas) > 0 && count(array_intersect($this->idsSelecionaveis, $selecionadas)) === count($this->idsSelecionaveis))
                                    title="Selecionar todas as liberadas">
                             @endif
                             @endunless
                         </th>
-                        <th>Atividade</th>
-                        <th>Disciplina</th>
-                        <th>Responsável</th>
-                        <th class="text-center">Início Plan.</th>
-                        <th class="text-center">Fim Plan.</th>
-                        <th class="text-center">% do Projeto</th>
-                        <th class="text-center">Liberação</th>
-                        <th class="text-center">Status</th>
-                        <th class="text-center">Ações</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1086,7 +1318,7 @@ new class extends Component {
                         <tr wire:key="pacote-{{ $linha['id'] }}"
                             x-show="!({{ $ancestraisJson }}).some(id => recolhidos.includes(id))"
                             class="table-light">
-                            <td colspan="10" style="padding-left: {{ $linha['nivel'] * 24 }}px">
+                            <td colspan="11" style="padding-left: {{ $linha['nivel'] * 24 }}px">
                                 <button type="button" class="btn btn-sm btn-link p-0 me-1 text-dark"
                                         @click="recolhidos.includes('{{ $linha['id'] }}') ? recolhidos.splice(recolhidos.indexOf('{{ $linha['id'] }}'), 1) : recolhidos.push('{{ $linha['id'] }}')">
                                     <i class="bx" :class="recolhidos.includes('{{ $linha['id'] }}') ? 'bx-chevron-right' : 'bx-chevron-down'"></i>
@@ -1119,17 +1351,11 @@ new class extends Component {
                                 default         => $statusVal,
                             };
                             $pronta = in_array($at->id, $idsProntasArray, true);
-                            $selecionavel = $statusVal === 'planejado' && $pronta;
+                            $concluidaNoCronograma = (float) ($at->percentual_concluido ?? 0) >= 100;
+                            $selecionavel = $statusVal === 'planejado' && $pronta && ! $concluidaNoCronograma;
                         @endphp
                         <tr wire:key="atividade-{{ $at->id }}"
                             x-show="!({{ $ancestraisJson }}).some(id => recolhidos.includes(id))">
-                            <td class="text-center">
-                                @unless ($this->semanaEstaCongelada || $this->semanaEstaFechada)
-                                @if ($selecionavel)
-                                <input type="checkbox" class="form-check-input" wire:model.live="selecionadas" value="{{ $at->id }}">
-                                @endif
-                                @endunless
-                            </td>
                             <td style="padding-left: 24px">
                                 <span class="fw-semibold">{{ $at->nome }}</span>
                                 @if ($at->caminho_critico)
@@ -1137,7 +1363,12 @@ new class extends Component {
                                 @endif
                             </td>
                             <td>{{ $at->disciplina?->nome ?? '—' }}</td>
-                            <td>{{ $at->responsavel?->name ?? '—' }}</td>
+                            <td class="text-center">
+                                <small>{{ $at->baseline_inicio?->format('d/m') ?? '—' }}</small>
+                            </td>
+                            <td class="text-center">
+                                <small>{{ $at->baseline_termino?->format('d/m') ?? '—' }}</small>
+                            </td>
                             <td class="text-center">
                                 <small>{{ $at->inicio_planejado?->format('d/m') ?? '—' }}</small>
                             </td>
@@ -1150,12 +1381,12 @@ new class extends Component {
                             <td class="text-center">
                                 @php
                                     $hhSemana = $this->hhPrevistoSemanaPorAtividade->get($at->id);
-                                    $percentualProjeto = ($hhSemana !== null && $this->totalHhProjeto > 0)
+                                    $percentualAvancoLinha = ($hhSemana !== null && $this->totalHhProjeto > 0)
                                         ? round(((float) $hhSemana / $this->totalHhProjeto) * 100, 2)
                                         : null;
                                 @endphp
-                                @if ($percentualProjeto !== null)
-                                    <small>{{ number_format($percentualProjeto, 2) }}%</small>
+                                @if ($percentualAvancoLinha !== null)
+                                    <small>{{ number_format($percentualAvancoLinha, 2, ',', '.') }}%</small>
                                 @else
                                     <small class="text-muted" title="Sem HH previsto cadastrado para esta atividade nesta semana">—</small>
                                 @endif
@@ -1173,6 +1404,31 @@ new class extends Component {
                                 <span class="badge {{ $badgeClass }}">{{ $statusLabel }}</span>
                             </td>
                             <td class="text-center">
+                                @if ($this->idsJaProgramadas->contains($at->id))
+                                    <span class="badge bg-label-info" title="Já esteve em pelo menos uma programação semanal salva">JÁ PROGRAMADA</span>
+                                @else
+                                    <span class="badge bg-label-secondary" title="Nunca esteve em nenhuma programação semanal salva">NUNCA PROGRAMADA</span>
+                                @endif
+                            </td>
+                            <td class="text-center">
+                                {{-- "Programar" (ex-Ações): checkbox de seleção pra nova
+                                     programação e os botões de marcar concluída/não
+                                     concluído nunca aparecem juntos na mesma linha — o
+                                     status Planejado (selecionável) e Comprometido/Em
+                                     Execução (com botões) são mutuamente exclusivos —
+                                     por isso convivem na mesma coluna sem se atrapalhar. --}}
+                                @unless ($this->semanaEstaCongelada || $this->semanaEstaFechada)
+                                @if ($selecionavel)
+                                    <input type="checkbox" class="form-check-input" wire:model.live="selecionadas" value="{{ $at->id }}" title="Selecionar para programar">
+                                @elseif ($statusVal === 'planejado')
+                                    {{-- Linha "Planejada" mas não selecionável — mostra o motivo em
+                                         vez de deixar a célula vazia (achado de UX: usuário achava
+                                         que o botão "Programar selecionadas" não fazia nada, quando
+                                         na real não havia checkbox nenhum pra marcar nessa linha). --}}
+                                    <i class="bx bx-lock-alt text-danger"
+                                       title="{{ $concluidaNoCronograma ? 'Concluída no cronograma importado — não pode ser reprogramada' : 'Bloqueada: restrição aberta ou checklist de prontidão pendente' }}"></i>
+                                @endif
+                                @endunless
                                 @unless ($this->semanaEstaCongelada && ! $this->semanaEstaFechada)
                                 @if (in_array($statusVal, ['comprometido', 'em_execucao']))
                                     <div class="d-flex gap-1 justify-content-center">
@@ -1205,6 +1461,40 @@ new class extends Component {
             <p class="text-muted">Atividades que iniciam, terminam ou estão em execução nesta semana aparecerão aqui.</p>
         </div>
     @endif
+
+    {{-- Modal Confirmar Programação — visual próprio do sistema em vez do
+         confirm() nativo do navegador (wire:confirm), mesma estrutura do
+         Modal Não Concluído logo abaixo. --}}
+    <div class="modal fade" id="modalConfirmarProgramacao" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header border-bottom border-success">
+                    <h5 class="modal-title text-success">
+                        <i class="bx bx-list-check me-2"></i>Confirmar Programação
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-0">
+                        Programar <strong>{{ count($selecionadas) }}</strong> atividade(s) selecionada(s)?
+                    </p>
+                    <p class="text-muted small mb-0 mt-2">
+                        Isso cria (ou atualiza) a Programação Semanal desta semana com status
+                        <span class="badge bg-label-primary">Aberta</span> — ela passa a aparecer em
+                        <strong>Minhas Programações</strong>.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-success"
+                            wire:click="comprometerSelecionadas"
+                            wire:loading.attr="disabled">
+                        <i class="bx bx-check me-1"></i>Confirmar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     {{-- Modal Não Concluído --}}
     <div class="modal fade" id="modalNaoConcluido" tabindex="-1">
@@ -1354,7 +1644,7 @@ new class extends Component {
                     </div>
                 </div>
                 <div class="col-12">
-                    <label class="form-label small text-muted mb-1">Referência de HH total (coluna % do Projeto)</label>
+                    <label class="form-label small text-muted mb-1">Referência de HH total (cards % Previsto / % Avanço)</label>
                     <select class="form-select form-select-sm" wire:model.live="linhaBaseId">
                         <option value="">Linha de Base: importação mais recente</option>
                         @foreach ($this->linhasBase as $lb)
@@ -1430,46 +1720,43 @@ new class extends Component {
 
 @script
 <script>
-    let graficoDisciplinaPeriodo = null;
-
-    function desenharDisciplinaPeriodo(dados) {
-        const canvas = document.getElementById('graficoDisciplinaPeriodo');
-        if (!canvas) {
-            graficoDisciplinaPeriodo = null;
-            return;
-        }
-
-        const cores = ['#696cff', '#03c3ec', '#ffab00', '#71dd37', '#ff3e1d', '#8592a3', '#e83e8c', '#20c997'];
-        const labels = Object.keys(dados);
-        const valores = Object.values(dados);
-        const backgroundColor = labels.map((_, i) => cores[i % cores.length]);
-
-        if (graficoDisciplinaPeriodo && graficoDisciplinaPeriodo.canvas === canvas) {
-            graficoDisciplinaPeriodo.data.labels = labels;
-            graficoDisciplinaPeriodo.data.datasets[0].data = valores;
-            graficoDisciplinaPeriodo.data.datasets[0].backgroundColor = backgroundColor;
-            graficoDisciplinaPeriodo.update();
-            return;
-        }
-
-        graficoDisciplinaPeriodo = new Chart(canvas, {
-            type: 'pie',
-            data: { labels, datasets: [{ data: valores, backgroundColor }] },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } } },
-            },
-        });
-    }
-
-    desenharDisciplinaPeriodo(@json($this->dadosGraficoDisciplinaParaJs()));
-
-    $wire.on('disciplina-periodo-atualizada', ({ dados }) => desenharDisciplinaPeriodo(dados));
-
     $wire.on('show-toast', ({ message, type = 'success' }) => {
         toastr.options = { positionClass: 'toast-top-right', timeOut: 4000, closeButton: true, progressBar: true };
         (toastr[type] || toastr.success)(message);
     });
+
+    // Modal só abre DEPOIS que o servidor confirma que a seleção é
+    // válida (abrirConfirmacaoProgramar) — nunca no clique puro do
+    // botão, senão a contagem exibida podia ficar desatualizada
+    // enquanto o wire:model.live do checkbox ainda estava sincronizando.
+    $wire.on('abrir-modal-confirmar-programacao', () => {
+        const modalEl = document.getElementById('modalConfirmarProgramacao');
+        if (modalEl) {
+            bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        }
+    });
+
+    // Fecha o modal só quando o PRÓPRIO servidor manda (dispatch dedicado
+    // no início de comprometerSelecionadas) — nunca via data-bs-dismiss
+    // no mesmo botão que dispara wire:click. Essa combinação é o mesmo
+    // padrão de bug já documentado no layout base do projeto (ver
+    // resources/views/layouts/sections/scripts.blade.php): o dismiss do
+    // Bootstrap corre em paralelo com o morph do Livewire e pode deixar
+    // um .modal-backdrop órfão em <body>, bloqueando clique na tela
+    // inteira. hideModalConfirmarProgramacao() sempre limpa o backdrop
+    // manualmente depois, como rede de segurança extra — nunca confia só
+    // no evento 'hidden.bs.modal' do Bootstrap pra isso.
+    function hideModalConfirmarProgramacao() {
+        const modalEl = document.getElementById('modalConfirmarProgramacao');
+        if (modalEl) {
+            bootstrap.Modal.getInstance(modalEl)?.hide();
+        }
+        document.querySelectorAll('.modal-backdrop').forEach((el) => el.remove());
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+    }
+
+    $wire.on('fechar-modal-confirmar-programacao', hideModalConfirmarProgramacao);
 </script>
 @endscript

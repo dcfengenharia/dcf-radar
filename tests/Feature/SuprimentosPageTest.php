@@ -210,7 +210,14 @@ class SuprimentosPageTest extends TestCase
     public function test_salvar_realizado_no_detalhe_recalcula_tendencia_e_status(): void
     {
         $fluxo = $this->criarFluxo();
-        $atividade = $this->criarAtividade('2026-09-01');
+        // Necessidade bem distante de "hoje" (relativa a now(), nunca uma
+        // string de data absoluta) — o status EmAndamento/EmRisco em
+        // SuprimentoScheduler::calcularStatus() compara a tendência
+        // recalculada contra Carbon::today(), então uma data fixa no
+        // passado (ex.: '2026-09-01') fica cada vez mais perto de "hoje"
+        // a cada dia que passa e eventualmente cruza o limiar de risco,
+        // quebrando o teste sem nenhuma mudança de comportamento real.
+        $atividade = $this->criarAtividade(now()->addDays(90)->toDateString());
 
         $item = ItemSuprimento::create([
             'tenant_id' => $this->tenant->id,
@@ -229,7 +236,7 @@ class SuprimentosPageTest extends TestCase
 
         $this->componente()
             ->call('abrirDetalhe', $item->id)
-            ->set("realizadoForm.{$etapaCotacao->id}", '2026-07-20')
+            ->set("realizadoForm.{$etapaCotacao->id}", now()->toDateString())
             ->call('salvarRealizado')
             ->assertHasNoErrors();
 
