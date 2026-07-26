@@ -219,6 +219,7 @@ new class extends Component {
         app(ReportGerador::class)->emitir($this->report, auth()->user());
 
         $this->report->refresh();
+        $this->dispatch('hide-emitir-modal');
         $this->dispatch('show-toast', message: 'Report emitido. Agora é somente-leitura e visível a todos com acesso à obra.');
     }
 
@@ -419,8 +420,7 @@ new class extends Component {
             </button>
             @endif
             @can('emitir', $report)
-            <button class="btn btn-success" wire:click="emitir"
-                    wire:confirm="Emitir este report? Ele deixará de ser rascunho e passará a ser visível (e comentável) por todos com acesso à obra.">
+            <button class="btn btn-success" type="button" data-bs-toggle="modal" data-bs-target="#emitirReportModal">
                 <i class="bx bx-send me-1"></i>Emitir
             </button>
             @endcan
@@ -793,6 +793,34 @@ new class extends Component {
         </div>
     </div>
 
+    {{-- Modal: Confirmar emissão --}}
+    <div wire:ignore.self class="modal fade" id="emitirReportModal" data-bs-backdrop="static" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header border-bottom py-3">
+                    <h5 class="modal-title fw-semibold">
+                        <i class="bx bx-send me-2"></i>Emitir Report
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-4">
+                    <p class="mb-3">Este report deixará de ser rascunho e passará a ser visível (e comentável) por todos com acesso à obra.</p>
+                    <div class="alert alert-warning d-flex align-items-center mb-0">
+                        <i class="bx bx-info-circle me-2 flex-shrink-0"></i>
+                        <span>Depois de emitido, o report vira <strong>somente-leitura</strong> para o planejamento.</span>
+                    </div>
+                </div>
+                <div class="modal-footer border-top py-3">
+                    <button type="button" class="btn btn-label-secondary shadow-none" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-success shadow-none" wire:click="emitir">
+                        <span wire:loading.remove wire:target="emitir"><i class="bx bx-send me-1"></i>Emitir Report</span>
+                        <span wire:loading wire:target="emitir"><i class="bx bx-loader-alt bx-spin me-1"></i>Emitindo...</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     {{-- Modal de ampliação de foto (reaproveitado por todas as miniaturas) --}}
     <div class="modal fade" id="modal-foto-ampliada" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
@@ -858,6 +886,19 @@ new class extends Component {
         if (typeof toastr !== 'undefined') {
             toastr.options = { positionClass: 'toast-top-right', timeOut: 4000, closeButton: true, progressBar: true };
             toastr.success(message);
+        }
+    });
+
+    $wire.on('hide-emitir-modal', () => {
+        const el = document.getElementById('emitirReportModal');
+        if (el) {
+            bootstrap.Modal.getInstance(el)?.hide();
+            setTimeout(() => {
+                document.body.classList.remove('modal-open');
+                document.body.style.overflow = '';
+                document.body.style.paddingRight = '';
+                document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+            }, 150);
         }
     });
 
