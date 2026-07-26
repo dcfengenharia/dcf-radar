@@ -57,6 +57,12 @@ $container = ($configData['contentLayout'] === 'compact') ? 'container-xxl' : 'c
       <livewire:avisos-plataforma.popup />
       @endpersist
 
+      {{-- Popup de Suporte/Feedback — mesmo @persist acima, aberto sob demanda
+           pelo footer ou pelo alerta "Sistema em testes" da navbar. --}}
+      @persist('suporte-popup')
+      <livewire:suporte.popup />
+      @endpersist
+
       <!-- BEGIN: Navbar-->
       @if ($isNavbar)
       @persist('topnav')

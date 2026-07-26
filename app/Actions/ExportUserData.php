@@ -57,6 +57,7 @@ class ExportUserData
             'item_suprimento_comentarios' => $this->porColuna('item_suprimento_comentarios', 'autor_id', $user->id, $tenantId),
             'documento_engenharia_revisoes_criadas' => $this->porColuna('documento_engenharia_revisoes', 'criado_por_id', $user->id, $tenantId),
             'documento_engenharia_reprogramacoes_criadas' => $this->porColuna('documento_engenharia_reprogramacoes', 'criado_por_id', $user->id, $tenantId),
+            'feedbacks_enviados' => $this->porColuna('feedbacks', 'user_id', $user->id, $tenantId),
         ];
     }
 

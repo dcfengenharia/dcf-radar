@@ -9,7 +9,7 @@ $containerFooter = ($configData['contentLayout'] === 'compact') ? 'container-xxl
       © {{ date('Y') }}. Desenvolvido com 🍺 por <a href="{{ (!empty(config('variables.creatorUrl')) ? config('variables.creatorUrl') : '') }}" target="_blank" class="footer-link fw-medium">{{ (!empty(config('variables.creatorName')) ? config('variables.creatorName') : '') }}</a>. Todos os direitos reservados.
     </div>
     <div  class="d-none d-lg-inline-block">
-      <a href="{{ config('variables.support') ? config('variables.support') : '#' }}" target="_blank" class="footer-link d-none d-sm-inline-block me-4">Suporte</a>
+      <a href="javascript:void(0)" onclick="Livewire.dispatch('abrir-suporte', { url: window.location.href })" class="footer-link d-none d-sm-inline-block me-4">Suporte</a>
       <a href="{{ route('logout') }}" onclick="event.preventDefault(); document.getElementById('logout-form').submit();" class="btn btn-sm btn-outline-danger">
         <i class='bx bx-log-out-circle me-1'></i>
         <span class="align-middle">Sair</span>

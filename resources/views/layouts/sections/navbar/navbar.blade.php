@@ -97,6 +97,16 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
       </ul>
       @endif
 
+      @auth
+      <button type="button"
+              onclick="Livewire.dispatch('abrir-suporte', { url: window.location.href })"
+              class="btn btn-label-warning d-flex align-items-center me-3 border-0"
+              title="Sistema em fase de testes — clique para enviar feedback">
+        <i class="bx bx-flask me-2 fs-5"></i>
+        <span class="fw-semibold d-none d-md-inline-block small">Sistema em testes</span>
+      </button>
+      @endauth
+
       @if($configData['hasCustomizer'] == true)
       <div class="navbar-nav align-items-center">
         <div class="nav-item dropdown-style-switcher dropdown me-2 me-xl-0">
