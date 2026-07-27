@@ -29,6 +29,10 @@ class CurvaAvanco
      * $avancoImportacaoId fixa qual importação de Realizado/Tendência usar
      * (mesmo espírito de $linhaBaseId, mas pro lado do avanço) — só se aplica
      * quando $serie não for Previsto.
+     *
+     * $atividadeId escopa a curva a UMA ÚNICA atividade (filtro direto por
+     * coluna, sem whereHas) — usado pela Curva S por atividade do popup de
+     * detalhe do Lookahead. Independente dos demais filtros de escopo.
      */
     public function calcular(
         Work $obra,
@@ -48,6 +52,7 @@ class CurvaAvanco
         ?string $personalizado4Id = null,
         ?string $personalizado5Id = null,
         ?bool $faturamentoDireto = null,
+        ?string $atividadeId = null,
     ): array {
         $importacaoId = $this->resolverImportacaoId($obra, $serie, $linhaBaseId, $avancoImportacaoId);
 
@@ -58,6 +63,10 @@ class CurvaAvanco
         $query = AvancoPeriodo::where('cronograma_importacao_id', $importacaoId)
             ->where('serie', $serie->value)
             ->where('granularidade', $gran->value);
+
+        if ($atividadeId) {
+            $query->where('atividade_id', $atividadeId);
+        }
 
         $temFiltroAtividade = $pacoteId || $etapaId || $disciplinaId || $frenteId
             || $entregavelId || $equipeResponsavelId || $personalizado1Id || $personalizado2Id

@@ -1,9 +1,12 @@
 <?php
 
 use App\Actions\ProgramacaoSemanal\RegistrarComprometimentoSemanal;
+use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemAtividade;
 use App\Enums\OrigemProgramacaoSemanalItem;
+use App\Enums\SerieAvanco;
 use App\Enums\StatusAtividade;
+use App\Enums\StatusReport;
 use App\Enums\StatusRestricao;
 use App\Enums\TipoCronogramaImportacao;
 use App\Exports\LookaheadExport;
@@ -26,8 +29,10 @@ use App\Models\Personalizado2;
 use App\Models\Personalizado3;
 use App\Models\Personalizado4;
 use App\Models\Personalizado5;
+use App\Models\Report;
 use App\Models\Restricao;
 use App\Models\Work;
+use App\Services\CurvaAvanco;
 use App\Support\Concerns\ExecutaComTransacaoSegura;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
@@ -40,6 +45,11 @@ use Maatwebsite\Excel\Facades\Excel;
 
 new class extends Component {
   use ExecutaComTransacaoSegura;
+
+  // Mesmo formato "MÊS/AA" já usado em ⚡curvas.blade.php::dadosGraficoCurvaS()
+  // e ⚡dashboard.blade.php::formatarPeriodoPt() — duplicado aqui por
+  // convenção do projeto (helper pequeno por arquivo, não compartilhado via trait).
+  private const MESES_PT = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
 
   public Work $obra;
 
@@ -88,6 +98,8 @@ new class extends Component {
   // ---- Modal detalhe / matriz de prontidão ----
   public ?string $modalAtividadeId = null;
   public string $comentarioNovoAtividade = '';
+  public ?string $modalBaselineId = null; // Baseline selecionada só pra Curva S do popup — independente do $linhaBaseId da página
+  public string $modalGranularidade = 'semanal'; // Escala da Curva S do popup: 'semanal' | 'mensal'
 
   // ---- Modal dar baixa na restrição ----
   public ?string $baixandoRestricaoId = null;
@@ -747,6 +759,14 @@ new class extends Component {
   {
     $this->invalidarListagem();
   }
+  public function updatedModalBaselineId(): void
+  {
+    unset($this->modalCurvaAtividade);
+  }
+  public function updatedModalGranularidade(): void
+  {
+    unset($this->modalCurvaAtividade);
+  }
 
   // =========================================================================
   // REORDENAR ATIVIDADES DENTRO DO PACOTE (subir/descer)
@@ -1033,7 +1053,9 @@ new class extends Component {
   public function verAtividade(string $atividadeId): void
   {
     $this->modalAtividadeId = $atividadeId;
-    unset($this->atividadeDetalhe);
+    $this->modalBaselineId = null;
+    $this->modalGranularidade = 'semanal';
+    unset($this->atividadeDetalhe, $this->modalCurvaAtividade);
   }
 
   #[Computed]
@@ -1076,6 +1098,129 @@ new class extends Component {
         ]
       ),
     ];
+  }
+
+  /**
+   * Curva S Previsto x Realizado da atividade do popup de detalhe.
+   *
+   * Previsto vem da Baseline selecionada no popup ($modalBaselineId, ou a
+   * mais recente da obra por padrão) — reaproveita CurvaAvanco::calcular()
+   * escopado a UMA atividade (parâmetro atividadeId), mesma lógica de
+   * resolução de importação já usada em toda a Curva S da obra/pacote.
+   *
+   * Realizado vem do cronograma_importacao_id gravado no ÚLTIMO Report
+   * EMITIDO da obra — nunca da importação de avanço mais recente "ao vivo"
+   * (Report é fotografia: reflete os dados de quando foi gerado, nunca
+   * muda sozinho depois). Sem Report emitido, Realizado fica vazio (nunca
+   * 0% forçado).
+   *
+   * %Previsto/%Realizado exibidos no resumo e o indicador visual (farol)
+   * são derivados DESSAS MESMAS séries (último ponto <= hoje / último
+   * ponto da série), nunca de um cálculo paralelo — evita divergência
+   * entre a curva e os números do resumo.
+   */
+  #[Computed]
+  public function modalCurvaAtividade(): array
+  {
+    $atividade = $this->atividadeDetalhe['atividade'] ?? null;
+
+    if (!$atividade) {
+      return [];
+    }
+
+    $curvaAvanco = app(CurvaAvanco::class);
+    $baselineId = $this->modalBaselineId ?? $this->linhasBase->first()?->id;
+
+    // Datas de Início/Término (Linha de Base) exibidas junto do %Previsto
+    // PRECISAM vir da MESMA baseline usada pra calcular a curva — nunca do
+    // campo "ao vivo" ($at->baseline_inicio), que reflete a importação de
+    // baseline mais recente, não necessariamente a LinhaBase selecionada
+    // aqui. Sem isso, dava pra ver "% Previsto" > 0 com uma data de início
+    // no futuro (datas de uma baseline, % de outra) — mesmo padrão de
+    // resolução via snapshot já usado em ⚡linhas-base.blade.php.
+    $baselineInicio = $atividade->baseline_inicio;
+    $baselineTermino = $atividade->baseline_termino;
+    if ($baselineId) {
+      $linhaBaseSelecionada = $this->linhasBase->firstWhere('id', $baselineId);
+      $snapshotBaseline = $linhaBaseSelecionada
+        ? AtividadeSnapshot::where('cronograma_importacao_id', $linhaBaseSelecionada->cronograma_importacao_id)
+          ->where('atividade_id', $atividade->id)
+          ->first()
+        : null;
+      $baselineInicio = $snapshotBaseline?->baseline_inicio ?? $baselineInicio;
+      $baselineTermino = $snapshotBaseline?->baseline_termino ?? $baselineTermino;
+    }
+
+    $granularidade = GranularidadePeriodo::from($this->modalGranularidade);
+
+    $previsto = $baselineId
+      ? $curvaAvanco->calcular(
+        $this->obra,
+        SerieAvanco::Previsto,
+        $granularidade,
+        linhaBaseId: $baselineId,
+        atividadeId: $atividade->id,
+      )
+      : [];
+
+    $totalPrevisto = array_sum(array_column($previsto, 'horas'));
+
+    $ultimoReportEmitido = Report::where('obra_id', $this->obra->id)
+      ->where('status', StatusReport::Emitido->value)
+      ->latest('periodo_referencia')
+      ->first();
+
+    $realizado = [];
+    if ($ultimoReportEmitido?->cronograma_importacao_id) {
+      $bruto = $curvaAvanco->calcular(
+        $this->obra,
+        SerieAvanco::Realizado,
+        $granularidade,
+        avancoImportacaoId: $ultimoReportEmitido->cronograma_importacao_id,
+        atividadeId: $atividade->id,
+      );
+      $realizado = $totalPrevisto > 0 ? $curvaAvanco->rebasearPercentual($bruto, $totalPrevisto) : $bruto;
+    }
+
+    $hoje = now()->toDateString();
+    $percentualPrevisto = collect($previsto)
+      ->filter(fn($p) => $p['periodo_inicio'] <= $hoje)
+      ->last()['percentual'] ?? null;
+    $percentualRealizado = collect($realizado)->last()['percentual'] ?? null;
+
+    // Rótulos formatados por período (chave = periodo_inicio, mesma usada
+    // pra casar Previsto/Realizado no gráfico) — mesmo padrão "MÊS/AA" já
+    // usado em ⚡curvas.blade.php::dadosGraficoCurvaS()/⚡dashboard.blade.php::formatarPeriodoPt().
+    $labels = [];
+    foreach ([...$previsto, ...$realizado] as $ponto) {
+      $labels[$ponto['periodo_inicio']] = $this->formatarLabelPeriodoAtividade($ponto['periodo_inicio'], $granularidade);
+    }
+
+    return [
+      'baseline_id' => $baselineId,
+      'baseline_inicio' => $baselineInicio,
+      'baseline_termino' => $baselineTermino,
+      'tem_baseline' => (bool) $baselineId,
+      'tem_report' => (bool) $ultimoReportEmitido,
+      'previsto' => $previsto,
+      'realizado' => $realizado,
+      'labels' => $labels,
+      'percentual_previsto' => $percentualPrevisto,
+      'percentual_realizado' => $percentualRealizado,
+      'indicador' => is_null($percentualRealizado)
+        ? 'neutro'
+        : ($percentualRealizado >= ($percentualPrevisto ?? 0) ? 'favoravel' : 'desfavoravel'),
+    ];
+  }
+
+  /** Mesmo padrão "MÊS/AA" (mensal) / "Sem dd/mm/aaaa" (semanal) já usado em ⚡curvas.blade.php. */
+  private function formatarLabelPeriodoAtividade(string $periodoInicio, GranularidadePeriodo $gran): string
+  {
+    $data = Carbon::parse($periodoInicio);
+
+    return $gran === GranularidadePeriodo::Mensal
+      ? self::MESES_PT[$data->month - 1] . '/' . $data->format('y')
+      : 'Sem ' . $data->format('d/m/Y');
   }
 
   public function marcarItemNaDetalhe(string $atividadeId, string $itemId, bool $valor): void
@@ -1683,6 +1828,7 @@ new class extends Component {
                     in_array($r->status->value ?? $r->status, ['aberta', 'em_tratamento', 'aguardando_terceiros']) && $r->bloqueante
                 )->count() > 0;
                 $atividadePronta = ! $temBloq && ($totalChk === 0 || $okChk >= $totalChk);
+                $curvaAtividade = $this->modalCurvaAtividade;
             @endphp
             <div class="modal-header bg-dark text-white">
                 <div class="flex-grow-1 mb-2">
@@ -1703,96 +1849,134 @@ new class extends Component {
 
             <div class="px-4 py-3 bg-light border-bottom">
                 <div class="row g-3 text-center">
-                    <div class="col-3">
+                    <div class="col-6 col-md-3 col-lg">
                         <div class="small text-muted">Início (Linha de Base)</div>
-                        <h4 class="fw-semibold">{{ $at->baseline_inicio?->format('d/m/Y') ?? '—' }}</h4>
+                        <h4 class="fw-semibold">{{ $curvaAtividade['baseline_inicio']?->format('d/m/Y') ?? '—' }}</h4>
                     </div>
-                    <div class="col-3">
+                    <div class="col-6 col-md-3 col-lg">
                         <div class="small text-muted">Término (Linha de Base)</div>
-                        <h4 class="fw-semibold">{{ $at->baseline_termino?->format('d/m/Y') ?? '—' }}</h4>
+                        <h4 class="fw-semibold">{{ $curvaAtividade['baseline_termino']?->format('d/m/Y') ?? '—' }}</h4>
                     </div>
-                    <div class="col-3">
+                    <div class="col-6 col-md-3 col-lg">
                         <div class="small text-muted">Início (Tendência)</div>
                         <h4 class="fw-semibold">{{ $at->inicio_planejado?->format('d/m/Y') ?? '—' }}</h4>
                     </div>
-                    <div class="col-3">
+                    <div class="col-6 col-md-3 col-lg">
                         <div class="small text-muted">Término (Tendência)</div>
                         <h4 class="fw-semibold">{{ $at->data_termino?->format('d/m/Y') ?? '—' }}</h4>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg">
+                        <div class="small text-muted">% Previsto</div>
+                        <h4 class="fw-semibold">
+                            {{ $curvaAtividade['percentual_previsto'] !== null ? number_format($curvaAtividade['percentual_previsto'], 0) . '%' : '—' }}
+                        </h4>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg">
+                        <div class="small text-muted">% Realizado</div>
+                        <h4 class="fw-semibold"
+                            @if (! $curvaAtividade['tem_report']) title="Realizado ainda não disponível. Os dados reais serão exibidos após a emissão do primeiro Report." @endif>
+                            {{ $curvaAtividade['percentual_realizado'] !== null ? number_format($curvaAtividade['percentual_realizado'], 0) . '%' : '—' }}
+                        </h4>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg">
+                        <div class="small text-muted">Desempenho</div>
+                        <h4 class="fw-semibold" title="{{ match($curvaAtividade['indicador']) {
+                            'favoravel' => 'Realizado dentro ou acima do previsto',
+                            'desfavoravel' => 'Realizado abaixo do previsto',
+                            default => 'Sem dados de realizado suficientes pra avaliar',
+                        } }}">
+                            @if ($curvaAtividade['indicador'] === 'favoravel') 😊
+                            @elseif ($curvaAtividade['indicador'] === 'desfavoravel') 😟
+                            @else ⚪
+                            @endif
+                        </h4>
                     </div>
                 </div>
             </div>
 
-
             <div class="px-4 py-3 bg-light border-bottom">
-              <div class="row g-3">
-                <div class="col-sm-6 col-lg-3 mb-2">
-                  <div class="card card-border-shadow-primary h-100">
-                    <div class="card-body">
-                      <div class="d-flex align-items-center mb-2 pb-1">
-                        <h4 class="ms-1 mb-0">42</h4>
-                      </div>
-                      <p class="mb-1">On route vehicles</p>
-                      <p class="mb-0">
-                        <span class="fw-medium me-1">+18.2%</span>
-                        <small class="text-muted">than last week</small>
-                      </p>
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+                    <h6 class="fw-bold mb-0"><i class="bx bx-trending-up me-2 text-primary"></i>Curva S da Atividade</h6>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <label class="small text-muted mb-0">Escala:</label>
+                        <select class="form-select form-select-sm" style="width:auto" wire:model.live="modalGranularidade">
+                            <option value="semanal">Semanal</option>
+                            <option value="mensal">Mensal</option>
+                        </select>
+                        @if ($this->linhasBase->isNotEmpty())
+                        <label class="small text-muted mb-0">Baseline:</label>
+                        <select class="form-select form-select-sm" style="width:auto" wire:model.live="modalBaselineId">
+                            @foreach ($this->linhasBase as $lb)
+                            <option value="{{ $lb->id }}" @selected($curvaAtividade['baseline_id'] === $lb->id)>{{ $lb->nome }}</option>
+                            @endforeach
+                        </select>
+                        @endif
                     </div>
-                  </div>
                 </div>
-                <div class="col-sm-6 col-lg-3 mb-2">
-                  <div class="card card-border-shadow-warning h-100">
-                    <div class="card-body">
-                      <div class="d-flex align-items-center mb-2 pb-1">
-                        <div class="avatar me-2">
-                          <span class="avatar-initial rounded bg-label-warning"><i class="bx bx-error"></i></span>
-                        </div>
-                        <h4 class="ms-1 mb-0">8</h4>
-                      </div>
-                      <p class="mb-1">Vehicles with errors</p>
-                      <p class="mb-0">
-                        <span class="fw-medium me-1">-8.7%</span>
-                        <small class="text-muted">than last week</small>
-                      </p>
+
+                @if (! $curvaAtividade['tem_baseline'])
+                <div class="alert alert-warning mb-0 py-2">
+                    <i class="bx bx-info-circle me-1"></i>Nenhuma Baseline disponível para esta atividade.
+                </div>
+                @elseif (empty($curvaAtividade['previsto']))
+                <div class="alert alert-secondary mb-0 py-2">
+                    <i class="bx bx-info-circle me-1"></i>Não há dados suficientes para gerar a Curva S desta atividade.
+                </div>
+                @else
+                <div wire:key="curva-atividade-{{ $modalAtividadeId }}-{{ $curvaAtividade['baseline_id'] }}-{{ $modalGranularidade }}-{{ $curvaAtividade['tem_report'] ? 's' : 'n' }}"
+                     x-data
+                     x-init="
+                        const ctx = $refs.canvasCurvaAtividade.getContext('2d');
+                        if ($refs.canvasCurvaAtividade._chart) { $refs.canvasCurvaAtividade._chart.destroy(); }
+                        const dados = @js($curvaAtividade);
+                        const mapaPrevisto = Object.fromEntries(dados.previsto.map(p => [p.periodo_inicio, p.percentual]));
+                        const mapaRealizado = Object.fromEntries(dados.realizado.map(p => [p.periodo_inicio, p.percentual]));
+                        const periodos = [...new Set([
+                            ...dados.previsto.map(p => p.periodo_inicio),
+                            ...dados.realizado.map(p => p.periodo_inicio),
+                        ])].sort();
+                        const labels = periodos.map(p => dados.labels[p] ?? p);
+                        $refs.canvasCurvaAtividade._chart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [
+                                    {
+                                        label: 'Previsto (acum.)',
+                                        data: periodos.map(p => mapaPrevisto[p] ?? null),
+                                        borderColor: '#3C79E8',
+                                        backgroundColor: '#3C79E8',
+                                        tension: 0.3,
+                                        spanGaps: true,
+                                    },
+                                    {
+                                        label: 'Realizado (acum.)',
+                                        data: periodos.map(p => mapaRealizado[p] ?? null),
+                                        borderColor: '#71dd37',
+                                        backgroundColor: '#71dd37',
+                                        tension: 0.3,
+                                        spanGaps: true,
+                                    },
+                                ],
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                scales: { y: { min: 0, max: 100, ticks: { callback: (v) => v + '%' } } },
+                            },
+                        });
+                     "
+                >
+                    <div style="height: 260px">
+                        <canvas x-ref="canvasCurvaAtividade"></canvas>
                     </div>
-                  </div>
-                </div>
-                <div class="col-sm-6 col-lg-3 mb-2">
-                  <div class="card card-border-shadow-danger h-100">
-                    <div class="card-body">
-                      <div class="d-flex align-items-center mb-2 pb-1">
-                        <div class="avatar me-2">
-                          <span class="avatar-initial rounded bg-label-danger"
-                            ><i class="bx bx-git-repo-forked"></i
-                          ></span>
-                        </div>
-                        <h4 class="ms-1 mb-0">27</h4>
-                      </div>
-                      <p class="mb-1">Deviated from route</p>
-                      <p class="mb-0">
-                        <span class="fw-medium me-1">+4.3%</span>
-                        <small class="text-muted">than last week</small>
-                      </p>
+                    @if (! $curvaAtividade['tem_report'])
+                    <div class="small text-muted mt-2">
+                        <i class="bx bx-info-circle me-1"></i>Realizado ainda não disponível. Os dados reais serão exibidos após a emissão do primeiro Report.
                     </div>
-                  </div>
+                    @endif
                 </div>
-                <div class="col-sm-6 col-lg-3 mb-2">
-                  <div class="card card-border-shadow-info h-100">
-                    <div class="card-body">
-                      <div class="d-flex align-items-center mb-2 pb-1">
-                        <div class="avatar me-2">
-                          <span class="avatar-initial rounded bg-label-info"><i class="bx bx-time-five"></i></span>
-                        </div>
-                        <h4 class="ms-1 mb-0">13</h4>
-                      </div>
-                      <p class="mb-1">Late vehicles</p>
-                      <p class="mb-0">
-                        <span class="fw-medium me-1">-2.5%</span>
-                        <small class="text-muted">than last week</small>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
+                @endif
             </div>
 
             <div class="modal-body p-0">

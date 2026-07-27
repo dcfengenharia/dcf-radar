@@ -1006,6 +1006,162 @@ ReportComentario (só em reports emitidos). Reaproveita
   correspondente). Suíte completa: 916 passed / 6 skipped (skips
   pré-existentes, sem relação com esta feature).
 
+## E-mail de boas-vindas ao verificar o cadastro
+
+- **Disparo**: `App\Listeners\EnviarBoasVindasAposVerificarEmail`,
+  registrado em `App\Providers\EventServiceProvider::$listen` pro evento
+  nativo `Illuminate\Auth\Events\Verified` (ao lado da entrada já
+  existente de `Registered::class => [SendEmailVerificationNotification::class]`
+  — `shouldDiscoverEvents()` retorna `false` neste projeto, então todo
+  listener precisa entrar explicitamente nesse array). O próprio
+  `VerifyEmailController::__invoke()` (não alterado) já disparava
+  `event(new Verified(...))` só quando `markEmailAsVerified()` retorna
+  true — usuário já verificado que acessa o link de novo cai no
+  `return` cedo e não dispara o evento de novo, então o e-mail de
+  boas-vindas nunca é reenviado à toa.
+- **`App\Notifications\BoasVindasNotification`**: mesmo esqueleto de
+  `AgradecimentoFeedbackNotification` (sem parâmetro de construtor,
+  `via() => ['mail']`, `ShouldQueue` + conexão dedicada `redis`,
+  `MailMessage` simples com `greeting()/line()/action()/salutation()`,
+  sem Markdown customizado) — mensagem com um pitch curto das 3
+  frentes centrais do produto (Lookahead/EAP, Restrições/prontidão,
+  Relatórios/PPC) e botão de ação pro Painel de Controle
+  (`url('/app/home')`).
+- Testes: `tests/Feature/BoasVindasNotificationTest.php` — verifica
+  email verificado com sucesso dispara a notificação, hash inválido
+  não dispara, e usuário já verificado que acessa o link de novo
+  também não dispara (idempotência via `Verified` só disparar uma
+  vez). Suíte completa: 919 passed / 6 skipped (skips pré-existentes),
+  sem regressão nos testes de verificação de e-mail já existentes
+  (`tests/Feature/Auth/EmailVerificationTest.php`,
+  `tests/Feature/EmailVerificationTest.php`, que usam `Event::fake()`
+  e por isso não exercitam o listener novo).
+
+## Lookahead — Curva S da Atividade no popup de detalhe
+
+- **Contexto**: pedido do usuário pra substituir os 4 cards do popup de
+  detalhe da atividade (achados na investigação como placeholder puro
+  do tema — "On route vehicles" etc., sem nenhuma ligação com dado
+  real) por uma Curva S Previsto×Realizado da própria atividade, com
+  seletor de Baseline, %Previsto/%Realizado e indicador visual (farol).
+  Regra fundamental do pedido: mudança isolada, sem alterar filtros,
+  tabela, outros popups (Restrições/Prontidão/Comentários) ou qualquer
+  outra tela.
+- **Achado que definiu a solução**: `App\Models\AvancoPeriodo` já grava
+  HH faseado **por atividade** (coluna `atividade_id` já existe, ao lado
+  de `cronograma_importacao_id`/`serie`/`granularidade`/`periodo_inicio`)
+  — então uma Curva S de verdade por atividade é montável **sem
+  nenhuma migration nova**, só estendendo `App\Services\CurvaAvanco::calcular()`
+  (que já resolve importação certa, agrupa HH por período e calcula
+  %acumulado, hoje só escopado por pacote/etapa/disciplina/etc.) com
+  mais um parâmetro opcional no fim da assinatura, `?string $atividadeId = null`
+  — filtro direto de coluna, sem quebrar nenhuma chamada existente.
+  `Atividade.percentual_concluido` (a % "ao vivo" do MS Project) foi
+  descartado como fonte pra isso — é um valor único sobrescrito a cada
+  importação, sem histórico por baseline.
+- **`⚡lookahead.blade.php`**: novo estado `$modalBaselineId` (seleção de
+  Baseline só do popup — independente do `$linhaBaseId` da página, que
+  continua "ao vivo" por padrão como sempre foi), resetado a cada
+  `verAtividade()`. Novo computed `modalCurvaAtividade()`:
+  - **Previsto**: `CurvaAvanco::calcular(..., linhaBaseId: $baselineEfetivo, atividadeId: $at->id)`
+    — `$baselineEfetivo` = `$modalBaselineId` ou a `LinhaBase` mais
+    recente da obra (reaproveita `$this->linhasBase`, computed já
+    existente na página).
+  - **Realizado**: vem do `cronograma_importacao_id` gravado no ÚLTIMO
+    Report **emitido** da obra (`Report::where('status', Emitido)->latest('periodo_referencia')->first()`,
+    mesmo padrão de `⚡dashboard.blade.php::ultimoReportEmitido()`) — nunca
+    da importação de avanço mais recente "ao vivo" (isso é o que
+    garante "Report é fotografia": trocar a Baseline no popup NUNCA
+    muda o Realizado, só o Previsto). Rebaseado com
+    `CurvaAvanco::rebasearPercentual()` (já existente, mesmo mecanismo
+    usado no Report semanal) contra o total de HH do Previsto, pra as
+    duas séries ficarem na MESMA escala de %.
+  - `%Previsto`/`%Realizado`/indicador do resumo são lidos dos ÚLTIMOS
+    pontos dessas MESMAS séries (nunca um cálculo paralelo) — Previsto =
+    último ponto com `periodo_inicio <= hoje`; Realizado = último ponto
+    da série (mesmo critério de "última semana com Realizado" já usado
+    no Dashboard/Benchmarking). Indicador: `neutro` sem Realizado,
+    `desfavoravel` se Previsto > Realizado, `favoravel` caso contrário.
+- **Chart.js**: página não carregava a lib — adicionado
+  `@section('vendor-script')` em `resources/views/app/radar/lookahead.blade.php`
+  (mesmo path/convenção do Report). Init do gráfico via `x-init` do
+  Alpine dentro de um `<div wire:key="curva-atividade-{{ $modalAtividadeId }}-{{ $baselineId }}-...">`
+  — **não** `@script`/`$wire.on` (que só roda uma vez por componente,
+  regra já documentada neste arquivo) — o `wire:key` novo a cada
+  troca de atividade/baseline força o Livewire a destruir/recriar o nó,
+  reexecutando o `x-init` com dado fresco via `@js($curvaAtividade)`.
+  Cores reaproveitadas de `relatorio-grafico-config.blade.php` (Previsto
+  `#3C79E8`, Realizado `#71dd37`). Rótulos das duas séries são a UNIÃO
+  ordenada dos períodos de ambas (nunca só os do Previsto) — senão
+  Previsto e Realizado com semanas diferentes ficam desalinhados no
+  eixo X.
+- **Mensagens amigáveis** (nunca erro, nunca 0% forçado): sem nenhuma
+  `LinhaBase` na obra → "Nenhuma Baseline disponível para esta
+  atividade" (Realizado continua aparecendo se houver Report); sem
+  Report emitido → "Realizado ainda não disponível..." + indicador
+  neutro; sem HH suficiente pra essa atividade na baseline escolhida →
+  "Não há dados suficientes para gerar a Curva S desta atividade".
+- **Não tocado**: filtros da página, tabela principal, export PDF/Excel/impressão,
+  demais seções do popup (Restrições/Prontidão/Comentários), qualquer
+  outra tela que usa `CurvaAvanco::calcular()` (parâmetro novo é opcional).
+- Testes: 4 novos em `tests/Feature/LookaheadTest.php` (baseline+report
+  completo; troca de baseline muda Previsto mas não o HH bruto do
+  Realizado — a % dele muda de escala porque é sempre rebaseada contra
+  o total da baseline selecionada, mesma lógica de sempre; sem Report
+  emitido; sem Baseline). Suíte completa: 923 passed / 6 skipped (skips
+  pré-existentes). QA manual no browser confirmou o gráfico renderizando
+  com dado real (Previsto 40%→100%, Realizado 30%→lacuna, sem erro no
+  console) e os números do resumo batendo com a curva.
+- **Bug achado em QA pelo usuário (corrigido na mesma fase)**: dava pra
+  ver "% Previsto: 23%" ao lado de uma data de início no FUTURO — sem
+  sentido. Causa: "Início/Término (Linha de Base)" exibidos no popup
+  vinham do campo AO VIVO da atividade (`$at->baseline_inicio`), enquanto
+  o %Previsto vinha da Baseline SELECIONADA no seletor da Curva S — duas
+  fontes diferentes, podendo divergir sempre que a baseline selecionada
+  não for a mesma que definiu o campo ao vivo (ex.: reimportação mais
+  recente atualizou o campo ao vivo, mas o usuário está olhando uma
+  Linha de Base salva mais antiga). Corrigido resolvendo essas datas via
+  `AtividadeSnapshot` da MESMA baseline selecionada (mesmo padrão já
+  usado em `⚡linhas-base.blade.php`), com fallback pro campo ao vivo só
+  quando não existe snapshot pra essa atividade+importação — agora data
+  exibida e %Previsto sempre concordam (mesma fonte). Teste de regressão
+  dedicado: `test_datas_e_percentual_previsto_vem_da_mesma_baseline_selecionada_nao_do_campo_ao_vivo`.
+- **Layout ajustado a pedido do usuário**: as duas linhas separadas
+  (datas / %Previsto+%Realizado+farol) viraram UMA linha só — 7 blocos
+  (`col-6 col-md-3`/`col-md-4 col-lg`, responsivo) na mesma
+  `div.row.g-3.text-center`.
+- **Escala mensal no gráfico (a pedido do usuário)**: novo `<select>`
+  "Escala" (Semanal/Mensal) no cabeçalho do card, ao lado do seletor de
+  Baseline — novo estado `public string $modalGranularidade = 'semanal'`
+  (reset pra `'semanal'` a cada `verAtividade()`, mesmo padrão de
+  `$modalBaselineId`) + `updatedModalGranularidade()` invalidando o
+  computed. Dentro de `modalCurvaAtividade()`, `GranularidadePeriodo::from($this->modalGranularidade)`
+  substituiu o `GranularidadePeriodo::Semanal` até então hardcoded nas
+  duas chamadas de `CurvaAvanco::calcular()` (Previsto e Realizado) —
+  o parâmetro já existia no serviço, só a chamada estava fixa. **Rótulos
+  reaproveitam o padrão "MÊS/AA" já usado em
+  `⚡curvas.blade.php::dadosGraficoCurvaS()`/`⚡dashboard.blade.php::formatarPeriodoPt()`**
+  — duplicado aqui (não compartilhado via trait, mesma convenção do
+  projeto) como uma constante `private const MESES_PT` + método privado
+  `formatarLabelPeriodoAtividade()` (mensal → `"JAN/26"`; semanal →
+  `"Sem dd/mm/aaaa"`, mantendo o formato semanal já existente). Os rótulos
+  formatados vão num mapa `labels` (chave = `periodo_inicio`, a mesma
+  usada pra casar Previsto/Realizado) dentro do array retornado pelo
+  computed; o JS do `x-init` faz `dados.labels[p] ?? p` só na hora de
+  montar o array de labels do Chart.js — o casamento Previsto×Realizado
+  por período continua 100% pela chave crua, o formato é só de exibição.
+  `wire:key` do container do gráfico ganhou `{{ $modalGranularidade }}`
+  (mesmo mecanismo de destruir/recriar o nó já usado pra baseline/atividade).
+  Teste novo: `test_escala_mensal_formata_rotulos_como_mes_barra_ano`
+  (cria import/LinhaBase/AvancoPeriodo mensal próprios, sem tocar no
+  helper compartilhado `criarLinhaBaseComPrevisto()`, que continua
+  semanal-only pros 5 testes que já dependiam disso). Suíte completa:
+  56/56 em `LookaheadTest`, 925 passed / 6 skipped no total. QA manual
+  no browser confirmou labels `ABR/26`/`MAI/26`/`JUN/26` no modo Mensal
+  (Previsto acumulado 31,25%/68,75%/100%, batendo com HH 50/60/50
+  seedados) e o modo Semanal inalterado (`Sem dd/mm/aaaa`), sem erro no
+  console em nenhum dos dois.
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:

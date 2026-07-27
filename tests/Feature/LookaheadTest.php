@@ -2,18 +2,24 @@
 
 namespace Tests\Feature;
 
+use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemAtividade;
 use App\Enums\Papel;
+use App\Enums\SerieAvanco;
 use App\Enums\StatusAtividade;
+use App\Enums\StatusReport;
 use App\Enums\StatusRestricao;
 use App\Enums\TipoCronogramaImportacao;
 use App\Models\Atividade;
 use App\Models\AtividadeComentario;
 use App\Models\AtividadeSnapshot;
+use App\Models\AvancoPeriodo;
 use App\Models\CronogramaImportacao;
 use App\Models\Etapa;
 use App\Models\FrenteTrabalho;
+use App\Models\LinhaBase;
 use App\Models\PacoteTrabalho;
+use App\Models\Report;
 use App\Models\Restricao;
 use App\Models\Tenant;
 use App\Models\User;
@@ -1284,5 +1290,295 @@ class LookaheadTest extends TestCase
             ->set('fonteData', 'tendencia')
             ->set('janelaDias', 30)
             ->assertSee($atividade->nome);
+    }
+
+    // =========================================================================
+    // POPUP DE DETALHE: CURVA S DA ATIVIDADE (PREVISTO x REALIZADO)
+    // =========================================================================
+
+    private function criarLinhaBaseComPrevisto(Atividade $atividade, array $horasPorSemana, ?string $nome = null, ?\Illuminate\Support\Carbon $criadaEm = null, ?\Illuminate\Support\Carbon $inicioPrimeiraSemana = null): LinhaBase
+    {
+        $importacao = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now()->subDays(30),
+        ]);
+
+        $linhaBase = LinhaBase::create([
+            'obra_id' => $this->obra->id,
+            'nome' => $nome ?? 'BL01',
+            'cronograma_importacao_id' => $importacao->id,
+        ]);
+
+        // latest() (usado por linhasBase()) ordena por created_at — em MySQL
+        // isso tem precisão de segundo, então 2 LinhaBase criadas na mesma
+        // chamada de teste podem empatar; forçar timestamps explícitos
+        // garante que "a mais recente" seja determinística no teste.
+        if ($criadaEm) {
+            $linhaBase->forceFill(['created_at' => $criadaEm])->save();
+        }
+
+        $semana = ($inicioPrimeiraSemana ?? now()->subWeeks(count($horasPorSemana)))->copy()->startOfWeek();
+        foreach ($horasPorSemana as $horas) {
+            AvancoPeriodo::create([
+                'tenant_id' => $this->obra->tenant_id,
+                'cronograma_importacao_id' => $importacao->id,
+                'atividade_id' => $atividade->id,
+                'granularidade' => GranularidadePeriodo::Semanal->value,
+                'serie' => SerieAvanco::Previsto->value,
+                'periodo_inicio' => $semana->copy(),
+                'horas' => $horas,
+            ]);
+            $semana->addWeek();
+        }
+
+        return $linhaBase;
+    }
+
+    private function criarReportEmitidoComRealizado(Atividade $atividade, array $horasPorSemana): Report
+    {
+        $importacao = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value,
+            'importado_em' => now()->subDays(5),
+        ]);
+
+        $semana = now()->subWeeks(count($horasPorSemana))->startOfWeek();
+        foreach ($horasPorSemana as $horas) {
+            AvancoPeriodo::create([
+                'tenant_id' => $this->obra->tenant_id,
+                'cronograma_importacao_id' => $importacao->id,
+                'atividade_id' => $atividade->id,
+                'granularidade' => GranularidadePeriodo::Semanal->value,
+                'serie' => SerieAvanco::Realizado->value,
+                'periodo_inicio' => $semana->copy(),
+                'horas' => $horas,
+            ]);
+            $semana->addWeek();
+        }
+
+        return Report::factory()->emitido()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'cronograma_importacao_id' => $importacao->id,
+            'periodo_referencia' => now(),
+            'criado_por' => $this->user->id,
+        ]);
+    }
+
+    public function test_curva_atividade_com_baseline_e_report_emitido_calcula_previsto_e_realizado(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]); // total 100HH, ambas semanas já passadas
+        $this->criarReportEmitidoComRealizado($atividade, [30]); // 30HH realizado
+
+        $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
+
+        $this->assertTrue($curva['tem_baseline']);
+        $this->assertTrue($curva['tem_report']);
+        $this->assertNotEmpty($curva['previsto']);
+        $this->assertNotEmpty($curva['realizado']);
+        $this->assertEqualsWithDelta(100.0, $curva['percentual_previsto'], 0.5);
+        $this->assertEqualsWithDelta(30.0, $curva['percentual_realizado'], 0.5);
+        $this->assertEquals('desfavoravel', $curva['indicador']); // 30% realizado < 100% previsto
+    }
+
+    public function test_escala_mensal_formata_rotulos_como_mes_barra_ano(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        $importacao = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now()->subDays(30),
+        ]);
+        LinhaBase::create([
+            'obra_id' => $this->obra->id,
+            'nome' => 'BL01 - Mensal',
+            'cronograma_importacao_id' => $importacao->id,
+        ]);
+
+        // Períodos com granularidade MENSAL (não semanal) — datas fixas
+        // pra o rótulo esperado ser determinístico ("JAN/26", "FEV/26").
+        foreach ([
+            ['inicio' => '2026-01-01', 'horas' => 50],
+            ['inicio' => '2026-02-01', 'horas' => 50],
+        ] as $periodo) {
+            AvancoPeriodo::create([
+                'tenant_id' => $this->obra->tenant_id,
+                'cronograma_importacao_id' => $importacao->id,
+                'atividade_id' => $atividade->id,
+                'granularidade' => GranularidadePeriodo::Mensal->value,
+                'serie' => SerieAvanco::Previsto->value,
+                'periodo_inicio' => $periodo['inicio'],
+                'horas' => $periodo['horas'],
+            ]);
+        }
+
+        $componente = $this->componente()->call('verAtividade', $atividade->id);
+        $curva = $componente->set('modalGranularidade', 'mensal')->instance()->modalCurvaAtividade;
+
+        $this->assertNotEmpty($curva['previsto']);
+        $this->assertEqualsCanonicalizing(['JAN/26', 'FEV/26'], array_values($curva['labels']));
+    }
+
+    public function test_trocar_baseline_atualiza_previsto_mas_nao_o_realizado(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        // Baseline "antiga": semanas já totalmente passadas → 100% previsto até hoje.
+        $linhaBaseAntiga = $this->criarLinhaBaseComPrevisto(
+            $atividade, [40, 60], 'BL01 - Antiga', now()->subMinutes(10)
+        );
+        $this->criarReportEmitidoComRealizado($atividade, [30]);
+
+        // Baseline "nova": única semana prevista só daqui a 2 semanas → 0%
+        // previsto até hoje (nenhum período <= hoje ainda).
+        $linhaBaseNova = $this->criarLinhaBaseComPrevisto(
+            $atividade, [50], 'BL02 - Nova', now(), now()->addWeeks(2)
+        );
+
+        $componente = $this->componente()->call('verAtividade', $atividade->id);
+
+        $curvaComBaselineNova = $componente->instance()->modalCurvaAtividade;
+        $this->assertEquals($linhaBaseNova->id, $curvaComBaselineNova['baseline_id']); // mais recente por padrão
+        $this->assertEqualsWithDelta(0.0, $curvaComBaselineNova['percentual_previsto'], 0.5);
+        // HH bruto do Realizado (o dado que efetivamente vem do Report) —
+        // é essa quantidade, não a %, que deve permanecer intocada ao
+        // trocar de baseline (a % naturalmente muda de escala porque é
+        // sempre rebaseada contra o total de Previsto da baseline
+        // selecionada — mesma lógica já usada por CurvaAvanco::rebasearPercentual()
+        // no Report semanal, pra Previsto e Realizado ficarem comparáveis
+        // na MESMA escala).
+        $horasRealizadoAntes = array_sum(array_column($curvaComBaselineNova['realizado'], 'horas'));
+
+        $componente->set('modalBaselineId', $linhaBaseAntiga->id);
+        $curvaComBaselineAntiga = $componente->instance()->modalCurvaAtividade;
+
+        $this->assertEquals($linhaBaseAntiga->id, $curvaComBaselineAntiga['baseline_id']);
+        $this->assertEqualsWithDelta(100.0, $curvaComBaselineAntiga['percentual_previsto'], 0.5);
+        $this->assertNotEquals(
+            $curvaComBaselineNova['percentual_previsto'],
+            $curvaComBaselineAntiga['percentual_previsto'],
+            'Previsto deve mudar ao trocar de baseline (totais de HH diferentes)'
+        );
+
+        $horasRealizadoDepois = array_sum(array_column($curvaComBaselineAntiga['realizado'], 'horas'));
+        $this->assertEquals(
+            $horasRealizadoAntes,
+            $horasRealizadoDepois,
+            'HH realizado (dado bruto vindo do último Report emitido) não deve mudar ao trocar de baseline'
+        );
+        $this->assertTrue($curvaComBaselineAntiga['tem_report']);
+    }
+
+    public function test_atividade_sem_report_emitido_mostra_so_previsto_com_indicador_neutro(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+        // Nenhum Report emitido criado.
+
+        $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
+
+        $this->assertTrue($curva['tem_baseline']);
+        $this->assertFalse($curva['tem_report']);
+        $this->assertNotEmpty($curva['previsto']);
+        $this->assertEmpty($curva['realizado']);
+        $this->assertNull($curva['percentual_realizado']);
+        $this->assertEquals('neutro', $curva['indicador']);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee('Realizado ainda não disponível');
+    }
+
+    public function test_atividade_sem_baseline_mostra_mensagem_amigavel_mas_realizado_aparece_se_houver_report(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        // Nenhuma LinhaBase criada — só Report emitido.
+        $this->criarReportEmitidoComRealizado($atividade, [30]);
+
+        $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
+
+        $this->assertFalse($curva['tem_baseline']);
+        $this->assertEmpty($curva['previsto']);
+        $this->assertNull($curva['percentual_previsto']);
+        $this->assertTrue($curva['tem_report'], 'Realizado deve continuar disponível mesmo sem Baseline, se houver Report emitido');
+        $this->assertNotEmpty($curva['realizado']);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee('Nenhuma Baseline disponível para esta atividade');
+    }
+
+    public function test_datas_e_percentual_previsto_vem_da_mesma_baseline_selecionada_nao_do_campo_ao_vivo(): void
+    {
+        // Bug relatado: campo AO VIVO da atividade (baseline_inicio) fica
+        // desalinhado da Baseline selecionada no popup — antes da correção,
+        // a data exibida vinha do campo ao vivo enquanto o %Previsto vinha
+        // da baseline selecionada, então dava pra ver "% Previsto: 23%"
+        // junto de uma data de início no FUTURO (inconsistente, sem sentido).
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'baseline_inicio' => now()->subDays(30), // campo ao vivo — propositalmente diferente
+            'baseline_termino' => now()->subDays(20),
+        ]);
+
+        // Baseline selecionada só começa daqui a 1 semana — ainda não
+        // começou, então %Previsto até hoje tem que ser nulo.
+        $inicioFuturo = now()->addWeek()->startOfWeek();
+        $linhaBase = $this->criarLinhaBaseComPrevisto($atividade, [50, 50], null, null, $inicioFuturo);
+
+        // Snapshot da PRÓPRIA baseline selecionada mostra a data real
+        // (futura) — diferente do campo ao vivo (passado).
+        AtividadeSnapshot::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $linhaBase->cronograma_importacao_id,
+            'atividade_id' => $atividade->id,
+            'inicio_planejado' => $inicioFuturo,
+            'data_termino' => $inicioFuturo->copy()->addWeeks(2),
+            'baseline_inicio' => $inicioFuturo,
+            'baseline_termino' => $inicioFuturo->copy()->addWeeks(2),
+        ]);
+
+        $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
+
+        $this->assertNull(
+            $curva['percentual_previsto'],
+            '% Previsto não pode ser positivo se a baseline selecionada ainda não começou'
+        );
+        $this->assertTrue(
+            $curva['baseline_inicio']->isSameDay($inicioFuturo),
+            'Data exibida deve vir da baseline SELECIONADA (snapshot), não do campo ao vivo da atividade'
+        );
+        $this->assertTrue(
+            $curva['baseline_inicio']->isFuture(),
+            'Data da baseline selecionada é futura de verdade — não pode ser confundida com o campo ao vivo (passado)'
+        );
     }
 }
