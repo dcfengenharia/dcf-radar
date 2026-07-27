@@ -185,6 +185,104 @@ class ImportarDocumentosEngenhariaTest extends TestCase
         $this->assertSame(5, DocumentoEngenharia::where('obra_id', $this->obra->id)->count());
     }
 
+    public function test_tipo_novos_ignora_codigo_ja_existente(): void
+    {
+        // DOC-001 já existe nesta obra — ao escolher "Novos documentos", a
+        // linha correspondente deve ir pra "ignorados" e não ser aplicada.
+        DocumentoEngenharia::create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'codigo' => 'DOC-001',
+            'descricao' => 'Original — não deve mudar',
+        ]);
+
+        $this->vincularObra($this->obra, $this->user, Papel::Admin->value);
+        $arquivo = UploadedFile::fake()->createWithContent(
+            'lista_documentos_ld.xlsx',
+            file_get_contents($this->caminhoFixtureLd())
+        );
+
+        Livewire::test('pages::engenharia.documentos-engenharia')
+            ->set('obraId', $this->obra->id)
+            ->call('abrirImportar')
+            ->call('escolherTipoImportacao', 'novos')
+            ->assertSet('tipoImportacao', 'novos')
+            ->set('arquivoImportacao', $arquivo)
+            ->call('analisarImportacao')
+            ->assertHasNoErrors()
+            ->assertSet('previaImportacao.ignorados.0.codigo', 'DOC-001')
+            ->call('confirmarImportacao')
+            ->assertHasNoErrors();
+
+        $doc001 = DocumentoEngenharia::where('obra_id', $this->obra->id)->where('codigo', 'DOC-001')->firstOrFail();
+        $this->assertSame('Original — não deve mudar', $doc001->descricao);
+        $this->assertSame(0, $doc001->revisoes()->count());
+
+        // As demais linhas (não conflitantes) foram criadas normalmente.
+        $this->assertDatabaseHas('documentos_engenharia', ['obra_id' => $this->obra->id, 'codigo' => 'DOC-002']);
+        $this->assertSame(5, DocumentoEngenharia::where('obra_id', $this->obra->id)->count());
+    }
+
+    public function test_tipo_atualizacao_ignora_codigo_inexistente(): void
+    {
+        // Obra sem nenhum documento cadastrado — ao escolher "Atualização",
+        // nenhuma linha da planilha deve ser aplicada (todos os códigos são
+        // desconhecidos), então nada é criado.
+        $this->vincularObra($this->obra, $this->user, Papel::Admin->value);
+        $arquivo = UploadedFile::fake()->createWithContent(
+            'lista_documentos_ld.xlsx',
+            file_get_contents($this->caminhoFixtureLd())
+        );
+
+        Livewire::test('pages::engenharia.documentos-engenharia')
+            ->set('obraId', $this->obra->id)
+            ->call('abrirImportar')
+            ->call('escolherTipoImportacao', 'atualizacao')
+            ->set('arquivoImportacao', $arquivo)
+            ->call('analisarImportacao')
+            ->assertHasNoErrors()
+            ->assertSet('previaImportacao.linhas', [])
+            ->call('confirmarImportacao')
+            ->assertHasNoErrors();
+
+        $this->assertSame(0, DocumentoEngenharia::where('obra_id', $this->obra->id)->count());
+    }
+
+    public function test_tipo_atualizacao_aplica_so_codigos_existentes(): void
+    {
+        // Só DOC-002 já existe — com "Atualização", só ele deve ser
+        // processado; os outros 4 códigos da planilha ficam em ignorados.
+        DocumentoEngenharia::create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'codigo' => 'DOC-002',
+            'descricao' => 'Original',
+        ]);
+
+        $this->vincularObra($this->obra, $this->user, Papel::Admin->value);
+        $arquivo = UploadedFile::fake()->createWithContent(
+            'lista_documentos_ld.xlsx',
+            file_get_contents($this->caminhoFixtureLd())
+        );
+
+        $componente = Livewire::test('pages::engenharia.documentos-engenharia')
+            ->set('obraId', $this->obra->id)
+            ->call('abrirImportar')
+            ->call('escolherTipoImportacao', 'atualizacao')
+            ->set('arquivoImportacao', $arquivo)
+            ->call('analisarImportacao')
+            ->assertHasNoErrors();
+
+        $previa = $componente->get('previaImportacao');
+        $this->assertCount(1, $previa['linhas']);
+        $this->assertCount(4, $previa['ignorados']);
+
+        $componente->call('confirmarImportacao')->assertHasNoErrors();
+
+        $this->assertSame(1, DocumentoEngenharia::where('obra_id', $this->obra->id)->count());
+        $this->assertDatabaseMissing('documentos_engenharia', ['obra_id' => $this->obra->id, 'codigo' => 'DOC-001']);
+    }
+
     public function test_perfil_sem_permissao_nao_consegue_importar(): void
     {
         $perfil = $this->vincularObra($this->obra, $this->user, Papel::GerentePlanejamento->value);

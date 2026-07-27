@@ -941,6 +941,71 @@ ReportComentario (só em reports emitidos). Reaproveita
   (`pluginAgulha`/`pluginTextoCentral` continuam — são a agulha e o
   readout central do próprio gauge, não rótulo por ponto de dado).
 
+## Lista de Documentos — popup de tipo de importação + cards de KPI clicáveis
+
+- **Contexto**: pedido grande do usuário ("Gestão de Documentos de
+  Engenharia — Registro Mestre, Revisões e Controle de Emissões", 32
+  seções) — a investigação (3 agentes Explore + leitura direta do
+  `DocumentoEngenhariaImporter`) confirmou que quase tudo já existia e
+  estava testado (Ondas A-E acima: Documento≠Revisão, status na
+  revisão, PDF por revisão, importação em duas fases com prévia,
+  dashboard, reprogramação com histórico imutável). O único
+  comportamento novo, confirmado com o usuário via
+  `AskUserQuestion`, foi obrigar a escolha explícita da intenção da
+  importação (só criar novos vs. só atualizar existentes) antes de
+  rodar a planilha — hoje o importador sempre cria E atualiza juntos,
+  silenciosamente, no mesmo arquivo.
+- **`App\Imports\DocumentoEngenhariaImporter` NÃO foi alterado** —
+  zero mudança em `analisar()`/`aplicar()`, mantendo 100% dos testes de
+  `ImportarDocumentosEngenhariaTest.php` intactos. Toda a lógica nova
+  vive só em `⚡documentos-engenharia.blade.php`, que já é quem
+  orquestra as duas chamadas.
+- **Passo 0 do modal de importação**: novo estado `$tipoImportacao`
+  (`'novos'`|`'atualizacao'`|`null`). Antes do upload (que continua
+  intocado), dois cards clicáveis (mesmo idiom `style="cursor:pointer"`
+  já usado em `⚡restricoes.blade.php`, não `<button>`) — "Nova Lista de
+  Documentos" e "Atualização de Status e Revisões" —
+  `escolherTipoImportacao(string $tipo)` avança pro passo já existente;
+  `voltarTipoImportacao()` (sem argumento, pra evitar incerteza sobre
+  `wire:click="metodo(null)"`) reseta pra escolher de novo via link
+  "trocar".
+- **Filtro pós-prévia** (`filtrarPorTipoImportacao()`, método privado
+  novo): depois da chamada já existente e intocada a
+  `$importador->analisar(...)`, cruza os códigos deduplicados contra
+  `DocumentoEngenharia::where('obra_id', ...)->whereIn('codigo', ...)`
+  (consulta nova, só no componente) e separa `previaImportacao['linhas']`
+  em aplicáveis vs `['ignorados']`: tipo=novos + código já existe →
+  ignorado ("já existe — não será criado por este caminho"); tipo=
+  atualizacao + código não existe → ignorado ("não encontrado — não
+  será atualizado por este caminho"). `confirmarImportacao()` chama
+  `$importador->aplicar(...)` **sem nenhuma mudança de assinatura** —
+  só recebe o subconjunto já filtrado. Toast final soma `⚠N ignorados`
+  quando aplicável.
+- **Cards de KPI clicáveis** (Total/Concluídos/Aguardando/Atrasados):
+  3 constantes novas em `documentosQuery()` —
+  `STATUS_FILTRO_AGUARDANDO`/`_ATRASADO`/`_CONCLUIDO` — cada uma
+  espelhando exatamente a mesma condição que `totais()` já usava pra
+  contar esses números (nenhuma regra nova, só reaproveitada como
+  filtro). `wire:click="$set('statusIdFiltro', '__valor__')"` em cada
+  card; a branch existente de "status ID explícito" em
+  `documentosQuery()` passou a excluir esses 4 pseudo-valores
+  (`STATUS_FILTRO_NAO_EMITIDO` já existia) pra nunca tentar casá-los
+  como FK real.
+- **Link "Visualizar PDF"**: modal de revisões ganhou um segundo ícone
+  (`target="_blank"`, reaproveitando o mesmo `$rev->anexoUrl()`) ao lado
+  do download já existente — sem PDF, mostra `—` como antes.
+- **Não tocado** (regra fundamental do pedido, seguida à risca):
+  `DocumentoEngenhariaImporter`, `DocumentoEngenharia`/
+  `DocumentoEngenhariaRevisao`/`StatusDocumento`/
+  `DocumentoEngenhariaReprogramacao` (models e migrations),
+  `PacoteEngenharia`, permissões (`engenharia.pacotes`), rota, menu.
+- Testes novos: 3 em `ImportarDocumentosEngenhariaTest.php` (tipo=novos
+  ignora código existente; tipo=atualizacao ignora código inexistente;
+  tipo=atualizacao aplica só os códigos existentes) + 1 em
+  `DocumentosEngenhariaPageTest.php` (cada card de KPI aplica o filtro
+  correspondente). Suíte completa: 916 passed / 6 skipped (skips
+  pré-existentes, sem relação com esta feature).
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:

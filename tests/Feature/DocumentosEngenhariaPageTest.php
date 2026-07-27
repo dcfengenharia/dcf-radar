@@ -190,6 +190,40 @@ class DocumentosEngenhariaPageTest extends TestCase
         $this->assertSame(1, $totais['atrasados']);
     }
 
+    public function test_cards_de_kpi_clicaveis_aplicam_filtro_correspondente(): void
+    {
+        // Mesmo cenário de test_cards_contam_concluidos_aguardando_e_atrasados
+        // — aqui confirma que os 3 pseudo-valores novos de statusIdFiltro
+        // (usados pelo wire:click dos cards) filtram exatamente o documento
+        // esperado, sem afetar o filtro por status_documento_id explícito
+        // nem o "__nao_emitido__" já existente.
+        $this->vincularObra($this->obra, $this->user, Papel::Admin->value);
+        $this->actingAs($this->user);
+
+        $statusConcluido = StatusDocumento::create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id, 'nome' => 'Concluído', 'conclusivo' => true]);
+        $statusPendente = StatusDocumento::create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id, 'nome' => 'Em Elaboração', 'conclusivo' => false]);
+
+        $this->criarDocumento('DOC-C', 'Concluído', $statusConcluido);
+        $this->criarDocumento('DOC-E', 'Emitido não concluído', $statusPendente);
+        $this->criarDocumento('DOC-AG', 'Aguardando', null, now()->addDays(10)->toDateString());
+        $this->criarDocumento('DOC-AT', 'Atrasado', null, now()->subDays(5)->toDateString());
+
+        $component = $this->componente()->set('obraId', $this->obra->id);
+
+        $component->set('statusIdFiltro', '__concluido__')
+            ->assertSee('DOC-C')->assertDontSee('DOC-E')->assertDontSee('DOC-AG')->assertDontSee('DOC-AT');
+
+        $component->set('statusIdFiltro', '__aguardando__')
+            ->assertSee('DOC-AG')->assertDontSee('DOC-C')->assertDontSee('DOC-E')->assertDontSee('DOC-AT');
+
+        $component->set('statusIdFiltro', '__atrasado__')
+            ->assertSee('DOC-AT')->assertDontSee('DOC-C')->assertDontSee('DOC-E')->assertDontSee('DOC-AG');
+
+        // Card "Total" limpa o filtro — todos voltam a aparecer.
+        $component->set('statusIdFiltro', null)
+            ->assertSee('DOC-C')->assertSee('DOC-E')->assertSee('DOC-AG')->assertSee('DOC-AT');
+    }
+
     public function test_documento_sem_emissao_mostra_nao_emitido_ate_primeira_emissao(): void
     {
         $this->vincularObra($this->obra, $this->user, Papel::Admin->value);

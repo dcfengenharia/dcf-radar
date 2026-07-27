@@ -33,6 +33,10 @@ new class extends Component {
   public int $perPage = 15;
 
   const STATUS_FILTRO_NAO_EMITIDO = '__nao_emitido__';
+  /** Pseudo-valores de statusIdFiltro usados pelos cards de KPI clicáveis — espelham exatamente as condições já usadas em totais(). */
+  const STATUS_FILTRO_AGUARDANDO = '__aguardando__';
+  const STATUS_FILTRO_ATRASADO = '__atrasado__';
+  const STATUS_FILTRO_CONCLUIDO = '__concluido__';
 
   // ---- Modal criar/editar documento ----
   public bool $modalDocumentoAberto = false;
@@ -62,6 +66,8 @@ new class extends Component {
   public bool $modalImportarAberto = false;
   public $arquivoImportacao = null;
   public ?array $previaImportacao = null;
+  /** 'novos'|'atualizacao' — escolhido no passo inicial do modal, antes do upload. */
+  public ?string $tipoImportacao = null;
 
   private function garantirPermissao(string $acao): void
   {
@@ -129,8 +135,21 @@ new class extends Component {
       ->when($this->disciplinaIdFiltro, fn($q) => $q->where('disciplina_id', $this->disciplinaIdFiltro))
       ->when($this->pacoteIdFiltro, fn($q) => $q->where('pacote_engenharia_id', $this->pacoteIdFiltro))
       ->when($this->statusIdFiltro === self::STATUS_FILTRO_NAO_EMITIDO, fn($q) => $q->doesntHave('revisoes'))
+      ->when($this->statusIdFiltro === self::STATUS_FILTRO_AGUARDANDO, fn($q) => $q->doesntHave('revisoes')
+        ->where(fn($q2) => $q2->whereNull('data_planejada')->orWhere('data_planejada', '>=', now()->toDateString())))
+      ->when($this->statusIdFiltro === self::STATUS_FILTRO_ATRASADO, fn($q) => $q->doesntHave('revisoes')
+        ->whereNotNull('data_planejada')->where('data_planejada', '<', now()->toDateString()))
+      ->when($this->statusIdFiltro === self::STATUS_FILTRO_CONCLUIDO, fn($q) => $q->whereHas(
+        'latestRevisao',
+        fn($q2) => $q2->whereHas('statusDocumento', fn($q3) => $q3->where('conclusivo', true))
+      ))
       ->when(
-        $this->statusIdFiltro && $this->statusIdFiltro !== self::STATUS_FILTRO_NAO_EMITIDO,
+        $this->statusIdFiltro && !in_array($this->statusIdFiltro, [
+          self::STATUS_FILTRO_NAO_EMITIDO,
+          self::STATUS_FILTRO_AGUARDANDO,
+          self::STATUS_FILTRO_ATRASADO,
+          self::STATUS_FILTRO_CONCLUIDO,
+        ], true),
         fn($q) => $q->whereHas('latestRevisao', fn($q2) => $q2->where('status_documento_id', $this->statusIdFiltro))
       );
   }
@@ -684,8 +703,20 @@ new class extends Component {
     $this->garantirPermissao('criar');
     $this->arquivoImportacao = null;
     $this->previaImportacao = null;
+    $this->tipoImportacao = null;
     $this->resetValidation();
     $this->modalImportarAberto = true;
+  }
+
+  public function escolherTipoImportacao(string $tipo): void
+  {
+    $this->tipoImportacao = in_array($tipo, ['novos', 'atualizacao'], true) ? $tipo : null;
+  }
+
+  public function voltarTipoImportacao(): void
+  {
+    $this->tipoImportacao = null;
+    $this->previaImportacao = null;
   }
 
   public function fecharImportar(): void
@@ -693,6 +724,7 @@ new class extends Component {
     $this->modalImportarAberto = false;
     $this->arquivoImportacao = null;
     $this->previaImportacao = null;
+    $this->tipoImportacao = null;
   }
 
   public function analisarImportacao(): void
@@ -715,7 +747,45 @@ new class extends Component {
       return;
     }
 
-    $this->previaImportacao = $importador->analisar($linhas, $this->obraId);
+    $previa = $importador->analisar($linhas, $this->obraId);
+    $this->previaImportacao = $this->filtrarPorTipoImportacao($previa);
+  }
+
+  /**
+   * Separa as linhas da prévia (já deduplicadas por analisar()) em
+   * aplicáveis vs ignoradas, conforme o tipo escolhido no passo inicial
+   * do modal — não altera DocumentoEngenhariaImporter::analisar()/
+   * aplicar(), só decide qual subconjunto de $previa['linhas'] chega até
+   * aplicar(). Consulta nova e pequena (só código→id), mesmo espírito de
+   * "duplicar um helper pequeno" já usado em outras telas do projeto em
+   * vez de mexer numa classe já testada.
+   */
+  private function filtrarPorTipoImportacao(array $previa): array
+  {
+    $codigos = array_column($previa['linhas'], 'codigo');
+    $existentes = DocumentoEngenharia::where('obra_id', $this->obraId)
+      ->whereIn('codigo', $codigos)
+      ->pluck('id', 'codigo');
+
+    $aplicaveis = [];
+    $ignorados = [];
+
+    foreach ($previa['linhas'] as $linha) {
+      $existe = $existentes->has($linha['codigo']);
+
+      if ($this->tipoImportacao === 'novos' && $existe) {
+        $ignorados[] = $linha + ['motivo' => 'já existe — não será criado por este caminho'];
+      } elseif ($this->tipoImportacao === 'atualizacao' && !$existe) {
+        $ignorados[] = $linha + ['motivo' => 'não encontrado — não será atualizado por este caminho'];
+      } else {
+        $aplicaveis[] = $linha;
+      }
+    }
+
+    $previa['linhas'] = $aplicaveis;
+    $previa['ignorados'] = $ignorados;
+
+    return $previa;
   }
 
   public function confirmarImportacao(): void
@@ -728,6 +798,7 @@ new class extends Component {
 
     $importador = new DocumentoEngenhariaImporter();
     $linhas = $this->previaImportacao['linhas'];
+    $ignorados = count($this->previaImportacao['ignorados'] ?? []);
     $obraId = $this->obraId;
     $usuarioId = Auth::id();
     $resultado = null;
@@ -742,10 +813,11 @@ new class extends Component {
 
     $this->fecharImportar();
     unset($this->documentos, $this->totais, $this->disciplinas);
-    $this->dispatch(
-      'show-toast',
-      message: "Importação concluída: {$resultado['novos']} novos, {$resultado['atualizados']} atualizados, {$resultado['novas_revisoes']} revisões novas."
-    );
+    $mensagem = "Importação concluída: {$resultado['novos']} novos, {$resultado['atualizados']} atualizados, {$resultado['novas_revisoes']} revisões novas.";
+    if ($ignorados > 0) {
+      $mensagem .= " {$ignorados} linha(s) ignorada(s) por não corresponder ao tipo escolhido.";
+    }
+    $this->dispatch('show-toast', message: $mensagem);
   }
 };
 ?>
@@ -821,28 +893,30 @@ new class extends Component {
 
     @if($abaAtiva === 'lista')
 
-    {{-- Cards de decisão --}}
+    {{-- Cards de decisão — clicáveis: aplicam o filtro de status correspondente na
+         lista abaixo (valores precisam bater com as STATUS_FILTRO_* na classe do
+         componente, mesma convenção já usada no <option> de "Não Emitido"). --}}
     <div class="row g-3 mb-4">
         <div class="col-6 col-md-3">
-            <div class="card h-100"><div class="card-body py-3 text-center">
+            <div class="card h-100" style="cursor:pointer" title="Ver todos" wire:click="$set('statusIdFiltro', null)"><div class="card-body py-3 text-center">
                 <div class="fs-4 fw-bold">{{ $this->totais['total'] }}</div>
                 <small class="text-muted">Total de Documentos</small>
             </div></div>
         </div>
         <div class="col-6 col-md-3">
-            <div class="card h-100 border-success"><div class="card-body py-3 text-center">
+            <div class="card h-100 border-success" style="cursor:pointer" title="Filtrar concluídos" wire:click="$set('statusIdFiltro', '__concluido__')"><div class="card-body py-3 text-center">
                 <div class="fs-4 fw-bold text-success">{{ $this->totais['concluidos'] }}</div>
                 <small class="text-muted">Concluídos</small>
             </div></div>
         </div>
         <div class="col-6 col-md-3">
-            <div class="card h-100 border-warning"><div class="card-body py-3 text-center">
+            <div class="card h-100 border-warning" style="cursor:pointer" title="Filtrar aguardando 1ª emissão" wire:click="$set('statusIdFiltro', '__aguardando__')"><div class="card-body py-3 text-center">
                 <div class="fs-4 fw-bold text-warning">{{ $this->totais['aguardando'] }}</div>
                 <small class="text-muted">Aguardando 1ª Emissão</small>
             </div></div>
         </div>
         <div class="col-6 col-md-3">
-            <div class="card h-100 border-danger"><div class="card-body py-3 text-center">
+            <div class="card h-100 border-danger" style="cursor:pointer" title="Filtrar atrasados" wire:click="$set('statusIdFiltro', '__atrasado__')"><div class="card-body py-3 text-center">
                 <div class="fs-4 fw-bold text-danger">{{ $this->totais['atrasados'] }}</div>
                 <small class="text-muted">Emissões Atrasadas</small>
             </div></div>
@@ -1155,10 +1229,43 @@ new class extends Component {
                     <button type="button" class="btn-close" wire:click="fecharImportar"></button>
                 </div>
                 <div class="modal-body">
+                    @if(!$tipoImportacao)
+                    {{-- Passo 0: escolha do tipo de importação --}}
+                    <p class="text-muted small">O que esta planilha representa?</p>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <div class="card h-100 border-2" style="cursor:pointer" wire:click="escolherTipoImportacao('novos')">
+                                <div class="card-body">
+                                    <h6 class="mb-1"><i class="bx bx-plus-circle me-1 text-primary"></i>Nova Lista de Documentos</h6>
+                                    <p class="small text-muted mb-0">
+                                        A planilha traz documentos que ainda não existem no Registro Mestre desta
+                                        obra. Códigos já cadastrados não serão alterados.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card h-100 border-2" style="cursor:pointer" wire:click="escolherTipoImportacao('atualizacao')">
+                                <div class="card-body">
+                                    <h6 class="mb-1"><i class="bx bx-refresh me-1 text-warning"></i>Atualização de Status e Revisões</h6>
+                                    <p class="small text-muted mb-0">
+                                        A planilha traz informações atualizadas de documentos já existentes.
+                                        Códigos não encontrados não serão criados.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    @else
+                    <p class="text-muted small">
+                        <span class="badge bg-label-{{ $tipoImportacao === 'novos' ? 'primary' : 'warning' }} me-1">
+                            {{ $tipoImportacao === 'novos' ? 'Nova Lista de Documentos' : 'Atualização de Status e Revisões' }}
+                        </span>
+                        <button type="button" class="btn btn-link btn-sm p-0 align-baseline" wire:click="voltarTipoImportacao">trocar</button>
+                    </p>
                     <p class="text-muted small">
                         Lê a aba <strong>"LD"</strong> da planilha (Disciplina / Código / Revisão / Título / Status).
-                        Documentos existentes (por código) são atualizados; documentos novos são criados. Uma nova
-                        revisão só é registrada quando a Revisão da planilha muda em relação à última já salva.
+                        Uma nova revisão só é registrada quando a Revisão da planilha muda em relação à última já salva.
                     </p>
 
                     @if(!$previaImportacao)
@@ -1170,25 +1277,42 @@ new class extends Component {
                     </div>
                     @else
                     <div class="row g-3 mb-3">
-                        <div class="col-4">
+                        <div class="col-3">
                             <div class="card h-100"><div class="card-body py-2 text-center">
                                 <div class="fs-5 fw-bold">{{ $previaImportacao['novos'] }}</div>
                                 <small class="text-muted">Documentos novos</small>
                             </div></div>
                         </div>
-                        <div class="col-4">
+                        <div class="col-3">
                             <div class="card h-100"><div class="card-body py-2 text-center">
                                 <div class="fs-5 fw-bold">{{ $previaImportacao['atualizados'] }}</div>
                                 <small class="text-muted">Atualizados</small>
                             </div></div>
                         </div>
-                        <div class="col-4">
+                        <div class="col-3">
                             <div class="card h-100"><div class="card-body py-2 text-center">
                                 <div class="fs-5 fw-bold">{{ $previaImportacao['novas_revisoes'] }}</div>
                                 <small class="text-muted">Revisões novas</small>
                             </div></div>
                         </div>
+                        <div class="col-3">
+                            <div class="card h-100"><div class="card-body py-2 text-center">
+                                <div class="fs-5 fw-bold {{ count($previaImportacao['ignorados'] ?? []) > 0 ? 'text-muted' : '' }}">{{ count($previaImportacao['ignorados'] ?? []) }}</div>
+                                <small class="text-muted">Ignorados</small>
+                            </div></div>
+                        </div>
                     </div>
+
+                    @if(!empty($previaImportacao['ignorados']))
+                    <div class="alert alert-secondary py-2">
+                        <strong class="d-block mb-1"><i class="bx bx-info-circle me-1"></i>{{ count($previaImportacao['ignorados']) }} linha(s) não correspondem ao tipo escolhido:</strong>
+                        <ul class="mb-0 small" style="max-height:150px; overflow-y:auto">
+                            @foreach($previaImportacao['ignorados'] as $linhaIgnorada)
+                            <li>Código "{{ $linhaIgnorada['codigo'] }}" (linha {{ $linhaIgnorada['linha'] }}) — {{ $linhaIgnorada['motivo'] }}</li>
+                            @endforeach
+                        </ul>
+                    </div>
+                    @endif
 
                     @if(!empty($previaImportacao['avisos']))
                     <div class="alert alert-warning py-2">
@@ -1201,14 +1325,15 @@ new class extends Component {
                     </div>
                     @endif
                     @endif
+                    @endif
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-outline-secondary" wire:click="fecharImportar">Cancelar</button>
-                    @if(!$previaImportacao)
+                    @if($tipoImportacao && !$previaImportacao)
                     <button class="btn btn-primary" wire:click="analisarImportacao" wire:loading.attr="disabled">
                         <i class="bx bx-search-alt me-1"></i>Analisar
                     </button>
-                    @else
+                    @elseif($previaImportacao)
                     <button class="btn btn-primary" wire:click="confirmarImportacao" wire:loading.attr="disabled">
                         <i class="bx bx-check me-1"></i>Confirmar Importação
                     </button>
@@ -1289,8 +1414,11 @@ new class extends Component {
                                     <td class="small text-muted">{{ $rev->comentarios ?? '—' }}</td>
                                     <td class="text-center">
                                         @if($rev->anexoUrl())
-                                        <a href="{{ $rev->anexoUrl() }}" download="{{ $rev->anexo_nome_original }}" title="Baixar {{ $rev->anexo_nome_original }}">
+                                        <a href="{{ $rev->anexoUrl() }}" target="_blank" rel="noopener" class="me-2" title="Visualizar {{ $rev->anexo_nome_original }}">
                                             <i class="bx bxs-file-pdf text-danger fs-5"></i>
+                                        </a>
+                                        <a href="{{ $rev->anexoUrl() }}" download="{{ $rev->anexo_nome_original }}" title="Baixar {{ $rev->anexo_nome_original }}">
+                                            <i class="bx bx-download fs-5"></i>
                                         </a>
                                         @else
                                         <span class="text-muted">—</span>
