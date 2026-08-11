@@ -46,6 +46,10 @@ class Perfil extends Model
         'restricoes.minhas_programacoes' => ['editar' => Papel::Encarregado],
         'restricoes.causas' => ['criar' => Papel::Encarregado, 'editar' => Papel::Encarregado],
         'restricoes.matriz' => ['editar' => Papel::Engenheiro],
+        // Fase 4.2 (Plano de Ação) — mesmo limiar de restricoes.quadro
+        // (Quadro de Restrições), a página irmã mais próxima em espírito
+        // (item de workflow com responsável/prazo/status).
+        'restricoes.plano_acao' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],
         'report.relatorios' => ['criar' => Papel::GerentePlanejamento, 'editar' => Papel::GerentePlanejamento, 'excluir' => Papel::GerentePlanejamento],
         'report.importar_avanco' => ['criar' => Papel::GerentePlanejamento, 'editar' => Papel::GerentePlanejamento, 'excluir' => Papel::GerentePlanejamento],
         'suprimentos.mapa' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],

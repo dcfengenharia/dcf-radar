@@ -103,6 +103,13 @@
       "funcionalidade": "restricoes.relatorios"
     },
     {
+      "url": "/app/radar/plano-acao",
+      "name": "Plano de Ação",
+      "icon": "menu-icon tf-icons bx bx-task",
+      "slug": "radar.plano-acao",
+      "funcionalidade": "restricoes.plano_acao"
+    },
+    {
       "menuHeader": "3. REPORT"
     },
     {

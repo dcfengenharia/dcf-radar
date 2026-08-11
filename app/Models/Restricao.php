@@ -34,6 +34,7 @@ class Restricao extends Model
         'aberta_em',
         'resolvida_em',
         'origem_suprimento_item_id',
+        'origem_plano_acao_id',
     ];
 
     protected $casts = [
@@ -72,5 +73,15 @@ class Restricao extends Model
     public function origemSuprimentoItem(): BelongsTo
     {
         return $this->belongsTo(ItemSuprimento::class, 'origem_suprimento_item_id');
+    }
+
+    /**
+     * Ciclo 11 (Etapa B): rastreabilidade da Restrição criada por decisão
+     * explícita do usuário a partir de um PlanoAcao — nunca sincronização
+     * de ciclo de vida (ver App\Models\PlanoAcao::transformarEmRestricoes()).
+     */
+    public function origemPlanoAcao(): BelongsTo
+    {
+        return $this->belongsTo(PlanoAcao::class, 'origem_plano_acao_id');
     }
 }

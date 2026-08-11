@@ -210,6 +210,9 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
 
             Route::get('/suprimentos', fn() => view('app.radar.suprimentos'))
                 ->name('radar.suprimentos');
+
+            Route::get('/plano-acao', fn() => view('app.radar.plano-acao'))
+                ->name('radar.plano-acao');
         });
 
     });

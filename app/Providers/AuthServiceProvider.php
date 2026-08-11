@@ -7,6 +7,7 @@ use App\Models\CategoriaRestricao;
 use App\Models\Client;
 use App\Models\Disciplina;
 use App\Models\PacoteTrabalho;
+use App\Models\PlanoAcao;
 use App\Models\Report;
 use App\Models\Restricao;
 use App\Models\Work;
@@ -15,6 +16,7 @@ use App\Policies\CategoriaRestricaoPolicy;
 use App\Policies\ClientPolicy;
 use App\Policies\DisciplinaPolicy;
 use App\Policies\PacoteTrabalhoPolicy;
+use App\Policies\PlanoAcaoPolicy;
 use App\Policies\ReportPolicy;
 use App\Policies\RestricaoPolicy;
 use App\Policies\WorkPolicy;
@@ -35,6 +37,7 @@ class AuthServiceProvider extends ServiceProvider
         Disciplina::class => DisciplinaPolicy::class,
         CategoriaRestricao::class => CategoriaRestricaoPolicy::class,
         Report::class => ReportPolicy::class,
+        PlanoAcao::class => PlanoAcaoPolicy::class,
     ];
 
     public function boot(): void

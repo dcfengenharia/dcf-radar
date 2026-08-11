@@ -47,6 +47,10 @@ class CatalogoFuncionalidades
             ['slug' => 'restricoes.causas', 'nome' => 'Causas de Não Cumprimento', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'restricoes.matriz', 'nome' => 'Matriz P×I', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'restricoes.relatorios', 'nome' => 'Relatórios de Restrições', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
+            // Slug independente de 'obras.importar_cronograma' (Fase 4.2,
+            // decisão do usuário): gerenciar o Plano de Ação é uma
+            // responsabilidade diferente de importar o cronograma em si.
+            ['slug' => 'restricoes.plano_acao', 'nome' => 'Plano de Ação', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
 
             ['slug' => 'report.relatorios', 'nome' => 'Relatórios', 'secao' => 'Report', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'report.importar_avanco', 'nome' => 'Importar Avanço', 'secao' => 'Report', 'escopo' => self::ESCOPO_OBRA],
