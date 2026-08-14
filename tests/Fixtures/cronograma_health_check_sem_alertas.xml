@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+  <StatusDate>2024-03-01T00:00:00</StatusDate>
+  <Tasks>
+    <Task>
+      <UID>1</UID>
+      <Name>Pacote A</Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>2</UID>
+      <Name>Atividade 1</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>1</Critical>
+      <OutlineNumber>1.1</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <Work>PT40H0M0S</Work>
+      <ActualWork>PT40H0M0S</ActualWork>
+      <ActualStart>2024-01-01T08:00:00</ActualStart>
+      <ActualFinish>2024-01-14T17:00:00</ActualFinish>
+      <PercentWorkComplete>100</PercentWorkComplete>
+      <Baseline>
+        <Number>0</Number>
+        <Start>2024-01-01T08:00:00</Start>
+        <Finish>2024-01-14T17:00:00</Finish>
+        <Work>PT40H0M0S</Work>
+      </Baseline>
+    </Task>
+  </Tasks>
+</Project>

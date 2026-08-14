@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+  <StatusDate>2024-09-01T00:00:00</StatusDate>
+  <Tasks>
+    <Task>
+      <UID>0</UID>
+      <Name></Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>0</OutlineNumber>
+      <OutlineLevel>0</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-12-31T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>1</UID>
+      <Name>Pacote Slack 2B.3</Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-12-31T17:00:00</Finish>
+      <TotalSlack>-999</TotalSlack>
+      <FreeSlack>-999</FreeSlack>
+    </Task>
+
+    <!-- ============ SLACK-001: TotalSlack negativo ============ -->
+    <Task>
+      <UID>10</UID>
+      <Name>SLACK-001 Total Slack Negativo</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.1</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-07T17:00:00</Finish>
+      <TotalSlack>-1200</TotalSlack>
+      <FreeSlack>-1200</FreeSlack>
+    </Task>
+
+    <!-- ============ SLACK-002: FreeSlack negativo (TotalSlack positivo, nao dispara SLACK-005) ============ -->
+    <Task>
+      <UID>11</UID>
+      <Name>SLACK-002 Free Slack Negativo</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.2</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-08T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <TotalSlack>1200</TotalSlack>
+      <FreeSlack>-600</FreeSlack>
+    </Task>
+
+    <!-- ============ SLACK-005: FreeSlack > TotalSlack (ambos positivos) ============ -->
+    <Task>
+      <UID>12</UID>
+      <Name>SLACK-005 Free Maior Que Total</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.3</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-15T08:00:00</Start>
+      <Finish>2024-01-21T17:00:00</Finish>
+      <TotalSlack>1200</TotalSlack>
+      <FreeSlack>2400</FreeSlack>
+    </Task>
+
+    <!-- ============ Sem slack (elemento ausente) ============ -->
+    <Task>
+      <UID>13</UID>
+      <Name>Sem Slack Capturado</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.4</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-22T08:00:00</Start>
+      <Finish>2024-01-28T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ Tarefa inativa com slack negativo (deve ser ignorada) ============ -->
+    <Task>
+      <UID>14</UID>
+      <Name>Inativa Com Slack Negativo</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.5</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-02-01T08:00:00</Start>
+      <Finish>2024-02-07T17:00:00</Finish>
+      <Active>0</Active>
+      <TotalSlack>-500</TotalSlack>
+      <FreeSlack>-500</FreeSlack>
+    </Task>
+
+    <!-- ============ Marco com slack negativo (NAO deve ser ignorado) ============ -->
+    <Task>
+      <UID>15</UID>
+      <Name>Marco Com Slack Negativo</Name>
+      <Summary>0</Summary>
+      <Milestone>1</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.6</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-02-08T08:00:00</Start>
+      <Finish>2024-02-08T17:00:00</Finish>
+      <TotalSlack>-300</TotalSlack>
+      <FreeSlack>-300</FreeSlack>
+    </Task>
+
+    <!-- ============ FreeSlack = TotalSlack (nao deve disparar SLACK-005) ============ -->
+    <Task>
+      <UID>16</UID>
+      <Name>Free Slack Igual Total Slack</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.7</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-02-09T08:00:00</Start>
+      <Finish>2024-02-15T17:00:00</Finish>
+      <TotalSlack>500</TotalSlack>
+      <FreeSlack>500</FreeSlack>
+    </Task>
+  </Tasks>
+</Project>

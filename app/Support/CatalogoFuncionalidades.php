@@ -52,6 +52,11 @@ class CatalogoFuncionalidades
             // responsabilidade diferente de importar o cronograma em si.
             ['slug' => 'restricoes.plano_acao', 'nome' => 'Plano de Ação', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
 
+            // Ciclo 15 (Etapa B.2) — leitura/triagem consolidada, sem
+            // nenhuma ação de escrita própria; só precisa de 'ver' (nunca
+            // entra em Perfil::REGRAS_ESCRITA).
+            ['slug' => 'restricoes.central_prontidao', 'nome' => 'Central de Prontidão', 'secao' => 'Restrições', 'escopo' => self::ESCOPO_OBRA],
+
             ['slug' => 'report.relatorios', 'nome' => 'Relatórios', 'secao' => 'Report', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'report.importar_avanco', 'nome' => 'Importar Avanço', 'secao' => 'Report', 'escopo' => self::ESCOPO_OBRA],
 

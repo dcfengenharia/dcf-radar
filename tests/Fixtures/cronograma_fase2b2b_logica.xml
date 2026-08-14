@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+  <StatusDate>2024-09-01T00:00:00</StatusDate>
+  <Tasks>
+    <Task>
+      <UID>0</UID>
+      <Name></Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>0</OutlineNumber>
+      <OutlineLevel>0</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-12-31T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>1</UID>
+      <Name>Pacote Logica 2B.2B</Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-12-31T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ LOGIC-005: duplicidade exata (UID 10 -> 11) ============ -->
+    <Task>
+      <UID>10</UID>
+      <Name>LOGIC-005 Predecessora Duplicidade</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.1</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-07T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>11</UID>
+      <Name>LOGIC-005 Sucessora Duplicidade</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.2</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-08T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+        <LinkLag>0</LinkLag>
+        <LagFormat>4</LagFormat>
+      </PredecessorLink>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+        <LinkLag>0</LinkLag>
+        <LagFormat>4</LagFormat>
+      </PredecessorLink>
+    </Task>
+
+    <!-- ============ LOGIC-005: tipos diferentes (UID 20 -> 21) ============ -->
+    <Task>
+      <UID>20</UID>
+      <Name>LOGIC-005 Predecessora Tipos</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.3</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-02-01T08:00:00</Start>
+      <Finish>2024-02-07T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>21</UID>
+      <Name>LOGIC-005 Sucessora Tipos</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.4</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-02-08T08:00:00</Start>
+      <Finish>2024-02-14T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>20</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+      </PredecessorLink>
+      <PredecessorLink>
+        <PredecessorUID>20</PredecessorUID>
+        <Type>3</Type>
+        <CrossProject>0</CrossProject>
+      </PredecessorLink>
+    </Task>
+
+    <!-- ============ LOGIC-005: mesmo tipo, lag diferente (UID 30 -> 31) ============ -->
+    <Task>
+      <UID>30</UID>
+      <Name>LOGIC-005 Predecessora Lag</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.5</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-01T08:00:00</Start>
+      <Finish>2024-03-07T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>31</UID>
+      <Name>LOGIC-005 Sucessora Lag</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.6</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-08T08:00:00</Start>
+      <Finish>2024-03-14T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>30</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+        <LinkLag>0</LinkLag>
+        <LagFormat>4</LagFormat>
+      </PredecessorLink>
+      <PredecessorLink>
+        <PredecessorUID>30</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+        <LinkLag>480</LinkLag>
+        <LagFormat>4</LagFormat>
+      </PredecessorLink>
+    </Task>
+
+    <!-- ============ LOGIC-008: conflito de datas reais em FS (UID 40 -> 41) ============ -->
+    <Task>
+      <UID>40</UID>
+      <Name>LOGIC-008 Predecessora</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.7</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-08-01T08:00:00</Start>
+      <Finish>2024-08-20T17:00:00</Finish>
+      <ActualStart>2024-08-01T08:00:00</ActualStart>
+      <ActualFinish>2024-08-20T17:00:00</ActualFinish>
+    </Task>
+    <Task>
+      <UID>41</UID>
+      <Name>LOGIC-008 Sucessora</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.8</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-08-21T08:00:00</Start>
+      <Finish>2024-08-28T17:00:00</Finish>
+      <ActualStart>2024-08-18T08:00:00</ActualStart>
+      <PredecessorLink>
+        <PredecessorUID>40</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+      </PredecessorLink>
+    </Task>
+
+    <!-- ============ LOGIC-009: vinculo com tarefa resumo (UID 1 -> 50) ============ -->
+    <Task>
+      <UID>50</UID>
+      <Name>LOGIC-009 Sucessora de Resumo</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.9</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-09-02T08:00:00</Start>
+      <Finish>2024-09-08T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>1</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+      </PredecessorLink>
+    </Task>
+
+    <!-- ============ LOGIC-010: sucessora ativa com predecessora inativa (UID 60 -> 61) ============ -->
+    <Task>
+      <UID>60</UID>
+      <Name>LOGIC-010 Predecessora Inativa</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.10</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-10-01T08:00:00</Start>
+      <Finish>2024-10-07T17:00:00</Finish>
+      <Active>0</Active>
+    </Task>
+    <Task>
+      <UID>61</UID>
+      <Name>LOGIC-010 Sucessora Ativa</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.11</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-10-08T08:00:00</Start>
+      <Finish>2024-10-14T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>60</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+      </PredecessorLink>
+    </Task>
+  </Tasks>
+</Project>

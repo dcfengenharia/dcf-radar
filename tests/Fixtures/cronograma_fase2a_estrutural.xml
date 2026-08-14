@@ -1,0 +1,381 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+  <StatusDate>2024-03-01T00:00:00</StatusDate>
+  <Tasks>
+    <Task>
+      <UID>0</UID>
+      <Name></Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>0</OutlineNumber>
+      <OutlineLevel>0</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-06-30T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>1</UID>
+      <Name>Pacote Estrutural</Name>
+      <Summary>1</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-06-30T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ Predecessora base (sem links) ============ -->
+    <Task>
+      <UID>10</UID>
+      <Name>Predecessora Base</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.1</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ Sem predecessora (uma sem nenhum link) ============ -->
+    <Task>
+      <UID>2</UID>
+      <Name>Atividade Sem Predecessora</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.2</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ Tipos de relacionamento ============ -->
+    <Task>
+      <UID>11</UID>
+      <Name>Sucessora FS Lag Positivo</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.3</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-15T08:00:00</Start>
+      <Finish>2024-01-28T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <Type>1</Type>
+        <CrossProject>0</CrossProject>
+        <LinkLag>4800</LinkLag>
+        <LagFormat>7</LagFormat>
+      </PredecessorLink>
+    </Task>
+    <Task>
+      <UID>12</UID>
+      <Name>Sucessora SS Lag Zero</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.4</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-10T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <Type>3</Type>
+        <LinkLag>0</LinkLag>
+        <LagFormat>7</LagFormat>
+      </PredecessorLink>
+    </Task>
+    <Task>
+      <UID>13</UID>
+      <Name>Sucessora FF Lag Negativo Lead</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.5</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-05T08:00:00</Start>
+      <Finish>2024-01-12T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <Type>0</Type>
+        <LinkLag>-2400</LinkLag>
+        <LagFormat>7</LagFormat>
+      </PredecessorLink>
+    </Task>
+    <Task>
+      <UID>14</UID>
+      <Name>Sucessora SF</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.6</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-05T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <Type>2</Type>
+        <LinkLag>0</LinkLag>
+        <LagFormat>7</LagFormat>
+      </PredecessorLink>
+    </Task>
+    <Task>
+      <UID>15</UID>
+      <Name>Atividade Multiplas Predecessoras</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.7</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-02-01T08:00:00</Start>
+      <Finish>2024-02-14T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <Type>1</Type>
+        <LinkLag>0</LinkLag>
+        <LagFormat>7</LagFormat>
+      </PredecessorLink>
+      <PredecessorLink>
+        <PredecessorUID>11</PredecessorUID>
+        <Type>1</Type>
+        <LinkLag>1200</LinkLag>
+        <LagFormat>4</LagFormat>
+      </PredecessorLink>
+    </Task>
+    <!-- Type ausente no link -> deve assumir FS (1) -->
+    <Task>
+      <UID>16</UID>
+      <Name>Sucessora Type Ausente</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.8</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-15T08:00:00</Start>
+      <Finish>2024-01-20T17:00:00</Finish>
+      <PredecessorLink>
+        <PredecessorUID>10</PredecessorUID>
+        <LinkLag>0</LinkLag>
+      </PredecessorLink>
+    </Task>
+
+    <!-- ============ Folgas ============ -->
+    <Task>
+      <UID>20</UID>
+      <Name>Folga Total Positiva</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.9</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <TotalSlack>4800</TotalSlack>
+      <FreeSlack>2400</FreeSlack>
+    </Task>
+    <Task>
+      <UID>21</UID>
+      <Name>Folga Total Zero Critica</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>1</Critical>
+      <OutlineNumber>1.10</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <TotalSlack>0</TotalSlack>
+      <FreeSlack>0</FreeSlack>
+    </Task>
+    <Task>
+      <UID>22</UID>
+      <Name>Folga Total Negativa</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>1</Critical>
+      <OutlineNumber>1.11</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <TotalSlack>-1200</TotalSlack>
+      <FreeSlack>-600</FreeSlack>
+    </Task>
+    <Task>
+      <UID>23</UID>
+      <Name>Folga Ausente</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.12</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ Restrições (8 tipos) ============ -->
+    <Task>
+      <UID>30</UID>
+      <Name>Restricao ASAP</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.13</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <ConstraintType>0</ConstraintType>
+    </Task>
+    <Task>
+      <UID>31</UID>
+      <Name>Restricao ALAP</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.14</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <ConstraintType>1</ConstraintType>
+    </Task>
+    <Task>
+      <UID>32</UID>
+      <Name>Restricao Must Start On</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.15</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-01T08:00:00</Start>
+      <Finish>2024-03-14T17:00:00</Finish>
+      <ConstraintType>2</ConstraintType>
+      <ConstraintDate>2024-03-01T08:00:00</ConstraintDate>
+    </Task>
+    <Task>
+      <UID>33</UID>
+      <Name>Restricao Must Finish On</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.16</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-01T08:00:00</Start>
+      <Finish>2024-03-15T17:00:00</Finish>
+      <ConstraintType>3</ConstraintType>
+      <ConstraintDate>2024-03-15T17:00:00</ConstraintDate>
+    </Task>
+    <Task>
+      <UID>34</UID>
+      <Name>Restricao Start No Earlier Than</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.17</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-01T08:00:00</Start>
+      <Finish>2024-03-14T17:00:00</Finish>
+      <ConstraintType>4</ConstraintType>
+      <ConstraintDate>2024-03-01T08:00:00</ConstraintDate>
+    </Task>
+    <Task>
+      <UID>35</UID>
+      <Name>Restricao Start No Later Than</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.18</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-10T08:00:00</Start>
+      <Finish>2024-03-20T17:00:00</Finish>
+      <ConstraintType>5</ConstraintType>
+      <ConstraintDate>2024-03-10T08:00:00</ConstraintDate>
+    </Task>
+    <Task>
+      <UID>36</UID>
+      <Name>Restricao Finish No Earlier Than</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.19</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-01T08:00:00</Start>
+      <Finish>2024-03-14T17:00:00</Finish>
+      <ConstraintType>6</ConstraintType>
+      <ConstraintDate>2024-03-01T08:00:00</ConstraintDate>
+    </Task>
+    <Task>
+      <UID>37</UID>
+      <Name>Restricao Finish No Later Than</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.20</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-03-01T08:00:00</Start>
+      <Finish>2024-03-20T17:00:00</Finish>
+      <ConstraintType>7</ConstraintType>
+      <ConstraintDate>2024-03-20T17:00:00</ConstraintDate>
+    </Task>
+    <Task>
+      <UID>38</UID>
+      <Name>Restricao Ausente</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.21</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ Active ============ -->
+    <Task>
+      <UID>40</UID>
+      <Name>Ativa Explicita</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.22</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <Active>1</Active>
+    </Task>
+    <Task>
+      <UID>41</UID>
+      <Name>Inativa</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.23</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <Active>0</Active>
+    </Task>
+    <Task>
+      <UID>42</UID>
+      <Name>Active Ausente</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.24</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+    </Task>
+
+    <!-- ============ Marco ============ -->
+    <Task>
+      <UID>50</UID>
+      <Name>Marco Entrega</Name>
+      <Summary>0</Summary>
+      <Milestone>1</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1.25</OutlineNumber>
+      <OutlineLevel>2</OutlineLevel>
+      <Start>2024-06-30T08:00:00</Start>
+      <Finish>2024-06-30T08:00:00</Finish>
+    </Task>
+  </Tasks>
+</Project>

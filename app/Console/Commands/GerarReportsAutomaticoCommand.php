@@ -6,6 +6,7 @@ use App\Models\Report;
 use App\Models\ReportCurva;
 use App\Models\Tenant;
 use App\Models\Work;
+use App\Services\ImpactoRestricoesGerador;
 use App\Services\ReportGerador;
 use App\Support\TenantContext;
 use Illuminate\Console\Command;
@@ -25,8 +26,10 @@ class GerarReportsAutomaticoCommand extends Command
 
     protected $description = 'Gera rascunho de Report semanal automaticamente para obras com dia_semana_report configurado igual ao dia de hoje.';
 
-    public function __construct(private readonly ReportGerador $reportGerador)
-    {
+    public function __construct(
+        private readonly ReportGerador $reportGerador,
+        private readonly ImpactoRestricoesGerador $impactoRestricoesGerador,
+    ) {
         parent::__construct();
     }
 
@@ -83,7 +86,7 @@ class GerarReportsAutomaticoCommand extends Command
         ])->all();
 
         try {
-            $this->reportGerador->gerarRascunho($obra, $ultimoReport->criador, [
+            $report = $this->reportGerador->gerarRascunho($obra, $ultimoReport->criador, [
                 'periodo_referencia' => $periodoReferencia,
                 'linha_base_id' => null,
                 'avanco_importacao_id' => null,
@@ -92,6 +95,15 @@ class GerarReportsAutomaticoCommand extends Command
             ]);
 
             $this->info("Obra {$obra->id}: rascunho de report gerado automaticamente.");
+
+            // Fase 5, Etapa C2 — Impacto de Restrições: snapshot gerado FORA
+            // de ReportGerador (Opção B aprovada). Falha aqui nunca derruba
+            // o Report já criado — degradação graciosa.
+            try {
+                $this->impactoRestricoesGerador->gerar($report);
+            } catch (\Throwable $e) {
+                report($e);
+            }
         } catch (\RuntimeException $e) {
             $this->warn("Obra {$obra->id}: {$e->getMessage()}");
         }

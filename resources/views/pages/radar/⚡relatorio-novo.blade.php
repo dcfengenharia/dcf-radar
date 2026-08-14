@@ -9,8 +9,12 @@ use App\Models\PacoteTrabalho;
 use App\Models\Report;
 use App\Models\Work;
 use App\Services\CurvaAvanco;
+use App\Services\ImpactoRestricoesGerador;
 use App\Services\ReportGerador;
+use App\Support\Concerns\ExecutaComTransacaoSegura;
+use App\Support\Report\DiagnosticoReport;
 use Illuminate\Support\Carbon;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 use Livewire\WithFileUploads;
@@ -27,6 +31,7 @@ use Livewire\WithFileUploads;
  */
 new class extends Component {
     use WithFileUploads;
+    use ExecutaComTransacaoSegura;
 
     /**
      * Limiares do velocímetro de aderência (zonas vermelha/amarela/verde) —
@@ -59,11 +64,71 @@ new class extends Component {
     public array $novasFotos    = [];
     public array $legendasFotos = [];
 
+    /**
+     * Fase 1 do wizard de Diagnóstico Colaborativo — o Report passa a ser
+     * criado ao SAIR do passo 2 (ver avancar()/prepararRascunhoDoDiagnostico()),
+     * não mais só no passo 5 (salvar()). $reportAssinatura guarda a
+     * "assinatura" das opções que geraram $report — usada pra decidir se um
+     * novo avanço do passo 2 pode reaproveitar o Report já existente ou se
+     * precisa descartá-lo (forceDelete()) e recriar. Ambos precisam ser
+     * propriedades PÚBLICAS (não privadas) pra sobreviver à
+     * serialização/hidratação do Livewire entre requests — é exatamente
+     * esse ciclo que exige o hydrate() novo logo abaixo.
+     */
+    public ?Report $report = null;
+    public array $reportAssinatura = [];
+
     public function mount(Work $obra): void
     {
         $this->obra = $obra;
         $this->authorize('create', [Report::class, $obra->id]);
         $this->periodoReferencia = now()->startOfWeek()->toDateString();
+    }
+
+    /**
+     * Proteção contra a MESMA classe de bug de rehidratação do Livewire já
+     * corrigida em ⚡relatorio-detalhe.blade.php (Collection::
+     * getQueueableRelations() faz array_intersect() entre relações
+     * aninhadas de itens de uma coleção — quando 2+ curvas de um Report têm
+     * sub-relações assimétricas, ex.: uma com desvios e outra sem nenhum,
+     * o caminho presente só em algumas é descartado na rehidratação entre
+     * requests). Antes desta fase o wizard nunca tinha um Report como
+     * propriedade Livewire — agora tem, então herda o mesmo risco.
+     *
+     * Lista IDÊNTICA à que App\Support\Report\DiagnosticoReport::calcular()
+     * usa internamente — duplicada de propósito (mesma convenção já usada
+     * entre este arquivo e o detalhe pra outras constantes/helpers
+     * pequenos), não fatorada via relacoesReportCompletas() do detalhe,
+     * que carrega relações extras (fotos/comentários/criador/emissor) que
+     * o diagnóstico não usa e que este wizard ainda não expõe (Fotos e
+     * Revisão continuam com sua própria lógica, intocada nesta fase).
+     */
+    public function hydrate(): void
+    {
+        if ($this->report) {
+            $this->report->loadMissing([
+                'cronogramaImportacao.healthCheck',
+                'curvas.datapoints',
+                'curvas.desvios.pacoteTrabalho',
+                'curvas.desvios.restricaoImpacto',
+                'curvas.pacoteTrabalho',
+            ]);
+        }
+    }
+
+    /**
+     * Diagnósticos reais do Report recém-criado (Fase 1 do wizard de
+     * Diagnóstico Colaborativo) — única fonte de cálculo é
+     * App\Support\Report\DiagnosticoReport::calcular(), a MESMA classe já
+     * usada por ⚡relatorio-detalhe.blade.php (Ciclo 2), nunca duplicada
+     * aqui. Sem Report ainda (usuário não passou do passo 2), devolve um
+     * array vazio — nunca inventa diagnóstico. A UI do Passo 3 que
+     * consome isso fica pro próximo ciclo.
+     */
+    #[Computed]
+    public function diagnostico(): array
+    {
+        return $this->report ? app(DiagnosticoReport::class)->calcular($this->report) : [];
     }
 
     #[Computed]
@@ -388,8 +453,88 @@ new class extends Component {
             return;
         }
 
+        if ($this->etapa === '2') {
+            $this->prepararRascunhoDoDiagnostico();
+        }
+
         $this->resetErrorBag();
         $this->etapa = (string) (((int) $this->etapa) + 1);
+    }
+
+    /** Assinatura das opções que determinam o CONTEÚDO do Report — mudar qualquer uma invalida o rascunho já criado. */
+    private function assinaturaAtual(): array
+    {
+        return [
+            $this->periodoReferencia,
+            $this->linhaBaseId,
+            $this->avancoImportacaoId,
+            $this->titulo,
+            $this->ordemCurvas,
+        ];
+    }
+
+    /**
+     * Cria (ou reaproveita, ou descarta e recria) o rascunho do Report ao
+     * sair do passo 2 — coração da Fase 1 do wizard de Diagnóstico
+     * Colaborativo. Reaproveita EXATAMENTE a mesma chamada de
+     * ReportGerador::gerarRascunho() que salvar() já fazia (só que aqui
+     * SEM pontos de atenção, que continuam só em memória em
+     * $pontosPorCurva até o passo final — ver salvar(), não alterado
+     * nesta fase) + a mesma chamada degradável de
+     * ImpactoRestricoesGerador::gerar() (necessária pro Passo 3 mostrar
+     * Top Riscos/Decisões Prioritárias reais).
+     */
+    private function prepararRascunhoDoDiagnostico(): void
+    {
+        $assinaturaAtual = $this->assinaturaAtual();
+
+        if ($this->report !== null && $this->reportAssinatura === $assinaturaAtual) {
+            // Nada mudou desde a última vez que passamos pelo passo 2 —
+            // reaproveita o mesmo Report, zero escrita nova no banco.
+            return;
+        }
+
+        if ($this->report !== null) {
+            // Nunca ->delete(): Report usa SoftDeletes, e cascadeOnDelete
+            // das tabelas filhas (report_curvas/report_desvios/
+            // report_curva_datapoints/report_pontos_atencao/
+            // report_indicadores_semana/report_desvio_restricoes) só
+            // dispara em DELETE real — mesmo achado já documentado no
+            // projeto pra Tenant. Nada foi persistido em cima deste
+            // rascunho ainda (pontos de atenção/fotos só entram no banco
+            // em salvar()), então forceDelete() aqui nunca destrói dado
+            // que o usuário já digitou.
+            $this->report->forceDelete();
+            $this->report = null;
+        }
+
+        $curvas = [];
+        foreach ($this->ordemCurvas as $i => $chave) {
+            $curvas[] = [
+                'pacote_trabalho_id' => $chave === 'obra' ? null : $chave,
+                'ordem' => $i,
+                'pontos_atencao' => [],
+            ];
+        }
+
+        $report = app(ReportGerador::class)->gerarRascunho($this->obra, auth()->user(), [
+            'periodo_referencia' => $this->periodoReferencia,
+            'linha_base_id' => $this->linhaBaseId,
+            'avanco_importacao_id' => $this->avancoImportacaoId,
+            'titulo' => $this->titulo ?: null,
+            'curvas' => $curvas,
+        ]);
+
+        // Mesma degradação graciosa já usada em salvar() — falha aqui
+        // nunca derruba o Report já criado.
+        try {
+            app(ImpactoRestricoesGerador::class)->gerar($report);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        $this->report = $report;
+        $this->reportAssinatura = $assinaturaAtual;
     }
 
     public function voltar(): void
@@ -402,10 +547,31 @@ new class extends Component {
     {
         $this->authorize('create', [Report::class, $this->obra->id]);
 
-        $this->validate([
-            'periodoReferencia' => 'required|date',
-            'novasFotos.*' => 'image|mimes:jpeg,jpg,png,webp|max:5120',
-        ]);
+        // Achado do bug "Salvar rascunho não funciona": $this->validate()
+        // pode falhar tanto em 'periodoReferencia' (UI visível só no Passo
+        // 1) quanto em 'novasFotos.*' (UI visível só no Passo 4) — mas o
+        // usuário está sempre no Passo 5 quando chama salvar(). Sem este
+        // catch, a ValidationException interrompe o método e o Livewire
+        // simplesmente re-renderiza o Passo 5 sem NENHUM indício visual do
+        // erro (nenhum dos dois blocos @error existe nessa etapa) — clicar
+        // em "Salvar rascunho" parecia "não fazer nada". Corrigido levando
+        // o usuário de volta pro passo onde o erro já tem UI própria, antes
+        // de deixar a exceção subir normalmente (Livewire preenche $errors
+        // do jeito de sempre a partir dela).
+        try {
+            $this->validate([
+                'periodoReferencia' => 'required|date',
+                'novasFotos.*' => 'image|mimes:jpeg,jpg,png,webp|max:5120',
+            ]);
+        } catch (ValidationException $e) {
+            if ($e->validator->errors()->has('periodoReferencia')) {
+                $this->etapa = '1';
+            } elseif ($e->validator->errors()->has('novasFotos.*')) {
+                $this->etapa = '4';
+            }
+
+            throw $e;
+        }
 
         if ($this->ordemCurvas === []) {
             $this->addError('ordemCurvas', 'Selecione ao menos uma curva antes de salvar.');
@@ -413,38 +579,114 @@ new class extends Component {
             return;
         }
 
-        $curvas = [];
-        foreach ($this->ordemCurvas as $i => $chave) {
-            $curvas[] = [
-                'pacote_trabalho_id' => $chave === 'obra' ? null : $chave,
-                'ordem' => $i,
-                'pontos_atencao' => array_values(array_filter(
-                    $this->pontosPorCurva[$chave] ?? [],
-                    fn ($p) => trim($p['texto'] ?? '') !== ''
-                )),
-            ];
-        }
+        // Mesma rede de segurança já usada nas 5 páginas centrais do Radar
+        // (⚡restricoes/⚡lookahead/⚡linhas-base/⚡plano-semanal/⚡curvas) —
+        // até agora este assistente não tinha: qualquer falha inesperada
+        // aqui dentro (ex.: erro de storage ao salvar uma foto) desfazia
+        // silenciosamente, sem toast e sem indicação nenhuma pro usuário.
+        // Autorização/validação continuam subindo normalmente (tratadas
+        // acima); só falhas de verdade caem aqui.
+        $report = $this->transacaoSegura(function () {
+            if ($this->report !== null) {
+                // CAMINHO 1 (fluxo normal, Fase 1 do wizard de Diagnóstico
+                // Colaborativo) — o rascunho já foi criado ao sair do passo 2
+                // (ver prepararRascunhoDoDiagnostico()). Nunca chama
+                // ReportGerador::gerarRascunho() de novo aqui — só falta
+                // persistir os Pontos de Atenção, que até este ponto só
+                // existiam em memória em $pontosPorCurva, sobre as curvas JÁ
+                // existentes.
+                $report = $this->report;
+                $this->persistirPontosAtencaoNasCurvasExistentes($report);
+            } else {
+                // CAMINHO 2 (fallback, preservado tal como sempre existiu) —
+                // quem chega em salvar() sem ter passado pelo passo 2 do
+                // wizard guiado (ex.: chamada direta em teste) continua
+                // criando Report+curvas+pontos de atenção numa única chamada.
+                $curvas = [];
+                foreach ($this->ordemCurvas as $i => $chave) {
+                    $curvas[] = [
+                        'pacote_trabalho_id' => $chave === 'obra' ? null : $chave,
+                        'ordem' => $i,
+                        'pontos_atencao' => array_values(array_filter(
+                            $this->pontosPorCurva[$chave] ?? [],
+                            fn ($p) => trim($p['texto'] ?? '') !== ''
+                        )),
+                    ];
+                }
 
-        $report = app(ReportGerador::class)->gerarRascunho($this->obra, auth()->user(), [
-            'periodo_referencia' => $this->periodoReferencia,
-            'linha_base_id' => $this->linhaBaseId,
-            'avanco_importacao_id' => $this->avancoImportacaoId,
-            'titulo' => $this->titulo ?: null,
-            'curvas' => $curvas,
-        ]);
+                $report = app(ReportGerador::class)->gerarRascunho($this->obra, auth()->user(), [
+                    'periodo_referencia' => $this->periodoReferencia,
+                    'linha_base_id' => $this->linhaBaseId,
+                    'avanco_importacao_id' => $this->avancoImportacaoId,
+                    'titulo' => $this->titulo ?: null,
+                    'curvas' => $curvas,
+                ]);
 
-        foreach ($this->novasFotos as $i => $arquivo) {
-            $caminho = $arquivo->store("report-fotos/{$this->obra->id}/{$report->id}", 'public');
-            $report->fotos()->create([
-                'caminho_arquivo' => $caminho,
-                'legenda' => $this->legendasFotos[$i] ?? null,
-                'ordem' => $i,
-                'enviado_por' => auth()->id(),
-            ]);
+                // Fase 5, Etapa C2 — Impacto de Restrições: snapshot gerado
+                // FORA de ReportGerador (Opção B aprovada, ReportGerador
+                // permanece intocado). Falha aqui nunca derruba o Report já
+                // criado — degradação graciosa, mesma filosofia de Health
+                // Check/Score ausente em reports antigos.
+                try {
+                    app(ImpactoRestricoesGerador::class)->gerar($report);
+                } catch (\Throwable $e) {
+                    report($e);
+                }
+            }
+
+            foreach ($this->novasFotos as $i => $arquivo) {
+                $caminho = $arquivo->store("report-fotos/{$this->obra->id}/{$report->id}", 'public');
+                $report->fotos()->create([
+                    'caminho_arquivo' => $caminho,
+                    'legenda' => $this->legendasFotos[$i] ?? null,
+                    'ordem' => $i,
+                    'enviado_por' => auth()->id(),
+                ]);
+            }
+
+            return $report;
+        }, 'Não foi possível salvar o rascunho do report. Tente novamente em instantes.');
+
+        if ($this->transacaoSeguraFalhou()) {
+            return;
         }
 
         $this->dispatch('show-toast', message: 'Rascunho do report salvo com sucesso.');
         $this->redirect(route('radar.relatorios.show', $report));
+    }
+
+    /**
+     * Caminho 1 de salvar() — persiste os Pontos de Atenção digitados
+     * (ainda só em memória em $pontosPorCurva neste ponto, exatamente
+     * como o Report criado no passo 2 sempre nasce com
+     * 'pontos_atencao' => [] em cada curva) sobre as curvas do Report JÁ
+     * existente. Mesmo padrão de ⚡relatorio-detalhe.blade.php::
+     * salvarPontosAtencao() (curva->pontosAtencao()->create()) — nunca
+     * ReportGerador::gerarRascunho() de novo, nunca recria curva/desvio.
+     */
+    private function persistirPontosAtencaoNasCurvasExistentes(Report $report): void
+    {
+        foreach ($this->ordemCurvas as $chave) {
+            $pacoteId = $chave === 'obra' ? null : $chave;
+            $curva = $report->curvas->firstWhere('pacote_trabalho_id', $pacoteId);
+
+            if (! $curva) {
+                continue;
+            }
+
+            $pontos = array_values(array_filter(
+                $this->pontosPorCurva[$chave] ?? [],
+                fn ($p) => trim($p['texto'] ?? '') !== ''
+            ));
+
+            foreach ($pontos as $i => $ponto) {
+                $curva->pontosAtencao()->create([
+                    'categoria' => $ponto['categoria'] ?: null,
+                    'texto' => $ponto['texto'],
+                    'ordem' => $i,
+                ]);
+            }
+        }
     }
 };
 
@@ -565,9 +807,186 @@ new class extends Component {
             @endif
 
             {{-- ============================================================ --}}
-            {{-- PASSO 3 — Pontos de atenção --}}
+            {{-- PASSO 3 — Diagnóstico + Pontos de atenção --}}
             {{-- ============================================================ --}}
             @if($etapa === '3')
+
+            {{-- ------------------------------------------------------------------ --}}
+            {{-- Diagnóstico automático (Fase 1 do wizard de Diagnóstico Colaborativo)
+                 — SOMENTE LEITURA nesta fase (confirmar/rejeitar/contextualizar ficam
+                 pra fases futuras). Única fonte de dado é $this->diagnostico
+                 (App\Support\Report\DiagnosticoReport::calcular()) — nenhuma regra de
+                 cálculo é duplicada aqui, só leitura/apresentação do que o serviço já
+                 devolve. Blocos/seções sem dado somem inteiros, nunca "Nenhum dado
+                 encontrado". --}}
+            {{-- ------------------------------------------------------------------ --}}
+            @php
+                $diag = $this->diagnostico;
+                $diagCriticos = $diag['decisoesPrioritarias'] ?? [];
+                $diagDesvios = $diag['principaisDesvios'] ?? [];
+                $diagRiscos = $diag['topRiscos'] ?? [];
+                // Regra de contagem do banner (decisão explícita desta fase):
+                // aderenciaPlanejamento NUNCA entra nessa soma — fica só no
+                // Contexto, mesmo quando desfavorável/crítica.
+                $diagTotalRelevantes = count($diagCriticos) + count($diagDesvios) + count($diagRiscos);
+
+                $diagConfiabilidade = $diag['confiabilidadeCronograma'] ?? ['estado' => 'indisponivel'];
+                $diagHhPorCurva = collect($diag['hhExpostaPorAtraso'] ?? [])->filter(fn ($h) => ($h['estado'] ?? null) === 'ok');
+                $diagProximosEventos = $diag['proximosEventosRelevantes'] ?? [];
+                $diagAderencia = $diag['aderenciaPlanejamento'] ?? ['tem_dado' => false];
+
+                $diagTemContexto = $diagConfiabilidade['estado'] !== 'indisponivel'
+                    || $diagHhPorCurva->isNotEmpty()
+                    || ! empty($diagProximosEventos)
+                    || ($diagAderencia['tem_dado'] ?? false);
+            @endphp
+
+            <div class="mb-4">
+                <div class="alert alert-primary d-flex align-items-start gap-2 mb-3">
+                    <i class="bx bx-bulb fs-4"></i>
+                    <div>
+                        <strong>✨ O Radar analisou sua semana</strong>
+                        <div class="small mt-1">
+                            @if($diagTotalRelevantes > 0)
+                            Encontramos {{ $diagTotalRelevantes }} {{ $diagTotalRelevantes === 1 ? 'ponto que merece' : 'pontos que merecem' }} atenção.
+                            @else
+                            ✅ Tudo sob controle nesta semana.
+                            @endif
+                        </div>
+                    </div>
+                </div>
+
+                {{-- 🔴 CRÍTICO — só aparece com conteúdo --}}
+                @if(count($diagCriticos) > 0)
+                <div class="card border-danger mb-3">
+                    <div class="card-header bg-label-danger py-2">
+                        <strong>🔴 Crítico</strong> <span class="text-muted small">— exige atenção imediata</span>
+                    </div>
+                    <div class="card-body">
+                        @foreach($diagCriticos as $item)
+                        <div class="d-flex align-items-start gap-2 {{ !$loop->last ? 'mb-2 pb-2 border-bottom' : '' }}">
+                            <i class="bx bx-error-circle text-danger mt-1"></i>
+                            <div>
+                                <div class="fw-semibold">{{ $item['descricao'] }}</div>
+                                <div class="small text-muted">
+                                    {{ $item['pacote_titulo'] ?? '' }}
+                                    @if(!empty($item['prazo_limite']))
+                                    · Prazo: {{ \Carbon\Carbon::parse($item['prazo_limite'])->format('d/m/Y') }}
+                                    @endif
+                                    @if($item['vencida'] ?? false)
+                                    <span class="badge bg-label-danger ms-1">Vencida</span>
+                                    @endif
+                                    @if($item['bloqueante'] ?? false)
+                                    <span class="badge bg-label-warning ms-1">Bloqueante</span>
+                                    @endif
+                                </div>
+                            </div>
+                        </div>
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+
+                {{-- 🟠 RELEVANTE — só aparece com conteúdo (Principais Desvios e/ou Top Riscos) --}}
+                @if(count($diagDesvios) > 0 || count($diagRiscos) > 0)
+                <div class="card border-warning mb-3">
+                    <div class="card-header bg-label-warning py-2">
+                        <strong>🟠 Relevante</strong> <span class="text-muted small">— merece análise</span>
+                    </div>
+                    <div class="card-body">
+                        @if(count($diagDesvios) > 0)
+                        <div class="{{ count($diagRiscos) > 0 ? 'mb-3' : '' }}">
+                            <div class="small text-muted mb-2">Principais Desvios</div>
+                            <div class="row g-2">
+                                @foreach($diagDesvios as $d)
+                                <div class="col-md-4">
+                                    <div class="border rounded p-2 h-100">
+                                        <div class="fw-semibold small">{{ $d['titulo_exibicao'] }}</div>
+                                        <div class="text-danger">{{ number_format($d['percentual_impacto'], 1, ',', '.') }} pts</div>
+                                    </div>
+                                </div>
+                                @endforeach
+                            </div>
+                        </div>
+                        @endif
+
+                        @if(count($diagRiscos) > 0)
+                        <div>
+                            <div class="small text-muted mb-2">Top Riscos</div>
+                            @foreach($diagRiscos as $r)
+                            <div class="d-flex align-items-start gap-2 {{ !$loop->last ? 'mb-2 pb-2 border-bottom' : '' }}">
+                                <i class="bx bx-shield-x text-warning mt-1"></i>
+                                <div>
+                                    <div class="fw-semibold small">{{ $r['descricao'] }}</div>
+                                    <div class="small text-muted">
+                                        {{ $r['pacote_titulo'] ?? '' }}
+                                        @if(!empty($r['prazo_limite']))
+                                        · Prazo: {{ \Carbon\Carbon::parse($r['prazo_limite'])->format('d/m/Y') }}
+                                        @endif
+                                    </div>
+                                </div>
+                            </div>
+                            @endforeach
+                        </div>
+                        @endif
+                    </div>
+                </div>
+                @endif
+
+                {{-- 🔵 CONTEXTO — compacto, colapsado por padrão (Alpine core puro,
+                     sem @alpinejs/collapse — mesmo achado já documentado no projeto
+                     de que esse plugin não está instalado). --}}
+                @if($diagTemContexto)
+                <div class="card mb-3" x-data="{ diagContextoAberto: false }">
+                    <div class="card-header py-2 d-flex align-items-center justify-content-between" style="cursor: pointer" @click="diagContextoAberto = !diagContextoAberto">
+                        <div>
+                            <strong>🔵 Contexto</strong> <span class="text-muted small">— informações que ajudam a entender a semana</span>
+                        </div>
+                        <i class="bx" :class="diagContextoAberto ? 'bx-chevron-up' : 'bx-chevron-down'"></i>
+                    </div>
+                    <div class="card-body" x-show="diagContextoAberto" x-transition x-cloak>
+                        <div class="row g-3">
+                            @if($diagConfiabilidade['estado'] !== 'indisponivel')
+                            <div class="col-md-3">
+                                <div class="small text-muted">Confiabilidade do Cronograma</div>
+                                @if($diagConfiabilidade['estado'] === 'ok')
+                                <div class="fw-semibold">{{ $diagConfiabilidade['score'] }}/100 ({{ $diagConfiabilidade['faixa_label'] }})</div>
+                                @else
+                                <div class="fw-semibold">{{ $diagConfiabilidade['total_ocorrencias'] }} ocorrência(s)</div>
+                                @endif
+                            </div>
+                            @endif
+
+                            @if($diagHhPorCurva->isNotEmpty())
+                            <div class="col-md-3">
+                                <div class="small text-muted">HH Exposta por Atraso</div>
+                                @foreach($diagHhPorCurva as $h)
+                                <div class="fw-semibold small">{{ number_format($h['hh_exposta_estimada'], 0, ',', '.') }}h ({{ $h['percentual_atividades_atrasadas'] }}%)</div>
+                                @endforeach
+                            </div>
+                            @endif
+
+                            @if(!empty($diagProximosEventos))
+                            <div class="col-md-3">
+                                <div class="small text-muted">Próximos Eventos</div>
+                                @foreach($diagProximosEventos as $ev)
+                                <div class="small">{{ $ev['titulo'] }} — {{ \Carbon\Carbon::parse($ev['data'])->format('d/m/Y') }}</div>
+                                @endforeach
+                            </div>
+                            @endif
+
+                            @if($diagAderencia['tem_dado'] ?? false)
+                            <div class="col-md-3">
+                                <div class="small text-muted">Aderência ao Planejamento</div>
+                                <div class="fw-semibold">{{ number_format($diagAderencia['media'], 1, ',', '.') }}% {{ $diagAderencia['faixa_emoji'] }} {{ $diagAderencia['faixa_label'] }}</div>
+                            </div>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+                @endif
+            </div>
+
             <h6 class="mb-3">Pontos de atenção por curva</h6>
             <p class="text-muted small mb-3">Use as setas para definir a ordem de exibição no report. Os pontos de atenção são digitados manualmente — não vêm do cronograma.</p>
 
@@ -650,7 +1069,25 @@ new class extends Component {
                 @foreach($novasFotos as $i => $foto)
                 <div class="col-md-3">
                     <div class="card h-100">
+                        {{-- Achado do bug "salvar rascunho não funciona": arquivos que o
+                             navegador deixa passar por accept="image/*" mas que o Livewire
+                             não sabe pré-visualizar (ex.: fotos HEIC, padrão do iPhone —
+                             ausente de config('livewire.temporary_file_upload.preview_mimes'))
+                             faziam temporaryUrl() lançar FileNotPreviewableException e
+                             quebrar o render do Passo 4 inteiro, travando o usuário antes
+                             mesmo de chegar no Passo 5/"Salvar rascunho". A validação de
+                             mimes em salvar() já rejeita esses arquivos — este fallback só
+                             evita o crash na prévia, nunca aceita o arquivo por baixo dos panos. --}}
+                        @if($foto->isPreviewable())
                         <img src="{{ $foto->temporaryUrl() }}" class="card-img-top" style="height:140px; object-fit:cover">
+                        @else
+                        <div class="card-img-top d-flex align-items-center justify-content-center bg-light text-muted" style="height:140px">
+                            <div class="text-center small px-2">
+                                <i class="bx bx-file fs-3 d-block mb-1"></i>
+                                {{ $foto->getClientOriginalName() }}
+                            </div>
+                        </div>
+                        @endif
                         <div class="card-body p-2">
                             <input type="text" class="form-control form-control-sm"
                                    wire:model="legendasFotos.{{ $i }}" placeholder="Legenda...">

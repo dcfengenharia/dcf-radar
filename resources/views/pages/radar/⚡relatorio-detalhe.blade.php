@@ -12,6 +12,7 @@ use App\Models\ReportDesvio;
 use App\Models\ReportFoto;
 use App\Models\ReportPontoAtencao;
 use App\Services\ReportGerador;
+use App\Support\Report\DiagnosticoReport;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
@@ -136,6 +137,21 @@ new class extends Component {
     }
 
     /**
+     * Única fonte de cálculo dos diagnósticos (Fase 5) — delega pra
+     * App\Support\Report\DiagnosticoReport::calcular(), reaproveitada
+     * também pelo assistente de criação de Report (Fase 1 do wizard de
+     * Diagnóstico Colaborativo). Cache do #[Computed] garante que o
+     * serviço só roda 1x por request mesmo sendo lido pelos 9 métodos
+     * abaixo (mesmo padrão que $this->dadosGraficos/$this->
+     * impactoRestricoes já usavam entre si antes desta extração).
+     */
+    #[Computed]
+    public function diagnostico(): array
+    {
+        return app(DiagnosticoReport::class)->calcular($this->report);
+    }
+
+    /**
      * Confiabilidade do Cronograma (Fase 5, Etapa A) — lê o Health Check/
      * Score já persistidos da importação que originou este Report, via a
      * relação indireta Report->cronogramaImportacao->healthCheck (todas
@@ -164,36 +180,15 @@ new class extends Component {
      *   score inventado;
      * 'ok' — os dois existem — mostra score/faixa/achados normalmente,
      *   sem alerta artificial quando não há crítico/alto.
+     *
+     * O CÁLCULO em si vive em App\Support\Report\DiagnosticoReport —
+     * este método é uma delegação pra $this->diagnostico, extraída na
+     * Fase 1/Etapa 0/Ciclo 2 do wizard de Diagnóstico Colaborativo.
      */
     #[Computed]
     public function confiabilidadeCronograma(): array
     {
-        $healthCheck = $this->report->cronogramaImportacao->healthCheck;
-
-        if (! $healthCheck) {
-            return ['estado' => 'indisponivel'];
-        }
-
-        $scoreResultado = $healthCheck->scoreResultado();
-
-        if (! $scoreResultado) {
-            return [
-                'estado' => 'sem_score',
-                'total_ocorrencias' => $healthCheck->total_ocorrencias,
-                'total_criticos' => $healthCheck->total_criticos,
-                'total_altos' => $healthCheck->total_altos,
-            ];
-        }
-
-        return [
-            'estado' => 'ok',
-            'score' => $scoreResultado->score,
-            'faixa_label' => $scoreResultado->faixa->label(),
-            'faixa_cor' => $scoreResultado->faixa->cor(),
-            'total_ocorrencias' => $healthCheck->total_ocorrencias,
-            'total_criticos' => $healthCheck->total_criticos,
-            'total_altos' => $healthCheck->total_altos,
-        ];
+        return $this->diagnostico['confiabilidadeCronograma'];
     }
 
     /**
@@ -246,25 +241,7 @@ new class extends Component {
     #[Computed]
     public function principaisDesvios(): array
     {
-        return $this->report->curvas
-            ->flatMap(fn (ReportCurva $c) => $c->desvios)
-            ->filter(fn (ReportDesvio $d) => ! $d->eh_nivel_pai && (float) $d->percentual_impacto < 0)
-            ->sortBy(fn (ReportDesvio $d) => [
-                (float) $d->percentual_impacto,
-                (float) $d->percentual_desvio,
-                $d->id,
-            ])
-            ->values()
-            ->take(3)
-            ->map(fn (ReportDesvio $d) => [
-                'id' => $d->id,
-                'titulo_exibicao' => $d->titulo_exibicao,
-                'percentual_previsto' => (float) $d->percentual_previsto,
-                'percentual_real' => (float) $d->percentual_real,
-                'percentual_desvio' => (float) $d->percentual_desvio,
-                'percentual_impacto' => (float) $d->percentual_impacto,
-            ])
-            ->all();
+        return $this->diagnostico['principaisDesvios'];
     }
 
     /**
@@ -308,60 +285,7 @@ new class extends Component {
     #[Computed]
     public function causasDoDesvio(): array
     {
-        $dataReferencia = $this->report->data_status ?? $this->report->periodo_referencia;
-
-        $pacoteIdsPorDesvio = [];
-        $todosPacoteIds = [];
-
-        foreach ($this->report->curvas as $curva) {
-            foreach ($curva->desvios as $desvio) {
-                $pacote = $desvio->eh_nivel_pai ? $curva->pacoteTrabalho : $desvio->pacoteTrabalho;
-
-                $pacoteIds = $pacote
-                    ? [$pacote->id, ...$pacote->descendantIds()]
-                    : PacoteTrabalho::where('obra_id', $this->report->obra_id)->pluck('id')->all();
-
-                $pacoteIdsPorDesvio[$desvio->id] = $pacoteIds;
-                $todosPacoteIds = [...$todosPacoteIds, ...$pacoteIds];
-            }
-        }
-
-        $todosPacoteIds = array_values(array_unique($todosPacoteIds));
-
-        $atividades = Atividade::where('obra_id', $this->report->obra_id)
-            ->whereIn('pacote_trabalho_id', $todosPacoteIds)
-            ->get(['id', 'pacote_trabalho_id', 'nome', 'codigo_cronograma']);
-
-        $causasPorAtividade = CausaNaoCumprimento::whereIn('atividade_id', $atividades->pluck('id'))
-            ->whereDate('created_at', '<=', $dataReferencia)
-            ->orderByDesc('created_at')
-            ->get(['id', 'atividade_id', 'descricao', 'created_at'])
-            ->groupBy('atividade_id');
-
-        $linhas = [];
-
-        foreach ($pacoteIdsPorDesvio as $desvioId => $pacoteIds) {
-            $atividadesDoEscopo = $atividades->whereIn('pacote_trabalho_id', $pacoteIds);
-            $comCausa = $atividadesDoEscopo->filter(fn (Atividade $a) => $causasPorAtividade->has($a->id));
-
-            $linhas[$desvioId] = [
-                'total_atividades' => $atividadesDoEscopo->count(),
-                'atividades_com_causa' => $comCausa->count(),
-                'atividades_sem_causa' => $atividadesDoEscopo->count() - $comCausa->count(),
-                'causas' => $comCausa
-                    ->flatMap(fn (Atividade $a) => $causasPorAtividade->get($a->id)->map(fn (CausaNaoCumprimento $c) => [
-                        'atividade_nome' => $a->nome,
-                        'atividade_codigo' => $a->codigo_cronograma,
-                        'descricao' => $c->descricao,
-                        'registrada_em' => $c->created_at,
-                    ]))
-                    ->sortByDesc('registrada_em')
-                    ->values()
-                    ->all(),
-            ];
-        }
-
-        return $linhas;
+        return $this->diagnostico['causasDoDesvio'];
     }
 
     /**
@@ -395,29 +319,7 @@ new class extends Component {
     #[Computed]
     public function hhExpostaPorAtraso(): array
     {
-        $resultado = [];
-
-        foreach ($this->report->curvas as $curva) {
-            if ($curva->total_atividades <= 0) {
-                $resultado[$curva->id] = ['estado' => 'sem_dado'];
-
-                continue;
-            }
-
-            $percentualAtrasadas = round($curva->atividades_atrasadas / $curva->total_atividades * 100, 1);
-            $hhExpostaEstimada = round((float) $curva->total_hh_previsto * $curva->atividades_atrasadas / $curva->total_atividades, 2);
-
-            $resultado[$curva->id] = [
-                'estado' => 'ok',
-                'total_atividades' => $curva->total_atividades,
-                'atividades_atrasadas' => $curva->atividades_atrasadas,
-                'percentual_atividades_atrasadas' => $percentualAtrasadas,
-                'hh_exposta_estimada' => $hhExpostaEstimada,
-                'total_hh_previsto' => (float) $curva->total_hh_previsto,
-            ];
-        }
-
-        return $resultado;
+        return $this->diagnostico['hhExpostaPorAtraso'];
     }
 
     /**
@@ -440,22 +342,7 @@ new class extends Component {
     #[Computed]
     public function impactoRestricoes(): array
     {
-        $linhas = [];
-
-        foreach ($this->report->curvas as $curva) {
-            foreach ($curva->desvios as $desvio) {
-                $snapshot = $desvio->restricaoImpacto;
-
-                $linhas[$desvio->id] = $snapshot ? [
-                    'total_abertas' => $snapshot->total_abertas,
-                    'total_vencidas' => $snapshot->total_vencidas,
-                    'total_criticas' => $snapshot->total_criticas,
-                    'detalhes' => $snapshot->detalhes ?? [],
-                ] : null;
-            }
-        }
-
-        return $linhas;
+        return $this->diagnostico['impactoRestricoes'];
     }
 
     /**
@@ -498,34 +385,7 @@ new class extends Component {
     #[Computed]
     public function topRiscos(): array
     {
-        $riscos = [];
-
-        foreach ($this->report->curvas as $curva) {
-            foreach ($curva->desvios as $desvio) {
-                $snapshot = $this->impactoRestricoes[$desvio->id] ?? null;
-
-                if (! $snapshot) {
-                    continue;
-                }
-
-                foreach ($snapshot['detalhes'] as $item) {
-                    $riscos[] = [
-                        ...$item,
-                        'pacote_titulo' => $desvio->titulo_exibicao,
-                    ];
-                }
-            }
-        }
-
-        return collect($riscos)
-            ->sortBy(fn (array $r) => [
-                $r['vencida'] ? 0 : 1,
-                $r['classificacao_risco'] === 'alto' ? 0 : 1,
-                $r['prazo_limite'] ?? '9999-12-31',
-            ])
-            ->values()
-            ->take(3)
-            ->all();
+        return $this->diagnostico['topRiscos'];
     }
 
     /**
@@ -585,80 +445,7 @@ new class extends Component {
     #[Computed]
     public function proximosEventosRelevantes(): array
     {
-        $inicioJanela = $this->report->periodo_referencia->copy()->addWeek();
-        $fimJanela = $inicioJanela->copy()->endOfWeek();
-
-        $snapshots = AtividadeSnapshot::where('cronograma_importacao_id', $this->report->cronograma_importacao_id)
-            ->where(function ($query) use ($inicioJanela, $fimJanela) {
-                $query->whereBetween('inicio_planejado', [$inicioJanela->toDateString(), $fimJanela->toDateString()])
-                    ->orWhereBetween('data_termino', [$inicioJanela->toDateString(), $fimJanela->toDateString()]);
-            })
-            ->get(['atividade_id', 'inicio_planejado', 'data_termino']);
-
-        if ($snapshots->isEmpty()) {
-            return [];
-        }
-
-        $atividades = Atividade::whereIn('id', $snapshots->pluck('atividade_id'))
-            ->where('fora_do_cronograma', false)
-            ->get(['id', 'nome', 'codigo_cronograma', 'is_marco', 'caminho_critico'])
-            ->keyBy('id');
-
-        $eventos = [];
-
-        foreach ($snapshots as $snapshot) {
-            $atividade = $atividades->get($snapshot->atividade_id);
-
-            if (! $atividade) {
-                continue;
-            }
-
-            $titulo = $atividade->codigo_cronograma
-                ? "{$atividade->codigo_cronograma} - {$atividade->nome}"
-                : $atividade->nome;
-
-            if ($atividade->is_marco) {
-                $dataMarco = $snapshot->data_termino ?? $snapshot->inicio_planejado;
-
-                if ($dataMarco && $dataMarco->between($inicioJanela, $fimJanela)) {
-                    $eventos[] = [
-                        'atividade_id' => $atividade->id,
-                        'titulo' => $titulo,
-                        'tipo' => 'marco',
-                        'data' => $dataMarco->toDateString(),
-                        'caminho_critico' => $atividade->caminho_critico,
-                    ];
-                }
-
-                continue;
-            }
-
-            if ($snapshot->inicio_planejado && $snapshot->inicio_planejado->between($inicioJanela, $fimJanela)) {
-                $eventos[] = [
-                    'atividade_id' => $atividade->id,
-                    'titulo' => $titulo,
-                    'tipo' => 'inicio',
-                    'data' => $snapshot->inicio_planejado->toDateString(),
-                    'caminho_critico' => $atividade->caminho_critico,
-                ];
-            }
-
-            if ($snapshot->data_termino && $snapshot->data_termino->between($inicioJanela, $fimJanela)) {
-                $eventos[] = [
-                    'atividade_id' => $atividade->id,
-                    'titulo' => $titulo,
-                    'tipo' => 'termino',
-                    'data' => $snapshot->data_termino->toDateString(),
-                    'caminho_critico' => $atividade->caminho_critico,
-                ];
-            }
-        }
-
-        return collect($eventos)
-            ->sortBy(fn (array $e) => [$e['data'], $e['atividade_id']])
-            ->values()
-            ->take(5)
-            ->all();
+        return $this->diagnostico['proximosEventosRelevantes'];
     }
 
     /**
@@ -710,57 +497,7 @@ new class extends Component {
     #[Computed]
     public function aderenciaPlanejamento(): array
     {
-        $curvas = $this->report->curvas;
-
-        if ($curvas->isEmpty()) {
-            return ['tem_dado' => false];
-        }
-
-        $aderenciaPorCurvaId = collect($this->dadosGraficos)->keyBy('id');
-
-        $curvaReferencia = $curvas->firstWhere('pacote_trabalho_id', null);
-
-        if (! $curvaReferencia) {
-            $curvaReferencia = $curvas
-                ->filter(fn (ReportCurva $c) => $aderenciaPorCurvaId[$c->id]['aderencia_atual'] !== null)
-                ->sortBy(fn (ReportCurva $c) => $aderenciaPorCurvaId[$c->id]['aderencia_atual'])
-                ->first();
-        }
-
-        if (! $curvaReferencia) {
-            return ['tem_dado' => false];
-        }
-
-        $tabelaSemanal = $this->serieParaGrafico($curvaReferencia, GranularidadePeriodo::Semanal)['tabela'];
-
-        $semanasElegiveis = collect($tabelaSemanal)
-            ->filter(fn (array $linha) => $linha['aderencia_periodo'] !== null)
-            ->values();
-
-        if ($semanasElegiveis->count() < 3) {
-            return ['tem_dado' => false];
-        }
-
-        $semanasExibidas = $semanasElegiveis->slice(-4)->values();
-
-        $media = $semanasExibidas->avg('aderencia_periodo');
-
-        $faixa = match (true) {
-            $media >= 90 => ['emoji' => '🟢', 'label' => 'Boa'],
-            $media >= 75 => ['emoji' => '🟠', 'label' => 'Atenção'],
-            default => ['emoji' => '🔴', 'label' => 'Crítica'],
-        };
-
-        return [
-            'tem_dado' => true,
-            'media' => $media,
-            'faixa_emoji' => $faixa['emoji'],
-            'faixa_label' => $faixa['label'],
-            'semanas' => $semanasExibidas->map(fn (array $l) => [
-                'label' => $l['label'],
-                'aderencia' => $l['aderencia_periodo'],
-            ])->all(),
-        ];
+        return $this->diagnostico['aderenciaPlanejamento'];
     }
 
     /**
@@ -805,50 +542,7 @@ new class extends Component {
     #[Computed]
     public function decisoesPrioritarias(): array
     {
-        $inicioProximaSemana = $this->report->periodo_referencia->copy()->addWeek();
-        $fimProximaSemana = $inicioProximaSemana->copy()->endOfWeek();
-
-        $situacoes = [];
-
-        foreach ($this->report->curvas as $curva) {
-            foreach ($curva->desvios as $desvio) {
-                $snapshot = $this->impactoRestricoes[$desvio->id] ?? null;
-
-                if (! $snapshot) {
-                    continue;
-                }
-
-                foreach ($snapshot['detalhes'] as $item) {
-                    $dentroDaProximaSemana = $item['prazo_limite']
-                        && Carbon::parse($item['prazo_limite'])->between($inicioProximaSemana, $fimProximaSemana);
-
-                    $elegivel = $item['vencida']
-                        || $item['bloqueante']
-                        || $item['classificacao_risco'] === 'alto'
-                        || $dentroDaProximaSemana;
-
-                    if (! $elegivel) {
-                        continue;
-                    }
-
-                    $situacoes[] = [
-                        ...$item,
-                        'pacote_titulo' => $desvio->titulo_exibicao,
-                    ];
-                }
-            }
-        }
-
-        return collect($situacoes)
-            ->sortBy(fn (array $s) => [
-                $s['vencida'] ? 0 : 1,
-                $s['bloqueante'] ? 0 : 1,
-                $s['classificacao_risco'] === 'alto' ? 0 : 1,
-                $s['prazo_limite'] ?? '9999-12-31',
-            ])
-            ->values()
-            ->take(3)
-            ->all();
+        return $this->diagnostico['decisoesPrioritarias'];
     }
 
     /**
@@ -989,46 +683,7 @@ new class extends Component {
     #[Computed]
     public function dadosGraficos(): array
     {
-        return $this->report->curvas->map(function (ReportCurva $curva) {
-            $mensal = $this->serieParaGrafico($curva, GranularidadePeriodo::Mensal);
-            $semanal = $this->serieParaGrafico($curva, GranularidadePeriodo::Semanal);
-
-            return [
-                'id' => $curva->id,
-                'mensal' => $mensal,
-                'semanal' => $semanal,
-                // Aderência "da semana corrente" = aderencia_periodo (ver
-                // serieParaGrafico()) da ÚLTIMA semana que teve atualização
-                // de verdade (previsto E realizado presentes) — não
-                // necessariamente a última das 4 semanas gravadas, pois o
-                // realizado pode não ter chegado até lá ainda (nesse caso a
-                // última semana ficaria com aderencia_periodo=null e o
-                // velocímetro pareceria "quebrado").
-                'aderencia_atual' => $this->aderenciaDaUltimaSemanaAtualizada($semanal['tabela']),
-            ];
-        })->all();
-    }
-
-    /** Varre a tabela semanal de trás pra frente e devolve a aderência DO PERÍODO (%real÷%previsto daquela semana) da última semana com dado — nunca a última data gravada se ela ainda não tiver realizado. */
-    private function aderenciaDaUltimaSemanaAtualizada(array $tabelaSemanal): ?float
-    {
-        for ($i = count($tabelaSemanal) - 1; $i >= 0; $i--) {
-            if ($tabelaSemanal[$i]['aderencia_periodo'] !== null) {
-                return $tabelaSemanal[$i]['aderencia_periodo'];
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Delega pra App\Support\ReportCurvaSerializer (extraída daqui pra
-     * ser reaproveitada também pelo link público do cliente — mesma
-     * lógica, sem duplicar/arriscar divergência entre as duas telas).
-     */
-    private function serieParaGrafico(ReportCurva $curva, GranularidadePeriodo $gran): array
-    {
-        return \App\Support\ReportCurvaSerializer::serieParaGrafico($curva, $gran);
+        return $this->diagnostico['dadosGraficos'];
     }
 
     /** Limiares do velocímetro de aderência, expostos pro Blade repassar ao JS (evita duplicar os números). */

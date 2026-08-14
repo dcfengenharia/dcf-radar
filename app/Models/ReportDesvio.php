@@ -6,6 +6,7 @@ use App\Models\Concerns\BelongsToTenant;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * Uma linha do quadro de análise de desvios — a linha "nível pai" (o
@@ -50,5 +51,11 @@ class ReportDesvio extends Model
     public function pacoteTrabalho(): BelongsTo
     {
         return $this->belongsTo(PacoteTrabalho::class);
+    }
+
+    /** Snapshot de Impacto de Restrições desta linha (Fase 5, Etapa C2) — ver App\Models\ReportDesvioRestricao. */
+    public function restricaoImpacto(): HasOne
+    {
+        return $this->hasOne(ReportDesvioRestricao::class);
     }
 }

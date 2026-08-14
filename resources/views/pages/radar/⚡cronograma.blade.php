@@ -6,14 +6,19 @@ use App\Jobs\ImportarCronogramaJob;
 use App\Models\Atividade;
 use App\Models\CronogramaImportacao;
 use App\Models\Work;
+use App\Support\HealthCheck\HealthCheckEngine;
+use App\Support\HealthCheck\HealthCheckResultado;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 use Livewire\WithFileUploads;
+use Livewire\WithPagination;
 
 new class extends Component {
-  use WithFileUploads;
+  use WithFileUploads, WithPagination;
+
+  protected $paginationTheme = 'bootstrap';
 
   public Work $obra;
 
@@ -61,6 +66,13 @@ new class extends Component {
   public ?string $dataStatus = null;
   public array $nomesArquivadas = [];
   public array $arquivadasComRestricoes = []; // nome => qtd restrições
+
+  // Health Check — calculado uma única vez em analisar() (sobre o
+  // PlanoImportacao já em memória, nunca lendo o arquivo de novo nem
+  // consultando o banco) e reaproveitado até a persistência: o resultado
+  // que o usuário vê aqui é EXATAMENTE o que vai pro Job em confirmar() e,
+  // dali, pra tabela cronograma_importacao_health_checks.
+  public array $healthCheckResultado = ['findings' => []];
 
   // Caminho do arquivo temp armazenado (passado ao job)
   public ?string $caminhoArquivo = null;
@@ -122,10 +134,18 @@ new class extends Component {
           ->all();
       }
 
+      $this->healthCheckResultado = app(HealthCheckEngine::class)->avaliar($plano, TipoCronogramaImportacao::Baseline)->toArray();
+
       $this->emPrevia = true;
     } catch (\Throwable $e) {
       $this->erro = 'Erro ao processar o arquivo: ' . $e->getMessage();
     }
+  }
+
+  /** Reidrata o resultado do Health Check pra Blade poder chamar os helpers de agregação. */
+  public function resultadoHealthCheck(): HealthCheckResultado
+  {
+    return HealthCheckResultado::fromArray($this->healthCheckResultado);
   }
 
   public function confirmar(): void
@@ -147,6 +167,7 @@ new class extends Component {
         auth()->id(),
         TipoCronogramaImportacao::Baseline,
         $this->importacaoTrackingId,
+        $this->healthCheckResultado,
       );
     } catch (\Throwable $e) {
       // Fila síncrona (dev): o job roda inline e uma falha relança a
@@ -190,6 +211,7 @@ new class extends Component {
         'dataStatus',
         'nomesArquivadas',
         'arquivadasComRestricoes',
+        'healthCheckResultado',
       ]);
       $this->importado = true;
       $this->dispatch('show-toast', message: 'Cronograma importado com sucesso!');
@@ -198,20 +220,23 @@ new class extends Component {
     }
   }
 
+  /**
+   * Histórico de Importações (Fase 3, Etapa 5) — usa o partial compartilhado
+   * historico-importacoes.blade.php, mesma apresentação de
+   * ⚡relatorio-importar-avanco.blade.php/⚡obra-detalhe.blade.php. Filtro
+   * por tipo é o único ajuste por página; colunas específicas de Baseline
+   * (datas/HH que existiam aqui antes) saíram de propósito — unificação
+   * pedida pelo usuário, "não quero duas implementações diferentes do
+   * histórico" (ver CLAUDE.md).
+   */
   #[Computed]
   public function historicoImportacoes()
   {
-    return CronogramaImportacao::with('autor')
-      ->withSum(
-        ['avancoPeriodos as total_hh' => fn($q) => $q->where('serie', 'previsto')->where('granularidade', 'mensal')],
-        'horas'
-      )
-      ->withMin('atividadeSnapshots as baseline_inicio', 'baseline_inicio')
-      ->withMax('atividadeSnapshots as baseline_termino', 'baseline_termino')
+    return CronogramaImportacao::with(['autor', 'healthCheck'])
       ->where('obra_id', $this->obra->id)
       ->whereIn('tipo', [TipoCronogramaImportacao::Baseline->value, TipoCronogramaImportacao::Ambos->value])
       ->latest('importado_em')
-      ->get();
+      ->paginate(10);
   }
 
   public function cancelar(): void
@@ -236,6 +261,7 @@ new class extends Component {
       'dataStatus',
       'nomesArquivadas',
       'arquivadasComRestricoes',
+      'healthCheckResultado',
       'importado',
       'erro',
       'importacaoTrackingId',
@@ -366,61 +392,53 @@ new class extends Component {
 
 
             <div wire:loading wire:target="analisar" class="text-center py-4">
-                <div class="py-4"
+                <div class="py-2 mx-auto text-start" style="max-width: 480px;"
                      x-data="{
                          etapas: [
-                             { icon: '📂', texto: 'Abrindo o arquivo XML...', detalhe: 'lendo o que o MS Project guardou' },
-                             { icon: '🔍', texto: 'Vasculhando as tarefas...', detalhe: 'cada linha do cronograma, uma a uma' },
-                             { icon: '⏱️', texto: 'Calculando os HH faseados...', detalhe: 'semana a semana, hora a hora' },
-                             { icon: '🏗️', texto: 'Organizando a EAP...', detalhe: 'sim, até a hierarquia auto-aninhada' },
-                             { icon: '🧮', texto: 'Fechando os números...', detalhe: 'garantindo que os totais batem (±0,3%)' },
-                             { icon: '🗂️', texto: 'Comparando com o cronograma atual...', detalhe: 'o que criou, atualizou e some do .xml' },
-                             { icon: '✅', texto: 'Montando a prévia...', detalhe: 'quase pronto — só mais um segundo' },
+                             'Recebendo e abrindo o arquivo XML',
+                             'Identificando a estrutura do cronograma (EAP)',
+                             'Interpretando atividades e propriedades',
+                             'Montando predecessoras e sucessoras',
+                             'Avaliando a estrutura da rede do cronograma',
+                             'Verificando a lógica do cronograma',
+                             'Analisando as folgas (slack)',
+                             'Executando o Health Check',
+                             'Consolidando o resultado da prévia',
                          ],
                          atual: 0,
-                         progresso: 5,
-                         intervaloEtapa: null,
-                         intervaloProgresso: null,
+                         intervalo: null,
                          init() {
-                             this.intervaloEtapa = setInterval(() => {
+                             this.intervalo = setInterval(() => {
                                  if (this.atual < this.etapas.length - 1) this.atual++;
-                             }, 2200);
-                             this.intervaloProgresso = setInterval(() => {
-                                 const teto = [12, 28, 45, 60, 74, 86, 95][this.atual] ?? 95;
-                                 if (this.progresso < teto) this.progresso = Math.min(this.progresso + 1, teto);
-                             }, 120);
+                             }, 1300);
                          },
-                         destroy() {
-                             clearInterval(this.intervaloEtapa);
-                             clearInterval(this.intervaloProgresso);
-                         }
+                         destroy() { clearInterval(this.intervalo); }
                      }"
                      x-init="init()">
-
-                    <div class="text-center mb-4 w-100">
-                        <div class="display-4 mb-2" x-text="etapas[atual].icon" style="line-height:1"></div>
-                        <h5 class="fw-semibold mb-1" x-text="etapas[atual].texto"></h5>
-                        <p class="text-muted small mb-0" x-text="etapas[atual].detalhe"></p>
-                    </div>
-
-                    <div class="mx-auto w-100" style="max-width: 480px;">
-                        <div class="d-flex justify-content-between small text-muted mb-1">
-                            <span>Analisando cronograma...</span>
-                            <span x-text="progresso + '%'"></span>
-                        </div>
-                        <div class="progress" style="height: 8px;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
-                                 role="progressbar"
-                                 :style="'width: ' + progresso + '%'"
-                                 :aria-valuenow="progresso"
-                                 aria-valuemin="0"
-                                 aria-valuemax="100">
-                            </div>
-                        </div>
-                        <p class="text-center text-muted small mt-3 mb-0">
-                            Não feche esta janela — o processo pode levar alguns segundos para cronogramas grandes.
-                        </p>
-                    </div>
+                    <h6 class="fw-semibold mb-3 text-center">
+                        <span class="spinner-border spinner-border-sm text-primary me-1" role="status"></span>
+                        Analisando cronograma...
+                    </h6>
+                    <ul class="list-group list-group-flush">
+                        <template x-for="(etapa, indice) in etapas" :key="indice">
+                            <li class="list-group-item d-flex align-items-center gap-2 px-0"
+                                :class="indice > atual ? 'text-muted' : ''">
+                                <template x-if="indice < atual">
+                                    <i class="bx bx-check-circle text-success"></i>
+                                </template>
+                                <template x-if="indice === atual">
+                                    <span class="spinner-border spinner-border-sm text-primary" style="width:1rem;height:1rem;" role="status"></span>
+                                </template>
+                                <template x-if="indice > atual">
+                                    <i class="bx bx-circle text-muted"></i>
+                                </template>
+                                <span :class="indice === atual ? 'fw-semibold' : ''" x-text="etapa"></span>
+                            </li>
+                        </template>
+                    </ul>
+                    <p class="text-center text-muted small mt-3 mb-0">
+                        Não feche esta janela — o processo pode levar alguns segundos para cronogramas grandes.
+                    </p>
                 </div>
             </div>
 
@@ -435,10 +453,17 @@ new class extends Component {
                          hasFile: {{ $arquivoTemp ? 'true' : 'false' }},
                          tamanhoSelecionadoMb: null
                      }"
-                     x-on:livewire-upload-start="uploading = true; progress = 0; $wire.set('excedeuLimiteUpload', false)"
+                     x-on:livewire-upload-start="uploading = true; hasFile = false; progress = 0; $wire.set('excedeuLimiteUpload', false)"
                      x-on:livewire-upload-finish="uploading = false; hasFile = true"
-                     x-on:livewire-upload-error="uploading = false; $wire.marcarLimiteUploadExcedido(tamanhoSelecionadoMb)"
+                     x-on:livewire-upload-error="uploading = false; hasFile = false; $wire.marcarLimiteUploadExcedido(tamanhoSelecionadoMb)"
                      x-on:livewire-upload-progress="progress = $event.detail.progress">
+                    {{-- hasFile SÓ é controlado pelos eventos livewire-upload-* acima —
+                         nunca pelo x-on:change do input abaixo. O change nativo e o
+                         listener interno do Livewire (que dispara o upload via
+                         wire:model) competem no mesmo evento 'change', sem ordem
+                         garantida entre os dois; amarrar hasFile só ao que o próprio
+                         Livewire confirma elimina essa corrida (Analisar prévia nunca
+                         fica clicável antes do upload realmente terminar). --}}
 
                     <div class="mb-1">
                         <label class="form-label fw-medium">Arquivo XML do cronograma</label>
@@ -449,7 +474,6 @@ new class extends Component {
                                        wire:model="arquivoTemp"
                                        accept=".xml"
                                        x-on:change="
-                                           hasFile = false;
                                            const arquivo = $event.target.files[0];
                                            tamanhoSelecionadoMb = arquivo ? +(arquivo.size / 1024 / 1024).toFixed(1) : null;
                                        ">
@@ -521,6 +545,78 @@ new class extends Component {
             @endif
         </div>
         <div class="card-body">
+
+            {{-- ------------------------------------------------------------ --}}
+            {{-- Health Check / Análise de Coerência do Cronograma --}}
+            {{-- ------------------------------------------------------------ --}}
+            @php
+                $hc = $this->resultadoHealthCheck();
+                $hcPorSeveridade = $hc->totalPorSeveridade();
+                $hcPorCategoria = $hc->totalPorCategoria();
+            @endphp
+            <div class="card border mb-4">
+                <div class="card-header py-2 bg-light">
+                    <span class="fw-semibold"><i class="bx bx-shield-quarter me-1"></i>Health Check — Análise de Coerência do Cronograma</span>
+                </div>
+                <div class="card-body">
+                    @if(!$hc->temAlertas())
+                        <div class="alert alert-success d-flex align-items-center gap-2 mb-0">
+                            <i class="bx bx-check-circle fs-4"></i>
+                            <div>
+                                <strong>Nenhuma inconsistência relevante foi encontrada.</strong>
+                                <div class="small text-muted">O arquivo foi analisado e não há pontos de atenção a revisar antes de importar.</div>
+                            </div>
+                        </div>
+                    @else
+                        <div class="alert alert-warning d-flex align-items-center gap-2 mb-3">
+                            <i class="bx bx-error fs-4"></i>
+                            <div>
+                                <strong>Foram encontradas inconsistências que podem afetar a confiabilidade do cronograma.</strong>
+                                <div class="small text-muted">O sistema não identificou necessariamente erros no arquivo — os pontos abaixo devem ser avaliados antes de confirmar a importação.</div>
+                            </div>
+                        </div>
+
+                        {{-- Contagem por severidade --}}
+                        <div class="row g-2 mb-3 text-center">
+                            @foreach (\App\Enums\HealthCheckSeveridade::cases() as $sev)
+                                @continue($hcPorSeveridade[$sev->value] === 0)
+                                <div class="col-6 col-md">
+                                    <div class="p-2 rounded bg-label-{{ $sev->cor() }}">
+                                        <div class="fs-5">{{ $sev->emoji() }} {{ $hcPorSeveridade[$sev->value] }}</div>
+                                        <small class="text-muted">{{ $sev->label() }}</small>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+
+                        <p class="text-muted small mb-4">
+                            <i class="bx bx-info-circle me-1"></i>
+                            Score de saúde do cronograma: <strong>disponível em uma etapa futura</strong> — por enquanto, avalie cada ocorrência individualmente abaixo.
+                        </p>
+
+                        {{-- Resumo por categoria --}}
+                        <h6 class="mb-2">Resumo por categoria</h6>
+                        <div class="row g-2 mb-4">
+                            @foreach ($hcPorCategoria as $hcCatValue => $hcQtd)
+                                @php $hcCat = \App\Enums\HealthCheckCategoria::from($hcCatValue); @endphp
+                                <div class="col-6 col-md-3">
+                                    <div class="border rounded p-2 text-center">
+                                        <div class="fw-semibold">{{ $hcQtd }}</div>
+                                        <small class="text-muted">{{ $hcCat->label() }}</small>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+
+                        {{-- Ocorrências encontradas --}}
+                        <h6 class="mb-2">Ocorrências encontradas</h6>
+                        @include('pages.radar._partials.health-check-findings', [
+                            'findings' => $healthCheckResultado['findings'],
+                            'idPrefix' => 'hcFinding',
+                        ])
+                    @endif
+                </div>
+            </div>
 
             {{-- Contagens --}}
             <div class="row g-3 mb-4">
@@ -629,6 +725,34 @@ new class extends Component {
 
             {{-- Ações --}}
             <div class="d-flex align-items-center gap-2">
+                @if($hc->temAlertas())
+                {{-- Com alertas: exige confirmação extra explícita antes de importar (Health Check). --}}
+                <button type="button"
+                        onclick="confirmarAcao(this, {
+                            titulo: 'Inconsistências encontradas',
+                            mensagem: 'Este cronograma possui pontos de atenção identificados pelo Health Check. A importação poderá prosseguir, mas os problemas encontrados permanecerão registrados na análise desta revisão.',
+                            metodo: 'confirmar',
+                            args: [],
+                            corBotao: 'warning',
+                            icone: 'bx-error',
+                            textoBotao: 'Confirmar importação',
+                        })"
+                        wire:loading.attr="disabled"
+                        wire:target="confirmar"
+                        class="btn btn-warning"
+                        @if($statusImportacao === 'processando') disabled @endif>
+                    <span wire:loading.remove wire:target="confirmar">
+                        @if($statusImportacao !== 'processando')
+                            <i class="bx bx-error me-1"></i>Importar mesmo assim
+                        @else
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>Processando...
+                        @endif
+                    </span>
+                    <span wire:loading wire:target="confirmar">
+                        <span class="spinner-border spinner-border-sm me-1" role="status"></span>Processando...
+                    </span>
+                </button>
+                @else
                 <button wire:click="confirmar"
                         wire:loading.attr="disabled"
                         wire:target="confirmar"
@@ -645,6 +769,7 @@ new class extends Component {
                         <span class="spinner-border spinner-border-sm me-1" role="status"></span>Processando...
                     </span>
                 </button>
+                @endif
                 <button wire:click="cancelar"
                         wire:loading.attr="disabled"
                         wire:target="confirmar"
@@ -672,106 +797,16 @@ new class extends Component {
     @endif
 
     {{-- ------------------------------------------------------------------ --}}
-    {{-- Histórico de importações --}}
+    {{-- Histórico de Importações — partial compartilhado (Fase 3, Etapa 5) --}}
     {{-- ------------------------------------------------------------------ --}}
-    @php $historico = $this->historicoImportacoes; @endphp
-    @if($historico->isNotEmpty())
     <div class="card mt-4">
         <div class="card-header d-flex align-items-center gap-2">
             <i class="bx bx-history fs-5 text-secondary"></i>
             <h5 class="mb-0">Histórico de Importações de Linha de Base</h5>
-            <span class="badge bg-label-secondary ms-auto">{{ $historico->count() }} {{ $historico->count() === 1 ? 'importação' : 'importações' }}</span>
         </div>
-        <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-                <thead class="table-light">
-                    <tr>
-                        <th>Data</th>
-                        <th>Importado por</th>
-                        <th class="text-center">Criadas</th>
-                        <th class="text-center">Atualizadas</th>
-                        <th class="text-center">Arquivadas</th>
-                        <th class="text-center">Início Linha de Base</th>
-                        <th class="text-center">Término Linha de Base</th>
-                        <th class="text-end">
-                            Total HH (Previsto)
-                            <i class="bx bx-info-circle text-muted ms-1"
-                               data-bs-toggle="tooltip"
-                               title="Valor reconstruído a partir da distribuição mensal (ponto médio de cada bloco faseado do MSPDI) — pode ter desvio de fronteira de até ~0,3%/mês em relação ao total exato do MS Project. Isso é esperado; veja o aviso de precisão na prévia da importação."></i>
-                        </th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($historico as $imp)
-                    <tr>
-                        <td>
-                            <span class="fw-semibold">{{ $imp->importado_em->format('d/m/Y') }}</span>
-                            <br><small class="text-muted">{{ $imp->importado_em->format('H:i') }}</small>
-                        </td>
-                        <td>
-                          @if($imp->autor)
-                            <div class="d-flex">
-                              <div class="flex-shrink-0 me-3">
-                                <div class="avatar">
-                                  <img src="{{ $imp->autor ? $imp->autor->profile_photo_url : asset('assets/img/avatars/1.png') }}" alt class="rounded-circle">
-                                </div>
-                              </div>
-                              <div class="flex-grow-1">
-                                <span class="fw-medium d-block">
-                                  {{ trim($imp->autor->first_name . ' ' . $imp->autor->last_name) }}
-                                </span>
-                                @php $obraAtualNavbar = \App\Support\ObraContext::current(); @endphp
-                                @if ($obraAtualNavbar)
-                                <small class="text-muted">
-                                  {{ $imp->autor->perfilNaObra($obraAtualNavbar)?->nome }}
-                                </small>
-                                @endif
-                              </div>
-                            </div>
-                          @else
-                              <span class="text-muted">—</span>
-                          @endif
-                        </td>
-                        <td class="text-center">
-                            <span class="badge bg-label-success">{{ number_format($imp->criadas, 0, ',', '.') }}</span>
-                        </td>
-                        <td class="text-center">
-                            <span class="badge bg-label-primary">{{ number_format($imp->atualizadas, 0, ',', '.') }}</span>
-                        </td>
-                        <td class="text-center">
-                            @if($imp->removidas > 0)
-                                <span class="badge bg-label-warning">{{ number_format($imp->removidas, 0, ',', '.') }}</span>
-                            @else
-                                <span class="text-muted">—</span>
-                            @endif
-                        </td>
-                        <td class="text-center">
-                            @if($imp->baseline_inicio)
-                                {{ \Illuminate\Support\Carbon::parse($imp->baseline_inicio)->format('d/m/Y') }}
-                            @else
-                                <span class="text-muted">—</span>
-                            @endif
-                        </td>
-                        <td class="text-center">
-                            @if($imp->baseline_termino)
-                                {{ \Illuminate\Support\Carbon::parse($imp->baseline_termino)->format('d/m/Y') }}
-                            @else
-                                <span class="text-muted">—</span>
-                            @endif
-                        </td>
-                        <td class="text-end font-monospace">
-                            @if($imp->total_hh)
-                                {{ number_format($imp->total_hh, 0, ',', '.') }} HH
-                            @else
-                                <span class="text-muted">—</span>
-                            @endif
-                        </td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
+        <div class="card-body">
+            @include('pages.radar._partials.historico-importacoes', ['importacoes' => $this->historicoImportacoes])
         </div>
     </div>
-    @endif
 
 </div>

@@ -8,10 +8,18 @@ use App\Enums\StatusReport;
 use App\Enums\StatusRestricao;
 use App\Models\Atividade;
 use App\Models\CausaNaoCumprimento;
+use App\Models\CronogramaImportacao;
+use App\Models\CronogramaImportacaoHealthCheck;
+use App\Models\DocumentoEngenharia;
+use App\Models\ItemSuprimento;
 use App\Models\PacoteTrabalho;
+use App\Models\PlanoAcao;
 use App\Models\Report;
 use App\Models\Restricao;
 use App\Models\Work;
+use App\Enums\StatusItemSuprimento;
+use App\Enums\StatusPlanoAcao;
+use App\Enums\TipoCronogramaImportacao;
 use App\Services\CurvaAvanco;
 use App\Support\ObraContext;
 use Illuminate\Support\Carbon;
@@ -76,6 +84,226 @@ new class extends Component {
         return Atividade::where('obra_id', $this->obra->id)
             ->where('fora_do_cronograma', false)
             ->count();
+    }
+
+    /**
+     * Referências temporais exibidas no Painel de Decisão. Não mistura uma
+     * fotografia de Report com dados ao vivo sem deixar a origem explícita
+     * para quem toma a decisão.
+     */
+    #[Computed]
+    public function contextoDados(): array
+    {
+        $importacoes = CronogramaImportacao::where('obra_id', $this->obra->id);
+
+        return [
+            'linhaBase' => (clone $importacoes)
+                ->whereIn('tipo', [TipoCronogramaImportacao::Baseline->value, TipoCronogramaImportacao::Ambos->value])
+                ->orderByDesc('importado_em')
+                ->first(),
+            'avanco' => (clone $importacoes)
+                ->whereIn('tipo', [TipoCronogramaImportacao::Avanco->value, TipoCronogramaImportacao::Ambos->value])
+                ->orderByDesc('importado_em')
+                ->first(),
+            'report' => $this->ultimoReportEmitido,
+        ];
+    }
+
+    #[Computed]
+    public function healthCheckAtual(): ?CronogramaImportacaoHealthCheck
+    {
+        // Nunca ordena a tabela de health checks inteira: `findings` contém
+        // JSON potencialmente grande e fazia o MySQL estourar o sort buffer
+        // numa obra com histórico. Primeiro resolve a última importação da
+        // própria obra e, só então, lê o health check dela.
+        $ultimaImportacaoComHealthCheck = CronogramaImportacao::where('obra_id', $this->obra->id)
+            ->whereHas('healthCheck')
+            ->orderByDesc('importado_em')
+            ->first(['id']);
+
+        if (! $ultimaImportacaoComHealthCheck) {
+            return null;
+        }
+
+        return CronogramaImportacaoHealthCheck::where('cronograma_importacao_id', $ultimaImportacaoComHealthCheck->id)
+            ->first(['id', 'cronograma_importacao_id', 'total_criticos', 'total_altos', 'score', 'faixa_score']);
+    }
+
+    /**
+     * Sinal antecipado para a rotina Last Planner: mede a prontidão das
+     * atividades que começam na PRÓXIMA semana, sem prometer prever o prazo
+     * final da obra.
+     */
+    #[Computed]
+    public function confiancaProximaSemana(): ?array
+    {
+        $inicio = now()->startOfWeek()->addWeek();
+        $fim = $inicio->copy()->endOfWeek();
+
+        $base = Atividade::where('obra_id', $this->obra->id)
+            ->where('fora_do_cronograma', false)
+            ->whereNotIn('status', [StatusAtividade::Concluido->value])
+            ->whereBetween('inicio_planejado', [$inicio->toDateString(), $fim->toDateString()]);
+
+        $total = (clone $base)->count();
+        if ($total === 0) {
+            return null;
+        }
+
+        $prontas = (clone $base)->prontas()->count();
+        $bloqueadas = (clone $base)->whereHas('restricoes', fn ($q) => $q
+            ->where('bloqueante', true)
+            ->where('status', '!=', StatusRestricao::Resolvida->value))
+            ->count();
+
+        return [
+            'percentual' => (int) round($prontas / $total * 100),
+            'prontas' => $prontas,
+            'total' => $total,
+            'bloqueadas' => $bloqueadas,
+            'inicio' => $inicio,
+            'fim' => $fim,
+        ];
+    }
+
+    #[Computed]
+    public function saudeInterfaces(): array
+    {
+        $suprimentosEmRisco = ItemSuprimento::where('obra_id', $this->obra->id)
+            ->whereIn('status', [StatusItemSuprimento::EmRisco->value, StatusItemSuprimento::Atrasado->value])
+            ->count();
+
+        $documentosVencidos = DocumentoEngenharia::where('obra_id', $this->obra->id)
+            ->whereDate('data_planejada', '<', today())
+            ->whereDoesntHave('latestRevisao')
+            ->count();
+
+        $planosVencidos = PlanoAcao::where('obra_id', $this->obra->id)
+            ->where('status', StatusPlanoAcao::Aberta->value)
+            ->whereDate('prazo', '<', today())
+            ->count();
+
+        return [
+            'suprimentosEmRisco' => $suprimentosEmRisco,
+            'documentosVencidos' => $documentosVencidos,
+            'planosVencidos' => $planosVencidos,
+        ];
+    }
+
+    #[Computed]
+    public function statusExecutivo(): array
+    {
+        $interface = $this->saudeInterfaces;
+        $fatores = [];
+        $critico = false;
+
+        if ($this->restricoesBloqueantesAbertas > 0) {
+            $fatores[] = "{$this->restricoesBloqueantesAbertas} restriç" . ($this->restricoesBloqueantesAbertas === 1 ? 'ão bloqueante aberta' : 'ões bloqueantes abertas');
+            $critico = true;
+        }
+        if ($interface['suprimentosEmRisco'] > 0) {
+            $fatores[] = "{$interface['suprimentosEmRisco']} item(ns) de suprimentos em risco ou atraso";
+            $critico = true;
+        }
+        if ($interface['planosVencidos'] > 0) {
+            $fatores[] = "{$interface['planosVencidos']} plano(s) de ação vencido(s)";
+        }
+        if ($this->confiancaProximaSemana !== null && $this->confiancaProximaSemana['percentual'] < 80) {
+            $fatores[] = "prontidão da próxima semana em {$this->confiancaProximaSemana['percentual']}%";
+        }
+        if ($this->healthCheckAtual?->faixa_score?->value === 'critico') {
+            $fatores[] = 'qualidade crítica no último cronograma analisado';
+            $critico = true;
+        }
+
+        if ($critico) {
+            return ['label' => 'Crítica', 'cor' => 'danger', 'fatores' => $fatores];
+        }
+        if ($fatores !== []) {
+            return ['label' => 'Atenção', 'cor' => 'warning', 'fatores' => $fatores];
+        }
+
+        return ['label' => 'Protegida', 'cor' => 'success', 'fatores' => ['Nenhuma exceção crítica identificada pelos dados atuais.']];
+    }
+
+    /** Exceções heterogêneas ordenadas por urgência, não apenas por idade. */
+    #[Computed]
+    public function excecoesPrioritarias()
+    {
+        $hoje = today();
+        $itens = collect();
+
+        Restricao::whereHas('atividade', fn ($q) => $q->where('obra_id', $this->obra->id))
+            ->where('status', '!=', StatusRestricao::Resolvida->value)
+            ->with(['atividade:id,nome', 'responsavel:id,first_name,last_name'])
+            ->get()
+            ->each(function (Restricao $restricao) use ($itens, $hoje) {
+                $vencida = $restricao->prazo_limite?->lt($hoje) ?? false;
+                $risco = ($restricao->probabilidade ?? 0) * ($restricao->impacto ?? 0);
+                $prioridade = ($restricao->bloqueante ? 100 : 0) + ($vencida ? 40 : 0) + min($risco, 30);
+
+                if ($prioridade === 0) {
+                    return;
+                }
+
+                $itens->push([
+                    'prioridade' => $prioridade,
+                    'tipo' => 'Restrição',
+                    'titulo' => $restricao->descricao,
+                    'detalhe' => $restricao->atividade?->nome,
+                    'impacto' => $restricao->bloqueante ? 'Bloqueia atividade' : 'Risco em acompanhamento',
+                    'responsavel' => $restricao->responsavel ? trim("{$restricao->responsavel->first_name} {$restricao->responsavel->last_name}") : ($restricao->responsavel_externo ?: 'Não definido'),
+                    'prazo' => $restricao->prazo_limite,
+                    'cor' => $restricao->bloqueante || $vencida ? 'danger' : 'warning',
+                    'url' => route('radar.restricoes'),
+                    'acao' => 'Ver restrição',
+                ]);
+            });
+
+        ItemSuprimento::where('obra_id', $this->obra->id)
+            ->whereIn('status', [StatusItemSuprimento::EmRisco->value, StatusItemSuprimento::Atrasado->value])
+            ->with(['atividades:id,inicio_planejado', 'responsavel:id,first_name,last_name'])
+            ->get()
+            ->each(function (ItemSuprimento $item) use ($itens) {
+                $necessidade = $item->necessidade();
+                $itens->push([
+                    'prioridade' => $item->status === StatusItemSuprimento::Atrasado ? 95 : 85,
+                    'tipo' => 'Suprimentos',
+                    'titulo' => $item->nome,
+                    'detalhe' => $necessidade ? 'Necessidade: ' . $necessidade->format('d/m/Y') : 'Sem atividade vinculada',
+                    'impacto' => $item->status->label(),
+                    'responsavel' => $item->responsavel ? trim("{$item->responsavel->first_name} {$item->responsavel->last_name}") : 'Não definido',
+                    'prazo' => $necessidade,
+                    'cor' => $item->status === StatusItemSuprimento::Atrasado ? 'danger' : 'warning',
+                    'url' => route('radar.suprimentos'),
+                    'acao' => 'Ver suprimento',
+                ]);
+            });
+
+        PlanoAcao::where('obra_id', $this->obra->id)
+            ->where('status', StatusPlanoAcao::Aberta->value)
+            ->with('responsavel:id,first_name,last_name')
+            ->get()
+            ->each(function (PlanoAcao $plano) use ($itens, $hoje) {
+                if (! $plano->prazo || $plano->prazo->gt($hoje->copy()->addDays(7))) {
+                    return;
+                }
+
+                $itens->push([
+                    'prioridade' => $plano->prazo->lt($hoje) ? 90 : 70,
+                    'tipo' => 'Plano de ação',
+                    'titulo' => $plano->titulo,
+                    'detalhe' => 'Ação originada no health check do cronograma',
+                    'impacto' => $plano->prazo->lt($hoje) ? 'Prazo vencido' : 'Prazo próximo',
+                    'responsavel' => $plano->responsavel ? trim("{$plano->responsavel->first_name} {$plano->responsavel->last_name}") : 'Não definido',
+                    'prazo' => $plano->prazo,
+                    'cor' => $plano->prazo->lt($hoje) ? 'danger' : 'warning',
+                    'url' => route('radar.plano-acao'),
+                    'acao' => 'Ver plano',
+                ]);
+            });
+
+        return $itens->sortByDesc('prioridade')->take(6)->values();
     }
 
     #[Computed]
@@ -454,7 +682,33 @@ new class extends Component {
         </div>
     </div>
 
-    @php $resumo = $this->resumoAderencia; @endphp
+    @php
+        $resumo = $this->resumoAderencia;
+        $contexto = $this->contextoDados;
+        $statusExecutivo = $this->statusExecutivo;
+        $confianca = $this->confiancaProximaSemana;
+        $healthCheck = $this->healthCheckAtual;
+        $saudeInterfaces = $this->saudeInterfaces;
+    @endphp
+
+    <div class="card border-{{ $statusExecutivo['cor'] }} mb-3">
+        <div class="card-body py-3">
+            <div class="d-flex flex-column flex-lg-row justify-content-between gap-3">
+                <div>
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <span class="badge bg-label-{{ $statusExecutivo['cor'] }}">Status da obra</span>
+                        <h5 class="mb-0 text-{{ $statusExecutivo['cor'] }}">{{ $statusExecutivo['label'] }}</h5>
+                    </div>
+                    <p class="mb-0 text-muted small">{{ implode(' · ', $statusExecutivo['fatores']) }}</p>
+                </div>
+                <div class="small text-muted text-lg-end">
+                    <div>Linha de base: <strong class="text-heading">{{ $contexto['linhaBase']?->importado_em?->format('d/m/Y H:i') ?? 'não importada' }}</strong></div>
+                    <div>Avanço: <strong class="text-heading">{{ $contexto['avanco']?->importado_em?->format('d/m/Y H:i') ?? 'não importado' }}</strong></div>
+                    <div>Último report: <strong class="text-heading">{{ $contexto['report']?->periodo_referencia?->format('d/m/Y') ?? 'não emitido' }}</strong></div>
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="row g-3 mb-3">
         <div class="col-6 col-md-4 col-xl-2">
             <div class="card h-100 border-primary">
@@ -527,6 +781,85 @@ new class extends Component {
         Ainda não há nenhum Report emitido para esta obra — a aderência aparece aqui assim que o primeiro Report for emitido. A curva S abaixo já funciona normalmente, calculada com os dados atuais do cronograma.
     </div>
     @endif
+
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-lg-4">
+            <div class="card h-100 border-{{ $confianca !== null && $confianca['percentual'] < 80 ? 'warning' : 'success' }}">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <h6 class="mb-1">Confiança da Próxima Semana</h6>
+                            @if ($confianca)
+                                <small class="text-muted">{{ $confianca['inicio']->format('d/m') }} a {{ $confianca['fim']->format('d/m') }} · {{ $confianca['prontas'] }}/{{ $confianca['total'] }} atividades prontas</small>
+                            @else
+                                <small class="text-muted">Sem atividades previstas para a próxima semana.</small>
+                            @endif
+                        </div>
+                        <span class="badge bg-label-{{ $confianca !== null && $confianca['percentual'] < 80 ? 'warning' : 'success' }} fs-6">{{ $confianca['percentual'] ?? '—' }}{{ $confianca ? '%' : '' }}</span>
+                    </div>
+                    @if ($confianca && $confianca['bloqueadas'] > 0)
+                        <p class="small text-warning mb-0 mt-3">{{ $confianca['bloqueadas'] }} atividade(s) ainda têm restrição bloqueante aberta.</p>
+                    @endif
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div><h6 class="mb-1">Qualidade do Cronograma</h6><small class="text-muted">Último health check disponível</small></div>
+                        <span class="badge bg-label-{{ $healthCheck?->faixa_score?->cor() ?? 'secondary' }} fs-6">{{ $healthCheck?->score ?? '—' }}</span>
+                    </div>
+                    @if ($healthCheck)
+                        <p class="small text-muted mb-0 mt-3">{{ $healthCheck->faixa_score?->label() }} · {{ $healthCheck->total_criticos }} crítico(s), {{ $healthCheck->total_altos }} alto(s)</p>
+                        <a wire:navigate class="small" href="{{ route('radar.importacoes.show', $healthCheck->cronograma_importacao_id) }}">Ver diagnóstico &rarr;</a>
+                    @else
+                        <p class="small text-muted mb-0 mt-3">Importe um cronograma para gerar o diagnóstico.</p>
+                    @endif
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h6 class="mb-1">Saúde das Interfaces</h6>
+                    <small class="text-muted d-block mb-3">Exceções de suprimentos, engenharia e planejamento.</small>
+                    <div class="d-flex flex-wrap gap-2">
+                        <a wire:navigate href="{{ route('radar.suprimentos') }}" class="badge bg-label-{{ $saudeInterfaces['suprimentosEmRisco'] > 0 ? 'danger' : 'success' }}">{{ $saudeInterfaces['suprimentosEmRisco'] }} suprimentos</a>
+                        <a wire:navigate href="{{ route('engenharia.pacotes') }}" class="badge bg-label-{{ $saudeInterfaces['documentosVencidos'] > 0 ? 'warning' : 'success' }}">{{ $saudeInterfaces['documentosVencidos'] }} documentos</a>
+                        <a wire:navigate href="{{ route('radar.plano-acao') }}" class="badge bg-label-{{ $saudeInterfaces['planosVencidos'] > 0 ? 'danger' : 'success' }}">{{ $saudeInterfaces['planosVencidos'] }} ações vencidas</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <div><h6 class="mb-0">Exceções que exigem decisão</h6><small class="text-muted">Priorizadas por bloqueio, prazo, risco e atraso — não apenas por tempo em aberto.</small></div>
+            <span class="badge bg-label-{{ $statusExecutivo['cor'] }}">{{ $this->excecoesPrioritarias->count() }} em destaque</span>
+        </div>
+        @if ($this->excecoesPrioritarias->isNotEmpty())
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 align-middle">
+                    <thead><tr><th>Exceção</th><th>Impacto</th><th>Responsável</th><th>Prazo</th><th class="text-end">Ação</th></tr></thead>
+                    <tbody>
+                        @foreach ($this->excecoesPrioritarias as $excecao)
+                            <tr>
+                                <td><span class="badge bg-label-{{ $excecao['cor'] }} me-1">{{ $excecao['tipo'] }}</span><div class="fw-medium mt-1">{{ $excecao['titulo'] }}</div><small class="text-muted">{{ $excecao['detalhe'] }}</small></td>
+                                <td><span class="text-{{ $excecao['cor'] }}">{{ $excecao['impacto'] }}</span></td>
+                                <td>{{ $excecao['responsavel'] }}</td>
+                                <td>{{ $excecao['prazo']?->format('d/m/Y') ?? 'Não definido' }}</td>
+                                <td class="text-end"><a wire:navigate href="{{ $excecao['url'] }}" class="btn btn-sm btn-label-primary">{{ $excecao['acao'] }}</a></td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        @else
+            <div class="card-body text-center text-muted py-4">Nenhuma exceção crítica identificada pelos dados atuais.</div>
+        @endif
+    </div>
 
     <div class="row g-3 mb-3">
         <div class="col-12 col-lg-3">

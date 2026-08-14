@@ -7,8 +7,19 @@
     "$comAderencia" (opcional, default false) acrescenta a coluna de
     Aderência da semana (%realizado do período ÷ %previsto do período) —
     só faz sentido na tabela SEMANAL, por isso é opt-in.
+
+    "$limiaresAderencia" (opcional, [atencao, otimo]) — Fase 5,
+    Consolidação: colore a célula de Aderência com os MESMOS limiares já
+    usados pelo antigo velocímetro (App\...::ADERENCIA_LIMIAR_ATENCAO/
+    _OTIMO, expostos via limiaresAderencia() do componente) — nenhum
+    limiar novo, só reaproveitado aqui como cor de texto em vez de
+    zona de gauge. Sem o parâmetro, a célula fica sem cor (comportamento
+    anterior preservado).
 --}}
-@php $comAderencia = $comAderencia ?? false; @endphp
+@php
+    $comAderencia = $comAderencia ?? false;
+    [$limiarAtencaoCel, $limiarOtimoCel] = $limiaresAderencia ?? [null, null];
+@endphp
 @if(!empty($tabela))
 <div class="table-responsive mb-4">
     <table class="table table-sm table-bordered mb-0">
@@ -41,7 +52,17 @@
                 <td class="text-end">{{ $linha['tendencia_pct'] !== null ? number_format($linha['tendencia_pct'], 1, ',', '.') . '%' : '—' }}</td>
                 <td class="text-end">{{ $linha['realizado_pct'] !== null ? number_format($linha['realizado_pct'], 1, ',', '.') . '%' : '—' }}</td>
                 @if($comAderencia)
-                <td class="text-end fw-semibold">{{ $linha['aderencia_periodo'] !== null ? number_format($linha['aderencia_periodo'], 0, ',', '.') . '%' : '—' }}</td>
+                @php
+                    $aderenciaClasse = '';
+                    if ($linha['aderencia_periodo'] !== null && $limiarOtimoCel !== null && $limiarAtencaoCel !== null) {
+                        $aderenciaClasse = match(true) {
+                            $linha['aderencia_periodo'] >= $limiarOtimoCel => 'text-success',
+                            $linha['aderencia_periodo'] >= $limiarAtencaoCel => 'text-warning',
+                            default => 'text-danger',
+                        };
+                    }
+                @endphp
+                <td class="text-end fw-semibold {{ $aderenciaClasse }}">{{ $linha['aderencia_periodo'] !== null ? number_format($linha['aderencia_periodo'], 0, ',', '.') . '%' : '—' }}</td>
                 @endif
             </tr>
             @endforeach

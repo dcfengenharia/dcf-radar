@@ -6,7 +6,6 @@ use App\Enums\OrigemAtividade;
 use App\Enums\OrigemProgramacaoSemanalItem;
 use App\Enums\SerieAvanco;
 use App\Enums\StatusAtividade;
-use App\Enums\StatusReport;
 use App\Enums\StatusRestricao;
 use App\Enums\TipoCronogramaImportacao;
 use App\Exports\LookaheadExport;
@@ -29,7 +28,6 @@ use App\Models\Personalizado2;
 use App\Models\Personalizado3;
 use App\Models\Personalizado4;
 use App\Models\Personalizado5;
-use App\Models\Report;
 use App\Models\Restricao;
 use App\Models\Work;
 use App\Services\CurvaAvanco;
@@ -100,6 +98,7 @@ new class extends Component {
   public string $comentarioNovoAtividade = '';
   public ?string $modalBaselineId = null; // Baseline selecionada só pra Curva S do popup — independente do $linhaBaseId da página
   public string $modalGranularidade = 'semanal'; // Escala da Curva S do popup: 'semanal' | 'mensal'
+  public ?string $modalTendenciaImportacaoId = null; // Tendência/Avanço selecionada só pra Curva S do popup — independente do $tendenciaImportacaoId da página (Ciclo 17, A.4)
 
   // ---- Modal dar baixa na restrição ----
   public ?string $baixandoRestricaoId = null;
@@ -347,6 +346,33 @@ new class extends Component {
   }
 
   /**
+   * ID da importação efetivamente usada como "Tendência" DA PÁGINA — mesma
+   * semântica de sempre (seleção explícita > mais recente Avanço/Ambos >
+   * nenhuma), usada por atividades() (tabela principal) e, a partir do
+   * Ciclo 17 A.4, só como DEFAULT inicial do popup (verAtividade()) — nunca
+   * lida ao vivo pelo popup depois de aberto (ver modalTendenciaIdEfetiva()).
+   */
+  private function tendenciaIdEfetiva(): ?string
+  {
+    return $this->tendenciaImportacaoId ?: $this->importacaoTendenciaAtual?->id;
+  }
+
+  /**
+   * Ciclo 17, A.4 — equivalente a tendenciaIdEfetiva(), mas para a seleção
+   * MODAL: seleção explícita do popup ($modalTendenciaImportacaoId) > mais
+   * recente Avanço/Ambos da obra > nenhuma. Deliberadamente NÃO usa
+   * $tendenciaImportacaoId/importacaoTendenciaAtual() (que são da página) —
+   * trocar a tendência dentro do popup nunca deve depender, nem indiretamente,
+   * da seleção da tabela (independência exigida pelo produto). Reaproveita
+   * importacoesDisponiveis() (já computed, já usado por ambos os seletores),
+   * nunca uma query paralela.
+   */
+  private function modalTendenciaIdEfetiva(): ?string
+  {
+    return $this->modalTendenciaImportacaoId ?: $this->importacoesDisponiveis->first()?->id;
+  }
+
+  /**
    * Sem nenhuma importação de Avanço (seção Relatórios → Importar Avanço)
    * pra esta obra, "Início"/"Término" (tendência) não tem de onde vir —
    * mostrado como N/A na tabela, em vez de cair silenciosamente pros
@@ -435,7 +461,7 @@ new class extends Component {
     // "Início"/"Término" (tendência): fica null (exibido como N/A),
     // nunca cai pros campos ao vivo da Atividade (que podem ter sido só
     // a última importação de Linha de Base, nunca de Avanço).
-    $tendenciaIdEfetivo = $this->tendenciaImportacaoId ?: $this->importacaoTendenciaAtual?->id;
+    $tendenciaIdEfetivo = $this->tendenciaIdEfetiva();
     $snapshotsTendencia = $tendenciaIdEfetivo
       ? AtividadeSnapshot::where('cronograma_importacao_id', $tendenciaIdEfetivo)
         ->whereIn('atividade_id', $atividades->pluck('id'))
@@ -759,13 +785,34 @@ new class extends Component {
   {
     $this->invalidarListagem();
   }
+  /**
+   * Ciclo 17, A.3 — troca de Baseline no popup é "Tipo B" (a curva muda de
+   * verdade): invalida o cache do computed e dispara o redesenho explícito
+   * do Chart.js (o <canvas> vive num wire:ignore, então nada nele reage
+   * sozinho a uma mudança de propriedade — ver Blade).
+   */
   public function updatedModalBaselineId(): void
   {
     unset($this->modalCurvaAtividade);
+    $this->dispatch('curva-atividade-atualizada', dados: $this->modalCurvaAtividade);
   }
+  /** Mesmo motivo de updatedModalBaselineId() — troca de escala também é "Tipo B". */
   public function updatedModalGranularidade(): void
   {
     unset($this->modalCurvaAtividade);
+    $this->dispatch('curva-atividade-atualizada', dados: $this->modalCurvaAtividade);
+  }
+  /**
+   * Ciclo 17, A.4 — trocar a tendência/avanço dentro do popup também é
+   * "Tipo B": Realizado/Tendência do gráfico E as datas de Tendência do
+   * cabeçalho (modalTendenciaSnapshot) mudam juntas, sempre pela MESMA
+   * importação selecionada — nunca duas fontes divergentes. NUNCA escreve
+   * em $tendenciaImportacaoId (seleção da página) — 100% local ao popup.
+   */
+  public function updatedModalTendenciaImportacaoId(): void
+  {
+    unset($this->modalCurvaAtividade, $this->modalTendenciaSnapshot);
+    $this->dispatch('curva-atividade-atualizada', dados: $this->modalCurvaAtividade);
   }
 
   // =========================================================================
@@ -1053,9 +1100,29 @@ new class extends Component {
   public function verAtividade(string $atividadeId): void
   {
     $this->modalAtividadeId = $atividadeId;
-    $this->modalBaselineId = null;
+    // Ciclo 17, A.4.CORREÇÃO — o popup HERDA o contexto temporal da página
+    // ao abrir, pros dois seletores. Baseline: $linhaBaseId quando a
+    // página tem seleção explícita; null (mesmo comportamento default já
+    // existente — modalCurvaAtividade() cai pra $this->linhasBase->first())
+    // quando não tem — nenhuma lógica de resolução duplicada aqui, só
+    // repassa o valor bruto da página. Tendência: mesmo fallback de sempre
+    // (tendenciaIdEfetiva(): seleção explícita da página > mais recente
+    // Avanço/Ambos > nenhuma). A partir daqui a seleção é 100% local a
+    // cada popup: trocar dentro dele nunca escreve de volta em
+    // $linhaBaseId/$tendenciaImportacaoId, e reabrir noutra atividade
+    // sempre volta a herdar a página, nunca a escolha feita na atividade
+    // anterior.
+    $this->modalBaselineId = $this->linhaBaseId;
     $this->modalGranularidade = 'semanal';
-    unset($this->atividadeDetalhe, $this->modalCurvaAtividade);
+    $this->modalTendenciaImportacaoId = $this->tendenciaIdEfetiva();
+    unset($this->atividadeDetalhe, $this->modalCurvaAtividade, $this->modalTendenciaSnapshot);
+    // Ciclo 17, A.3 — o <canvas> da Curva S vive dentro de um wire:ignore
+    // (ver Blade), então o Livewire nunca mais o desenha sozinho: todo
+    // (re)desenho, inclusive o da primeira abertura do popup, passa por
+    // este evento explícito. O JS lê o canvas do DOM só depois que este
+    // dispatch dispara (Livewire processa dispatches depois do morph do
+    // HTML), então o <canvas> já existe quando o listener roda.
+    $this->dispatch('curva-atividade-atualizada', dados: $this->modalCurvaAtividade);
   }
 
   #[Computed]
@@ -1101,18 +1168,57 @@ new class extends Component {
   }
 
   /**
-   * Curva S Previsto x Realizado da atividade do popup de detalhe.
+   * Snapshot de Tendência da atividade do popup — fonte ÚNICA e correta pro
+   * bloco "Início/Término (Tendência)" do cabeçalho, nunca
+   * `$at->inicio_planejado`/`$at->data_termino` direto (campos AO VIVO,
+   * escritos por QUALQUER importação, não necessariamente uma de tendência
+   * real).
+   *
+   * Ciclo 17, A.4: resolvida pela importação MODAL
+   * (modalTendenciaIdEfetiva()), não mais pela tendência da página — trocar
+   * $modalTendenciaImportacaoId dentro do popup atualiza este snapshot (e as
+   * datas do cabeçalho) junto com a curva, sempre pela MESMA importação. Sem
+   * nenhuma importação Avanço/Ambos pra obra, `modalTendenciaIdEfetiva()`
+   * retorna null e este computed retorna null sem consultar o banco — nunca
+   * cai pra baseline. 1 query pontual (por atividade aberta no modal, nunca
+   * em lote) quando existe importação de tendência efetiva.
+   */
+  #[Computed]
+  public function modalTendenciaSnapshot(): ?AtividadeSnapshot
+  {
+    $atividade = $this->atividadeDetalhe['atividade'] ?? null;
+    $tendenciaIdEfetivo = $this->modalTendenciaIdEfetiva();
+
+    if (!$atividade || !$tendenciaIdEfetivo) {
+      return null;
+    }
+
+    return AtividadeSnapshot::where('cronograma_importacao_id', $tendenciaIdEfetivo)
+      ->where('atividade_id', $atividade->id)
+      ->first();
+  }
+
+  /**
+   * Curva S Previsto x Realizado x Tendência da atividade do popup de
+   * detalhe — duas referências temporais INDEPENDENTES (Ciclo 17, A.4):
    *
    * Previsto vem da Baseline selecionada no popup ($modalBaselineId, ou a
    * mais recente da obra por padrão) — reaproveita CurvaAvanco::calcular()
    * escopado a UMA atividade (parâmetro atividadeId), mesma lógica de
    * resolução de importação já usada em toda a Curva S da obra/pacote.
    *
-   * Realizado vem do cronograma_importacao_id gravado no ÚLTIMO Report
-   * EMITIDO da obra — nunca da importação de avanço mais recente "ao vivo"
-   * (Report é fotografia: reflete os dados de quando foi gerado, nunca
-   * muda sozinho depois). Sem Report emitido, Realizado fica vazio (nunca
-   * 0% forçado).
+   * Realizado e Tendência vêm AMBOS da importação de avanço/tendência
+   * selecionada no popup ($modalTendenciaImportacaoId, resolvida via
+   * modalTendenciaIdEfetiva() — herda a tendência efetiva da PÁGINA só no
+   * momento em que o popup abre, ver verAtividade()) — nunca mais do
+   * cronograma_importacao_id do último Report emitido, que governa o
+   * Report semanal, não o gráfico temporal do Lookahead (o texto/fluxo de
+   * Report em si continua intocado em todo o resto do sistema). Cada série
+   * é lida da coluna `serie` de avanco_periodos sem conversão entre elas —
+   * uma importação com só Realizado nunca inventa Tendência, e vice-versa
+   * (CurvaAvanco::calcular() já retorna [] quando a série pedida não tem
+   * linha pra essa importação, nenhuma mudança precisou ser feita nesse
+   * serviço).
    *
    * %Previsto/%Realizado exibidos no resumo e o indicador visual (farol)
    * são derivados DESSAS MESMAS séries (último ponto <= hoje / último
@@ -1165,22 +1271,29 @@ new class extends Component {
 
     $totalPrevisto = array_sum(array_column($previsto, 'horas'));
 
-    $ultimoReportEmitido = Report::where('obra_id', $this->obra->id)
-      ->where('status', StatusReport::Emitido->value)
-      ->latest('periodo_referencia')
-      ->first();
+    $tendenciaIdEfetivoModal = $this->modalTendenciaIdEfetiva();
 
-    $realizado = [];
-    if ($ultimoReportEmitido?->cronograma_importacao_id) {
-      $bruto = $curvaAvanco->calcular(
+    $realizado = $tendenciaIdEfetivoModal
+      ? $curvaAvanco->calcular(
         $this->obra,
         SerieAvanco::Realizado,
         $granularidade,
-        avancoImportacaoId: $ultimoReportEmitido->cronograma_importacao_id,
+        avancoImportacaoId: $tendenciaIdEfetivoModal,
         atividadeId: $atividade->id,
-      );
-      $realizado = $totalPrevisto > 0 ? $curvaAvanco->rebasearPercentual($bruto, $totalPrevisto) : $bruto;
-    }
+      )
+      : [];
+    $realizado = $realizado && $totalPrevisto > 0 ? $curvaAvanco->rebasearPercentual($realizado, $totalPrevisto) : $realizado;
+
+    $tendencia = $tendenciaIdEfetivoModal
+      ? $curvaAvanco->calcular(
+        $this->obra,
+        SerieAvanco::Tendencia,
+        $granularidade,
+        avancoImportacaoId: $tendenciaIdEfetivoModal,
+        atividadeId: $atividade->id,
+      )
+      : [];
+    $tendencia = $tendencia && $totalPrevisto > 0 ? $curvaAvanco->rebasearPercentual($tendencia, $totalPrevisto) : $tendencia;
 
     $hoje = now()->toDateString();
     $percentualPrevisto = collect($previsto)
@@ -1189,10 +1302,10 @@ new class extends Component {
     $percentualRealizado = collect($realizado)->last()['percentual'] ?? null;
 
     // Rótulos formatados por período (chave = periodo_inicio, mesma usada
-    // pra casar Previsto/Realizado no gráfico) — mesmo padrão "MÊS/AA" já
-    // usado em ⚡curvas.blade.php::dadosGraficoCurvaS()/⚡dashboard.blade.php::formatarPeriodoPt().
+    // pra casar as 3 séries no gráfico) — mesmo padrão "MÊS/AA" já usado em
+    // ⚡curvas.blade.php::dadosGraficoCurvaS()/⚡dashboard.blade.php::formatarPeriodoPt().
     $labels = [];
-    foreach ([...$previsto, ...$realizado] as $ponto) {
+    foreach ([...$previsto, ...$realizado, ...$tendencia] as $ponto) {
       $labels[$ponto['periodo_inicio']] = $this->formatarLabelPeriodoAtividade($ponto['periodo_inicio'], $granularidade);
     }
 
@@ -1201,9 +1314,22 @@ new class extends Component {
       'baseline_inicio' => $baselineInicio,
       'baseline_termino' => $baselineTermino,
       'tem_baseline' => (bool) $baselineId,
-      'tem_report' => (bool) $ultimoReportEmitido,
+      // Importação efetivamente usada pra Realizado/Tendência (seleção
+      // explícita do popup, ou default) — exposta aqui pro Blade poder
+      // marcar a option selecionada no <select> sem chamar
+      // modalTendenciaIdEfetiva() (privado) de dentro da view, mesmo
+      // padrão já usado por baseline_id acima.
+      'tendencia_id' => $tendenciaIdEfetivoModal,
+      // Existe uma importação de avanço/tendência selecionada (explícita
+      // ou default) — nunca confundir com "essa importação TEM dados de
+      // Realizado/Tendência pra esta atividade" (tem_realizado/tem_tendencia
+      // abaixo): uma importação Avanco pode ter só uma das duas séries.
+      'tem_tendencia_selecionada' => (bool) $tendenciaIdEfetivoModal,
+      'tem_realizado' => !empty($realizado),
+      'tem_tendencia' => !empty($tendencia),
       'previsto' => $previsto,
       'realizado' => $realizado,
+      'tendencia' => $tendencia,
       'labels' => $labels,
       'percentual_previsto' => $percentualPrevisto,
       'percentual_realizado' => $percentualRealizado,
@@ -1829,6 +1955,10 @@ new class extends Component {
                 )->count() > 0;
                 $atividadePronta = ! $temBloq && ($totalChk === 0 || $okChk >= $totalChk);
                 $curvaAtividade = $this->modalCurvaAtividade;
+                // Ciclo 17, A.2 — snapshot da importação de tendência
+                // EFETIVA da página (mesma regra de atividades()), nunca
+                // os campos ao vivo de $at.
+                $tendenciaSnap = $this->modalTendenciaSnapshot;
             @endphp
             <div class="modal-header bg-dark text-white">
                 <div class="flex-grow-1 mb-2">
@@ -1859,11 +1989,11 @@ new class extends Component {
                     </div>
                     <div class="col-6 col-md-3 col-lg">
                         <div class="small text-muted">Início (Tendência)</div>
-                        <h4 class="fw-semibold">{{ $at->inicio_planejado?->format('d/m/Y') ?? '—' }}</h4>
+                        <h4 class="fw-semibold">{{ $curvaAtividade['tem_tendencia_selecionada'] ? ($tendenciaSnap?->inicio_planejado?->format('d/m/Y') ?? '—') : 'N/A' }}</h4>
                     </div>
                     <div class="col-6 col-md-3 col-lg">
                         <div class="small text-muted">Término (Tendência)</div>
-                        <h4 class="fw-semibold">{{ $at->data_termino?->format('d/m/Y') ?? '—' }}</h4>
+                        <h4 class="fw-semibold">{{ $curvaAtividade['tem_tendencia_selecionada'] ? ($tendenciaSnap?->data_termino?->format('d/m/Y') ?? '—') : 'N/A' }}</h4>
                     </div>
                     <div class="col-6 col-md-4 col-lg">
                         <div class="small text-muted">% Previsto</div>
@@ -1874,7 +2004,7 @@ new class extends Component {
                     <div class="col-6 col-md-4 col-lg">
                         <div class="small text-muted">% Realizado</div>
                         <h4 class="fw-semibold"
-                            @if (! $curvaAtividade['tem_report']) title="Realizado ainda não disponível. Os dados reais serão exibidos após a emissão do primeiro Report." @endif>
+                            @if (! $curvaAtividade['tem_realizado']) title="{{ $curvaAtividade['tem_tendencia_selecionada'] ? 'A importação de avanço selecionada não possui dados de Realizado para esta atividade.' : 'Nenhuma importação de avanço/tendência selecionada.' }}" @endif>
                             {{ $curvaAtividade['percentual_realizado'] !== null ? number_format($curvaAtividade['percentual_realizado'], 0) . '%' : '—' }}
                         </h4>
                     </div>
@@ -1911,6 +2041,26 @@ new class extends Component {
                             @endforeach
                         </select>
                         @endif
+                        {{-- Ciclo 17, A.4 — seleção de tendência/avanço 100% local ao
+                             popup, independente de $tendenciaImportacaoId (tabela
+                             principal): trocar aqui nunca altera a tabela, e
+                             fechar/reabrir noutra atividade volta a herdar o
+                             contexto da página (ver verAtividade()). Mesma fonte
+                             (importacoesDisponiveis(), só Avanço/Ambos) e MESMO
+                             rótulo do seletor da página — nunca uma nomenclatura
+                             nova. Oculto quando a obra não tem nenhuma importação
+                             de avanço/tendência. --}}
+                        @if ($this->importacoesDisponiveis->isNotEmpty())
+                        <label class="small text-muted mb-0">Tendência:</label>
+                        <select class="form-select form-select-sm" style="width:auto" wire:model.live="modalTendenciaImportacaoId">
+                            <option value="">Tendência: mais recente</option>
+                            @foreach ($this->importacoesDisponiveis as $imp)
+                            <option value="{{ $imp->id }}" @selected($curvaAtividade['tendencia_id'] === $imp->id)>
+                                Tendência: {{ $imp->importado_em->format('d/m/Y H:i') }} — {{ $imp->arquivo }}
+                            </option>
+                            @endforeach
+                        </select>
+                        @endif
                     </div>
                 </div>
 
@@ -1923,59 +2073,32 @@ new class extends Component {
                     <i class="bx bx-info-circle me-1"></i>Não há dados suficientes para gerar a Curva S desta atividade.
                 </div>
                 @else
-                <div wire:key="curva-atividade-{{ $modalAtividadeId }}-{{ $curvaAtividade['baseline_id'] }}-{{ $modalGranularidade }}-{{ $curvaAtividade['tem_report'] ? 's' : 'n' }}"
-                     x-data
-                     x-init="
-                        const ctx = $refs.canvasCurvaAtividade.getContext('2d');
-                        if ($refs.canvasCurvaAtividade._chart) { $refs.canvasCurvaAtividade._chart.destroy(); }
-                        const dados = @js($curvaAtividade);
-                        const mapaPrevisto = Object.fromEntries(dados.previsto.map(p => [p.periodo_inicio, p.percentual]));
-                        const mapaRealizado = Object.fromEntries(dados.realizado.map(p => [p.periodo_inicio, p.percentual]));
-                        const periodos = [...new Set([
-                            ...dados.previsto.map(p => p.periodo_inicio),
-                            ...dados.realizado.map(p => p.periodo_inicio),
-                        ])].sort();
-                        const labels = periodos.map(p => dados.labels[p] ?? p);
-                        $refs.canvasCurvaAtividade._chart = new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                labels: labels,
-                                datasets: [
-                                    {
-                                        label: 'Previsto (acum.)',
-                                        data: periodos.map(p => mapaPrevisto[p] ?? null),
-                                        borderColor: '#3C79E8',
-                                        backgroundColor: '#3C79E8',
-                                        tension: 0.3,
-                                        spanGaps: true,
-                                    },
-                                    {
-                                        label: 'Realizado (acum.)',
-                                        data: periodos.map(p => mapaRealizado[p] ?? null),
-                                        borderColor: '#71dd37',
-                                        backgroundColor: '#71dd37',
-                                        tension: 0.3,
-                                        spanGaps: true,
-                                    },
-                                ],
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                scales: { y: { min: 0, max: 100, ticks: { callback: (v) => v + '%' } } },
-                            },
-                        });
-                     "
-                >
+                {{-- Ciclo 17, A.3 — wire:ignore no menor contêiner possível (só o
+                     canvas): Chart.js escreve width/height no <canvas> depois do
+                     desenho; sem wire:ignore, qualquer morph do Livewire (mesmo
+                     de uma ação Tipo A, tipo marcar checklist/comentário, que
+                     nem muda a curva) reconcilia esses atributos contra o HTML
+                     recém-renderizado do servidor — que nunca os tem — e ZERA o
+                     canvas, apagando o gráfico visualmente. Esse é a causa raiz
+                     confirmada do bug relatado. Redesenho passa a ser 100%
+                     explícito via evento 'curva-atividade-atualizada' (mesmo
+                     padrão já usado em ⚡curvas.blade.php::recarregarPeriodos()),
+                     nunca mais implícito via troca de wire:key/x-init. --}}
+                <div wire:ignore>
                     <div style="height: 260px">
-                        <canvas x-ref="canvasCurvaAtividade"></canvas>
+                        <canvas id="grafico-curva-atividade-popup"></canvas>
                     </div>
-                    @if (! $curvaAtividade['tem_report'])
-                    <div class="small text-muted mt-2">
-                        <i class="bx bx-info-circle me-1"></i>Realizado ainda não disponível. Os dados reais serão exibidos após a emissão do primeiro Report.
-                    </div>
+                </div>
+                @unless ($curvaAtividade['tem_realizado'] || $curvaAtividade['tem_tendencia'])
+                <div class="small text-muted mt-2">
+                    <i class="bx bx-info-circle me-1"></i>
+                    @if (! $curvaAtividade['tem_tendencia_selecionada'])
+                    Nenhuma importação de avanço/tendência disponível para esta obra.
+                    @else
+                    A importação de avanço selecionada não possui dados de Realizado/Tendência para esta atividade.
                     @endif
                 </div>
+                @endunless
                 @endif
             </div>
 
@@ -2501,5 +2624,102 @@ new class extends Component {
             (toastr[type] || toastr.success)(message);
         }
     });
+
+    // Ciclo 17, A.3 — Curva S da Atividade (popup de detalhe). O <canvas>
+    // vive dentro de um wire:ignore (ver Blade), então o Livewire nunca o
+    // toca de novo sozinho — todo redesenho é 100% explícito, disparado
+    // pelo servidor via dispatch('curva-atividade-atualizada'), mesmo
+    // padrão já usado em ⚡curvas.blade.php::desenharGraficoCurvaS(). Uma
+    // única instância de Chart.js (só existe 1 popup por vez): abrir o
+    // popup, trocar de atividade, trocar Baseline ou trocar a escala
+    // disparam o evento; marcar checklist, comentar ou mexer em restrição
+    // nunca disparam — o gráfico fica intocado nesses casos.
+    let graficoCurvaAtividade = null;
+
+    function desenharGraficoCurvaAtividade(dados) {
+        const canvas = document.getElementById('grafico-curva-atividade-popup');
+
+        if (!canvas) {
+            // Popup fechado, ou aberto numa atividade/baseline sem dado
+            // suficiente (branch de alerta no Blade, sem canvas nenhum).
+            if (graficoCurvaAtividade) { graficoCurvaAtividade.destroy(); graficoCurvaAtividade = null; }
+            return;
+        }
+
+        // O popup fica fora do DOM enquanto fechado (bloco condicional do modal) — cada
+        // reabertura é um <canvas> novo. Se o Chart.js antigo está preso a
+        // um nó que não é mais este, ele não vale mais.
+        if (graficoCurvaAtividade && graficoCurvaAtividade.canvas !== canvas) {
+            graficoCurvaAtividade.destroy();
+            graficoCurvaAtividade = null;
+        }
+
+        // Ciclo 17, A.4 — Tendência é uma 3ª série independente (mesma
+        // importação de avanço selecionada que Realizado, mas nunca
+        // derivada dela — dados.tendencia vem vazio quando essa importação
+        // não tem linha 'tendencia' em avanco_periodos, nunca inventado).
+        const mapaPrevisto = Object.fromEntries(dados.previsto.map((p) => [p.periodo_inicio, p.percentual]));
+        const mapaRealizado = Object.fromEntries(dados.realizado.map((p) => [p.periodo_inicio, p.percentual]));
+        const mapaTendencia = Object.fromEntries(dados.tendencia.map((p) => [p.periodo_inicio, p.percentual]));
+        const periodos = [...new Set([
+            ...dados.previsto.map((p) => p.periodo_inicio),
+            ...dados.realizado.map((p) => p.periodo_inicio),
+            ...dados.tendencia.map((p) => p.periodo_inicio),
+        ])].sort();
+        const labels = periodos.map((p) => dados.labels[p] ?? p);
+        const dadosPrevisto = periodos.map((p) => mapaPrevisto[p] ?? null);
+        const dadosRealizado = periodos.map((p) => mapaRealizado[p] ?? null);
+        const dadosTendencia = periodos.map((p) => mapaTendencia[p] ?? null);
+
+        if (graficoCurvaAtividade) {
+            graficoCurvaAtividade.data.labels = labels;
+            graficoCurvaAtividade.data.datasets[0].data = dadosPrevisto;
+            graficoCurvaAtividade.data.datasets[1].data = dadosRealizado;
+            graficoCurvaAtividade.data.datasets[2].data = dadosTendencia;
+            graficoCurvaAtividade.update();
+            return;
+        }
+
+        graficoCurvaAtividade = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Previsto (acum.)',
+                        data: dadosPrevisto,
+                        borderColor: '#3C79E8',
+                        backgroundColor: '#3C79E8',
+                        tension: 0.3,
+                        spanGaps: true,
+                    },
+                    {
+                        label: 'Realizado (acum.)',
+                        data: dadosRealizado,
+                        borderColor: '#71dd37',
+                        backgroundColor: '#71dd37',
+                        tension: 0.3,
+                        spanGaps: true,
+                    },
+                    {
+                        label: 'Tendência (acum.)',
+                        data: dadosTendencia,
+                        borderColor: '#ffab00',
+                        backgroundColor: '#ffab00',
+                        borderDash: [4, 3],
+                        tension: 0.3,
+                        spanGaps: true,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: { y: { min: 0, max: 100, ticks: { callback: (v) => v + '%' } } },
+            },
+        });
+    }
+
+    $wire.on('curva-atividade-atualizada', ({ dados }) => desenharGraficoCurvaAtividade(dados));
 </script>
 @endscript

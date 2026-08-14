@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+  <StatusDate>2024-03-01T00:00:00</StatusDate>
+  <Tasks>
+    <Task>
+      <UID>1</UID>
+      <Name>Tarefa Manual (Manual=1)</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>1</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-01T08:00:00</Start>
+      <Finish>2024-01-07T17:00:00</Finish>
+      <Manual>1</Manual>
+    </Task>
+    <Task>
+      <UID>2</UID>
+      <Name>Tarefa Automatica (Manual=0)</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>2</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-08T08:00:00</Start>
+      <Finish>2024-01-14T17:00:00</Finish>
+      <Manual>0</Manual>
+    </Task>
+    <Task>
+      <UID>3</UID>
+      <Name>Tarefa Sem Campo Manual</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>3</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-15T08:00:00</Start>
+      <Finish>2024-01-21T17:00:00</Finish>
+    </Task>
+    <Task>
+      <UID>4</UID>
+      <Name>Tarefa Manual (Manual=true)</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>4</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-22T08:00:00</Start>
+      <Finish>2024-01-28T17:00:00</Finish>
+      <Manual>true</Manual>
+    </Task>
+    <Task>
+      <UID>5</UID>
+      <Name>Tarefa Automatica (Manual=false)</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>5</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-01-29T08:00:00</Start>
+      <Finish>2024-02-04T17:00:00</Finish>
+      <Manual>false</Manual>
+    </Task>
+    <Task>
+      <UID>6</UID>
+      <Name>Tarefa Valor Inesperado</Name>
+      <Summary>0</Summary>
+      <Milestone>0</Milestone>
+      <Critical>0</Critical>
+      <OutlineNumber>6</OutlineNumber>
+      <OutlineLevel>1</OutlineLevel>
+      <Start>2024-02-05T08:00:00</Start>
+      <Finish>2024-02-11T17:00:00</Finish>
+      <Manual>2</Manual>
+    </Task>
+  </Tasks>
+</Project>

@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Models\Atividade;
 use App\Models\CategoriaRestricao;
 use App\Models\Client;
+use App\Models\CronogramaImportacao;
 use App\Models\Disciplina;
 use App\Models\PacoteTrabalho;
 use App\Models\PlanoAcao;
@@ -14,6 +15,7 @@ use App\Models\Work;
 use App\Policies\AtividadePolicy;
 use App\Policies\CategoriaRestricaoPolicy;
 use App\Policies\ClientPolicy;
+use App\Policies\CronogramaImportacaoPolicy;
 use App\Policies\DisciplinaPolicy;
 use App\Policies\PacoteTrabalhoPolicy;
 use App\Policies\PlanoAcaoPolicy;
@@ -37,6 +39,7 @@ class AuthServiceProvider extends ServiceProvider
         Disciplina::class => DisciplinaPolicy::class,
         CategoriaRestricao::class => CategoriaRestricaoPolicy::class,
         Report::class => ReportPolicy::class,
+        CronogramaImportacao::class => CronogramaImportacaoPolicy::class,
         PlanoAcao::class => PlanoAcaoPolicy::class,
     ];
 

@@ -110,6 +110,13 @@
       "funcionalidade": "restricoes.plano_acao"
     },
     {
+      "url": "/app/radar/central-prontidao",
+      "name": "Central de Prontidão",
+      "icon": "menu-icon tf-icons bx bx-check-shield",
+      "slug": "radar.central-prontidao",
+      "funcionalidade": "restricoes.central_prontidao"
+    },
+    {
       "menuHeader": "3. REPORT"
     },
     {

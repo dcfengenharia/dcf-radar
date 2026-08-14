@@ -1162,6 +1162,1842 @@ ReportComentario (só em reports emitidos). Reaproveita
   seedados) e o modo Semanal inalterado (`Sem dd/mm/aaaa`), sem erro no
   console em nenhum dos dois.
 
+## Health Check — Fase 2A (dados estruturais do cronograma)
+
+- **Contexto**: primeira etapa da Fase 2 do Health Check (análise
+  estrutural/lógica da rede do cronograma — predecessoras, tipos de
+  relacionamento, lag, folgas, restrições de data). Fase 2A é
+  **só leitura/captura de dado** — nenhuma regra nova de Health Check foi
+  implementada (Fase 2B, ainda não iniciada, é quem vai consumir esses
+  campos). Total de regras do Health Check continua 24 (as 23 originais
+  + DATE-007 da rodada de ajuste da Fase 1); nenhuma categoria nova
+  (Estrutura/Lógica/Folgas ficam reservadas pra Fase 2B).
+- **Achado que definiu a implementação**: o parser do `MsProjectImporter`
+  já faz um parse de subárvore completo por `<Task>` via `SimpleXMLElement`
+  (`simplexml_load_string($reader->readOuterXML())`) — os campos
+  `PredecessorLink`/`TotalSlack`/`FreeSlack`/`ConstraintType`/
+  `ConstraintDate`/`Active` já estavam disponíveis em memória em `$el`
+  pra cada tarefa, sem precisar mudar a estratégia de leitura do XML.
+  Mudança ficou restrita a: estender o array literal `$tarefasRaw[$uid]`
+  com as novas chaves, dois helpers privados novos
+  (`parsearPredecessoras()`/`intOuNulo()`), e estender a chamada
+  `new TarefaImportada(...)` em `montarTarefa()` — **zero mudança** em
+  HH/baseline/realizado/tendência/distribuição por ponto médio/
+  reconciliação/snapshots/`aplicar()`.
+- **`App\DTOs\PredecessoraLink`** (readonly, novo): `predecessoraUid`,
+  `tipo` (`?TipoRelacionamentoPredecessora`), `tipoCodigoOriginal` (int
+  bruto do XML, preservado mesmo quando `tipo` não mapeia — nunca
+  descartado), `linkLag`, `lagFormat` (ambos brutos, sem conversão de
+  unidade). `App\DTOs\TarefaImportada` ganhou 7 propriedades novas, TODAS
+  com default seguro (`predecessoras: []`, `totalSlack/freeSlack: null`,
+  `tipoRestricao: null`, `tipoRestricaoCodigoOriginal: null`,
+  `dataRestricao: null`, `ativa: true`) — aditivo, não quebra nenhum
+  ponto de construção existente do DTO (inclusive nos testes antigos que
+  constroem `TarefaImportada` com argumentos nomeados fixos).
+- **`App\Enums\TipoRelacionamentoPredecessora`** (FF/FS/SF/SS) e
+  **`App\Enums\TipoRestricaoCronograma`** (ASAP/ALAP/MSO/MFO/SNET/SNLT/
+  FNET/FNLT, `imposDataFixa()` = tudo exceto ASAP/ALAP) — cada um com
+  `fromCodigoMsProject(int): ?self`, retornando `null` pra código
+  desconhecido em vez de inventar um tipo (mesmo princípio já usado nos
+  outros enums do projeto que mapeiam código externo).
+- **Decisão do usuário — sem conversão de unidade nesta fase**:
+  `linkLag`/`lagFormat`/`totalSlack`/`freeSlack` são gravados EXATAMENTE
+  como vêm do XML (inteiro bruto, incluindo negativos — lag negativo =
+  lead, folga negativa = atraso sobre o caminho crítico). Só o SINAL
+  desses valores pode alimentar regras futuras nesta fase; a conversão
+  de unidade real (`LagFormat` define se o número é dias/horas/semanas
+  elapsed ou não-elapsed) fica para quando houver necessidade de exibir
+  valor humano-legível, e precisa ser validada contra o comportamento
+  real do MS Project antes de implementada — "não converter
+  silenciosamente" (decisão explícita do usuário).
+- **`<Active>` ausente do XML NUNCA é tratado como inativa** — só o
+  valor `'0'` explícito marca `ativa = false`; ausência do elemento ou
+  qualquer outro valor mantém `ativa = true` (default). Captura é
+  aditiva: nenhuma lógica de importação existente (criação/atualização/
+  arquivamento de Atividade) lê ou reage a este campo ainda — reservado
+  pra regras futuras da Fase 2B.
+- **`Type` ausente num `<PredecessorLink>` assume FS (código 1)** — é o
+  próprio default do MS Project para vínculos sem tipo explícito no XML,
+  não uma invenção do importador.
+- **Tarefas de resumo/projeto vão para `$plano->pacotes`, nunca
+  `$plano->criar`** (comportamento pré-existente, confirmado sem
+  alteração pela Fase 2A) — inclui a tarefa-raiz UID=0 do projeto.
+  Marcos (`Milestone=1`) continuam em `$plano->criar`/`$plano->pacotes`
+  normalmente, com `isMarco=true` e tipicamente sem predecessoras
+  próprias listadas (dependendo do XML de origem).
+- **Decisão explícita — sem heurística de "atividade inicial/final da
+  rede"**: a futura STRUCT-001/STRUCT-002 (Fase 2B, ainda não
+  implementada) vai sinalizar TODA atividade executável sem
+  predecessora/sucessora, sem tentar adivinhar qual é logicamente a
+  "primeira"/"última" do cronograma — decisão do usuário, evita falsos
+  negativos por heurística errada.
+- **Fixture**: `tests/Fixtures/cronograma_fase2a_estrutural.xml` (~28
+  tarefas) cobre: predecessoras ausente/única/múltipla, os 4 tipos de
+  relacionamento (FS/SS/FF/SF), lag positivo/zero/negativo/`Type`
+  ausente, `TotalSlack`/`FreeSlack` positivo/zero(crítico)/negativo/
+  ausente, os 8 tipos de restrição (`ConstraintType` 0-7, com
+  `ConstraintDate` só nos que exigem data fixa), `Active` explícito 1/0/
+  ausente, marco, e resumo/projeto (UID=0 e UID=1).
+- **Testes novos**: `tests/Feature/MsProjectImporterEstruturalTest.php`
+  (26 testes, chamando `analisar()` direto sem Livewire — mesma
+  convenção de `CronogramaImportacaoTest.php` — nenhuma regra de Health
+  Check avaliada aqui, só DTO/parser), `tests/Unit/
+  TipoRelacionamentoPredecessoraTest.php` (2 testes) e `tests/Unit/
+  TipoRestricaoCronogramaTest.php` (4 testes) — 32 testes novos no
+  total. Suíte completa sem regressão (ver resultado da rodada em
+  `docs/BRIEFING-DCF-RADAR.md` ou no relatório de conclusão da fase).
+- **Não implementado nesta fase** (fica pra Fase 2B, aguardando
+  aprovação): nenhuma regra STRUCT-*/LOGIC-*/SLACK-*, nenhuma conversão
+  de unidade de lag/folga, nenhuma migration (dado é transiente, só
+  Health Check em memória), nenhuma mudança de UI (novas categorias
+  Estrutura/Lógica/Folgas ainda não aparecem na tela).
+
+## Health Check — Fase 2B.1 (estrutura da rede de precedências)
+
+- **Contexto**: primeira parte da Fase 2B — consome os dados estruturais
+  capturados na Fase 2A pra analisar a REDE lógica do cronograma (não só
+  atributos por atividade, como as 24 regras anteriores). Implementa
+  SOMENTE STRUCT-001 a STRUCT-005 (sem predecessora, sem sucessora,
+  isolada, rede desconectada, ciclo lógico) — LOGIC-*/SLACK-*/Score
+  seguem fora de escopo, aguardando validação do usuário. Total de regras
+  do Health Check: **24 (Fase 1) confirmado direto no `HealthCheckEngine`
+  antes desta fase** (não 25 como o pedido original presumia) **+ 5
+  (STRUCT-001..005) = 29**. Categoria nova: `Estrutura`
+  (`App\Enums\HealthCheckCategoria::Estrutura`).
+- **`App\Support\HealthCheck\HealthCheckGrafoCronograma`**: grafo lógico
+  (predecessora → sucessora) construído **uma única vez por avaliação**
+  dentro de `HealthCheckEngine::avaliar()` e reaproveitado por todas as
+  regras estruturais — nenhuma delas reconstrói o grafo. Complexidade
+  O(V+E) em toda parte: construção, graus (`grauEntrada()`/`grauSaida()`,
+  O(1) via `count()` de um set), componentes e ciclos.
+  - **Nós**: só atividades **executáveis e ativas**
+    (`!isSummary && ativa`) — decisão do usuário. Tarefas-resumo/projeto
+    NUNCA são nó (e relações que apontam pra elas são ignoradas, não
+    contam como predecessora/sucessora de ninguém); atividades inativas
+    idem. **Marcos SÃO nós normais** — decisão explícita do usuário
+    (Fase 2B.1: "não quero heurísticas complexas nesta etapa"), tratados
+    exatamente como qualquer atividade executável por STRUCT-001/002/003
+    (um marco isolado vira STRUCT-003 igual a qualquer atividade normal
+    isolada — sem tratamento especial de "marco inicial/final é sempre
+    legítimo").
+  - **Arestas**: direcionadas, construídas a partir de
+    `TarefaImportada::$predecessoras` (Fase 2A) — só quando AMBAS as
+    pontas já são nós do grafo (uma predecessora apontando pra UID
+    inexistente/resumo/inativo é ignorada silenciosamente, o que faz a
+    atividade aparecer com grau de entrada 0 por aquele lado, sem alerta
+    específico — comportamento já documentado na Fase 2A pra
+    predecessora inativa).
+  - **Componentes** (`componentes()`): conectividade **NÃO direcionada**
+    — decisão documentada, A→B→C é 1 componente só mesmo a direção sendo
+    relevante pra predecessora/sucessora/ciclos. Union-Find (path
+    compression), sem recursão.
+  - **Ciclos** (`ciclos()`): componentes fortemente conexas (SCC) não
+    triviais — tamanho ≥ 2, ou 1 nó com auto-laço (a tarefa lista a si
+    mesma como predecessora) — via **Tarjan iterativo** (pilha explícita
+    de frames `[uid, sucessoras[], índice]`, sem recursão — seguro pra
+    cronogramas de milhares de atividades, onde uma versão recursiva
+    arriscaria estourar a pilha de chamadas do PHP numa cadeia linear
+    longa). Uma SCC pode agregar mais de um ciclo elementar entrelaçado
+    (ex.: dois ciclos compartilhando um nó) — enumerar cada ciclo
+    elementar separadamente teria custo potencialmente exponencial;
+    agrupar por SCC é a escolha seguro-e-eficiente desta fase, documentada
+    no próprio código.
+- **Guarda de ruído — decisão tomada durante a implementação, não
+  especificada no pedido original**: quando o grafo inteiro não tem
+  **nenhuma** relação de precedência capturada
+  (`HealthCheckGrafoCronograma::semNenhumaRelacaoCapturada()`, i.e.
+  `totalArestas() === 0`), as regras STRUCT-001/002/003 **não avaliam
+  nada** (`RegraHealthCheckEstruturalPorAtividadeBase::avaliar()` retorna
+  `[]` cedo). Motivo: nenhuma fixture XML pré-existente no projeto
+  (`cronograma_sample.xml`, `cronograma_health_check_sem_alertas.xml`
+  etc.) tem `<PredecessorLink>` — são todas anteriores à Fase 2A. Sem
+  essa guarda, TODA atividade de um arquivo sem esse campo populado
+  viraria STRUCT-003 (isolada), inclusive a fixture criada
+  especificamente pra não ter NENHUM alerta — inundando a análise de
+  ruído e quebrando a regressão da Fase 1. Uma ausência TOTAL de dado de
+  precedência num cronograma inteiro é sinal de que o arquivo de origem
+  provavelmente não popula esse campo do MSPDI (comum em exportações de
+  outras ferramentas convertidas pra MSPDI), não que cada atividade
+  individualmente está isolada. Quando o grafo tem QUALQUER relação
+  capturada (>0 arestas), a guarda não se aplica e fontes/sumidouros
+  genuínos são reportados normalmente — inclusive numa obra real com
+  centenas de atividades conectadas e só uma genuinamente solta.
+  STRUCT-004/005 não precisam dessa guarda: com 0 arestas, todo
+  componente tem tamanho 1 (filtrado por `TAMANHO_MINIMO_COMPONENTE`) e
+  não há ciclo possível — o resultado correto (nenhum finding) já sai
+  naturalmente do próprio algoritmo.
+- **STRUCT-001 (sem predecessora)** / **STRUCT-002 (sem sucessora)**:
+  `App\Support\HealthCheck\RegraHealthCheckEstruturalPorAtividadeBase`
+  (novo, espelha `RegraHealthCheckBase` da Fase 1, mas itera
+  `$grafo->tarefas()` em vez de `$plano->criar + atualizar`, e recebe o
+  grafo já pronto). Severidade `Médio`. Não tentam adivinhar qual é "a
+  primeira/última atividade lógica" — reportam TODAS as atividades sem
+  predecessora/sucessora (uma obra pode ter várias frentes/pacotes
+  paralelos). **Dedup com STRUCT-003**: a própria condição de
+  `combina()` já exclui o caso isolado (`grauSaida() > 0` em STRUCT-001,
+  `grauEntrada() > 0` em STRUCT-002) — uma atividade sem predecessora E
+  sem sucessora vira só STRUCT-003, nunca as 3 juntas.
+- **STRUCT-003 (isolada)**: sem predecessora E sem sucessora ao mesmo
+  tempo. Severidade `Alto` (mais grave que 001/002 isoladamente).
+- **STRUCT-004 (rede desconectada)**: usa `$grafo->componentes()`, mas só
+  considera componentes com **2+ atividades** — componentes de 1
+  atividade isolada já são STRUCT-003 e ficam de fora daqui (decisão
+  tomada durante a implementação, documentada no código de
+  `RedeDesconectadaRule`: evita duplicar o mesmo problema como
+  "componente desconectado de tamanho 1", exatamente o tipo de ruído que
+  o próprio pedido original pede pra evitar — "não gerar finding pra
+  cada atividade"). Com 0 ou 1 componente qualificado, nenhum finding
+  (nada pra comparar); com 2+, gera **1 finding POR componente** (nunca
+  1 finding agregando todos), cada um trazendo `componente_id`,
+  `quantidade_atividades`, `quantidade_relacoes` (arestas internas) e a
+  lista de atividades. Severidade `Alto`.
+- **STRUCT-005 (ciclo lógico)**: usa `$grafo->ciclos()`, gera **1 finding
+  POR ciclo** (mesmo padrão de STRUCT-004), cada um trazendo `ciclo_id`,
+  a lista de atividades envolvidas e as relações internas (arestas entre
+  nós do próprio ciclo — representação "quando possível" sem precisar
+  enumerar cada ciclo elementar, ver nota do algoritmo acima). Severidade
+  `Crítico` — ciclo lógico impede cálculo de datas/caminho crítico/folgas
+  em qualquer ferramenta de CPM, não é uma opinião, é matematicamente
+  irresolvível sem quebrar o ciclo.
+- **`App\Support\HealthCheck\HealthCheckRegraEstruturalInterface`**
+  (novo, paralelo a `HealthCheckRuleInterface` da Fase 1 — não reaproveita
+  a mesma interface): `avaliar(PlanoImportacao, HealthCheckGrafoCronograma): HealthCheckFinding[]`
+  — retorna ARRAY (não `?HealthCheckFinding` nullable único) porque
+  STRUCT-004/005 podem gerar mais de um finding na mesma avaliação (1 por
+  componente/ciclo). `HealthCheckEngine::avaliar()` constrói o grafo uma
+  vez, roda as 24 regras da Fase 1 normalmente, depois roda as regras
+  estruturais e agrega tudo no mesmo `HealthCheckResultado` — a UI, os
+  totais por severidade/categoria e a persistência não precisaram de
+  NENHUMA mudança (tudo já era genérico o suficiente: `HealthCheckFinding`
+  já aceitava `atividades: array<string, mixed>` livre, e
+  `totalPorCategoria()`/`totalPorSeveridade()` já iteram
+  `HealthCheckCategoria::cases()`/`HealthCheckSeveridade::cases()`
+  dinamicamente).
+- **`HealthCheckEngine::__construct()` ganhou um segundo parâmetro
+  opcional**, `?array $regrasEstruturais = null` (mesmo padrão do
+  primeiro, `$regras` — override só pra testes, produção sempre usa
+  `regrasEstruturaisPadrao()`). **Achado importante desta fase**: os ~32
+  testes de `HealthCheckEngineTest.php` (Fase 1) e a fixture
+  `cronograma_health_check_sem_alertas.xml` NUNCA populam
+  `PredecessorLink` (são anteriores à Fase 2A) — combinado com a guarda
+  de "sem nenhuma relação capturada" acima, isso faz com que TODOS esses
+  testes/fixtures continuem passando **sem nenhuma alteração**, porque o
+  grafo deles sempre tem 0 arestas e as regras estruturais nunca disparam
+  nada pra eles. `HealthCheckEngineTest.php` não precisou de nenhum
+  ajuste — a guarda resolveu o conflito na raiz, não nos testes.
+  `tests/Unit/HealthCheckEstruturalTest.php` (novo, 33 testes) usa
+  `new HealthCheckEngine(regras: [])` pra isolar as regras estruturais
+  das 24 da Fase 1 (evita uma contaminar a asserção da outra — mesmo
+  espírito do override já documentado pra `$regras`).
+- **Não tocado**: `MsProjectImporter.php` (Fase 2A já capturou tudo que
+  esta fase precisa — nenhuma linha alterada), Score
+  (`scorePreliminar()` continua `null`), severidades das 24 regras
+  existentes, LOGIC-*/SLACK-* (não implementadas).
+- **UI**: `resources/views/pages/radar/_partials/health-check-findings.blade.php`
+  (novo) — a lista de "Ocorrências encontradas" foi **extraída como
+  partial compartilhado** entre `⚡cronograma.blade.php` e
+  `⚡relatorio-importar-avanco.blade.php` (que tinham blocos idênticos,
+  só com `id`-prefix de collapse diferente) — decisão tomada porque a
+  lógica de layout por tipo de finding cresceu o suficiente pra não valer
+  mais duplicar (mesmo critério já usado em
+  `relatorio-tabela-curva.blade.php`/`relatorio-grafico-config.blade.php`).
+  4 layouts dentro do mesmo partial, resolvidos por `regra_id`: STRUCT-004
+  (lista de componentes com contagens), STRUCT-005 (lista de ciclos +
+  relações que fecham o ciclo), STRUCT-001/002/003 (tabela
+  código/atividade/UID/tipo/disciplina — `disciplina` lida de
+  `TarefaImportada::$textos` via `TextoCustomizado::valor(..., 21)`,
+  mesmo helper já usado no importador), e o layout original da Fase 1
+  (código/atividade/datas/%). O resumo por categoria/severidade
+  (`$hc->totalPorCategoria()`/`totalPorSeveridade()`) já funcionou sem
+  nenhuma mudança de código — só passou a mostrar "Estrutura" porque o
+  enum ganhou o case novo.
+- Testes: `tests/Unit/HealthCheckGrafoCronogramaTest.php` (18 testes — só
+  o grafo: graus, exclusão de resumo/inativa, componentes, ciclos,
+  auto-laço), `tests/Unit/HealthCheckEstruturalTest.php` (33 testes — as
+  5 regras isoladas via `regras: []`, cobrindo os 31 cenários pedidos:
+  STRUCT-001/002 com resumo/marco/inativa/múltiplas, dedup do
+  STRUCT-003, STRUCT-004 com componentes de tamanhos variados e direções
+  mistas, STRUCT-005 com ciclo simples/triplo/múltiplo/embutido num
+  DAG/grafo grande sem falso positivo), `tests/Feature/
+  HealthCheckEstruturalIntegrationTest.php` (8 testes — fluxo completo
+  XML → `MsProjectImporter::analisar()` → `HealthCheckEngine::avaliar()`
+  com o motor PADRÃO via `app(HealthCheckEngine::class)`, fixture nova
+  `tests/Fixtures/cronograma_fase2b1_estrutural.xml` com 2 redes
+  desconectadas, 1 atividade isolada, 1 ciclo, 1 marco isolado, 1
+  atividade inativa e sua sucessora). 59 testes novos no total. Suíte
+  completa: **1062 passed / 6 skipped, 0 failures** (de 1003 antes desta
+  fase), incluindo `TenantIsolationTest` e toda a suíte de Fase 1/Baseline/
+  Realizado-Tendência/polling/rollback sem nenhuma regressão.
+- **Não avançar pra Fase 2B.2 (LOGIC-*) nem 2B.3 (SLACK-*) sem validação
+  do usuário** (instrução explícita) — aguardando revisão desta etapa
+  antes de continuar.
+
+## Health Check — Fase 2B.2A (captura do modo de agendamento)
+
+- **Contexto**: primeiro pré-requisito identificado no diagnóstico da Fase
+  2B.2 (LOGIC) — toda regra de coerência de datas previstas depende de
+  saber se a tarefa é *Auto Scheduled* (o MS Project recalcula as datas a
+  partir da lógica de predecessoras) ou *Manually Scheduled* (as datas são
+  digitadas à mão e podem legitimamente divergir de qualquer lógica/
+  restrição, sem ser erro). Sem esse dado, toda regra LOGIC baseada em
+  data prevista herdaria risco de falso positivo permanente — por isso
+  essa captura veio ANTES de qualquer regra LOGIC, isolada em sua própria
+  etapa (2B.2A), só leitura, sem regra nova nenhuma.
+- **Campo investigado via WebSearch/WebFetch (não presumido)**: a
+  documentação pública da Microsoft (`learn.microsoft.com/.../
+  task-elements-and-xml-structure`) está travada na estrutura do schema
+  de 2007 (`mspdi_pj12.xsd`) mesmo quando acessada com o parâmetro de URL
+  `view=project-client-2016` — não lista nenhum campo de agendamento
+  manual. A confirmação veio de duas fontes cruzadas: (1) um fórum
+  (`office-forums.com`, thread "mspdi_pj14.xsd missing properties?")
+  relatando que arquivos salvos pelo Project 2010 de fato contêm
+  `ProjectTask.Manual`/`.ManualStart`/`.ManualFinish`/`.ManualDuration`,
+  ausentes do `.xsd` publicado junto do SDK do Project 2010; (2) a classe
+  JAXB gerada a partir do schema real usado pela biblioteca **mpxj**
+  (referência de fato da comunidade pra ler arquivos MSPDI, validada
+  contra arquivos reais do MS Project há anos), que expõe literalmente
+  `<xs:element name="Manual" type="xs:boolean" minOccurs="0"/>` dentro de
+  `Task`. **Sem confirmação 100% de uma fonte primária Microsoft atual**
+  — registrado explicitamente como limitação; se qualquer regra futura
+  precisar de garantia absoluta, revisitar com um arquivo real exportado
+  por uma versão conhecida do MS Project.
+- **`TarefaImportada` ganhou 2 propriedades novas**, ambas com default
+  `null` (aditivo, não quebra nenhum ponto de construção existente):
+  `agendamentoManual` (`?bool` — true=Manualmente Agendada,
+  false=Automaticamente Agendada, `null`=desconhecido) e
+  `agendamentoManualBruto` (`?string` — valor exatamente como veio do
+  XML, mesmo padrão de preservação já usado em `tipoCodigoOriginal`/
+  `tipoRestricaoCodigoOriginal`). **Ausência do elemento `<Manual>`
+  NUNCA é tratada como "automática" nem como "manual"** — schemas
+  anteriores ao Project 2010 nem tinham esse conceito, então "ausente"
+  fica genuinamente desconhecido, nunca um valor assumido.
+- **`MsProjectImporter::boolOuNulo()`** (novo helper privado): normaliza
+  o valor bruto de `<Manual>` — aceita tanto `'1'`/`'0'` quanto
+  `'true'`/`'false'` (o tipo `xs:boolean` do XML Schema permite as duas
+  formas léxicas), qualquer outro valor (incluindo ausência) vira `null`
+  — nunca inventa um sentido pra um valor inesperado (`<Manual>2</Manual>`
+  também vira `agendamentoManual = null`, mas com `agendamentoManualBruto
+  = '2'` preservado pra auditoria). **`stringOuNulo()`** (novo, também
+  privado): converte string vazia (elemento ausente) em `null`, espelha
+  o `intOuNulo()` já existente da Fase 2A.
+- **Zero mudança** em HH/baseline/realizado/tendência/predecessoras/
+  estrutura/`aplicar()` — a única mudança em `MsProjectImporter.php` foi
+  uma linha nova no array `$tarefasRaw[$uid]` + 2 helpers privados + 2
+  argumentos novos em `montarTarefa()`.
+- **Fixture**: `tests/Fixtures/cronograma_fase2b2a_modo_agendamento.xml`
+  (6 tarefas: `Manual=1`, `Manual=0`, ausente, `Manual=true`,
+  `Manual=false`, valor inesperado `Manual=2`).
+- Testes: `tests/Feature/MsProjectImporterModoAgendamentoTest.php` (7
+  testes — mesma convenção de `MsProjectImporterEstruturalTest.php`,
+  chamando `analisar()` direto sem Livewire). Suíte completa: **1069
+  passed / 6 skipped, 0 failures** (de 1062 antes desta etapa).
+- **Não implementado nesta fase** (fica pra Fase 2B.2B, aguardando
+  aprovação): nenhuma regra LOGIC-*, nenhuma mudança no
+  `HealthCheckEngine`/regras existentes/Blade/Score/migrations.
+- **Não avançar pra Fase 2B.2B (LOGIC-005/008/009/010) sem validação do
+  usuário** (instrução explícita) — aguardando aprovação desta captura
+  antes de implementar qualquer regra.
+
+## Health Check — Fase 2B.2B (LOGIC-005, LOGIC-008, LOGIC-009, LOGIC-010)
+
+- **Contexto**: primeira leva de regras LOGIC aprovadas do diagnóstico da
+  Fase 2B.2 — só as 4 de maior confiança (sem depender de datas previstas
+  nem do modo de agendamento capturado na Fase 2B.2A). LOGIC-001/002/003/
+  004/006/007/011 seguem fora de escopo, aguardando decisão futura.
+  Categoria nova: `Logica` (`App\Enums\HealthCheckCategoria::Logica`).
+  Total de regras do Health Check: 24 (Fase 1) + 5 (STRUCT, Fase 2B.1) +
+  4 (LOGIC, Fase 2B.2B) = **33**.
+- **`App\Support\HealthCheck\TarefasPorUid`** (novo helper pequeno,
+  compartilhado pelas 4 regras): índice `uid => TarefaImportada` com
+  **todas** as tarefas do plano (`criar + atualizar + pacotes`), incluindo
+  tarefas-resumo e inativas — deliberadamente diferente de
+  `HealthCheckGrafoCronograma` (Fase 2B.1), que exclui as duas. As regras
+  LOGIC precisam resolver predecessora/sucessora SEM esse filtro (ex.:
+  LOGIC-009 precisa saber quando a predecessora é resumo; LOGIC-010
+  precisa enxergar a predecessora mesmo inativa) — por isso é uma
+  abstração separada, não uma extensão do grafo estrutural. Também expõe
+  `resumo(TarefaImportada): array` (uid/código/nome), serialização mínima
+  comum reaproveitada pelos 4 findings.
+- **LOGIC-005 (múltiplos vínculos entre o mesmo par)**: trabalha sobre os
+  `PredecessoraLink` BRUTOS de cada tarefa (nunca sobre o grafo, que
+  colapsa múltiplos vínculos do mesmo par numa única aresta). Agrupa por
+  `predecessoraUid` dentro de cada sucessora e classifica cada grupo de
+  2+ vínculos em 3 casos, cada um com seu próprio finding (mesmo padrão
+  multi-finding de STRUCT-004/005): **Caso A** (duplicidade exata — mesmo
+  `tipoCodigoOriginal` + mesmo `linkLag` + mesmo `lagFormat`, severidade
+  Médio), **Caso B** (tipos diferentes, severidade Informativo — comum em
+  cronogramas migrados do Primavera P6, que permite múltiplos tipos de
+  relação entre o mesmo par nativamente), **Caso C** (mesmo tipo, lag
+  diferente, severidade Médio). Prioridade de classificação num grupo com
+  3+ vínculos mistos: tipos diferentes sempre vence (Caso B), mesmo que
+  os lags também divirjam. `LinkLag`/`LagFormat` nunca convertidos nem
+  interpretados por magnitude — só comparados por igualdade bruta (mesmo
+  princípio "não converter silenciosamente" da Fase 2A).
+- **LOGIC-008 (inconsistência entre datas reais em relação FS)**: só
+  avalia quando a relação é `TipoRelacionamentoPredecessora::FinishToStart`
+  E `ActualFinish` da predecessora (`realTermino`) E `ActualStart` da
+  sucessora (`realInicio`) existem — ausência de qualquer uma faz o
+  vínculo ser ignorado (nunca tratado como "sem problema" nem como
+  "problema"). Dispara só quando `sucessora.realInicio < predecessora.
+  realTermino` (comparação estrita — datas iguais não disparam). Ignora
+  vínculos em que a predecessora OU a sucessora é tarefa-resumo ou está
+  inativa. Severidade Alto (maior confiança de toda a Fase 2B.2 — dado já
+  aconteceu, não é recalculado pelo MS Project em nenhum modo de
+  agendamento, diferente das futuras LOGIC-001/002/003 que avaliam datas
+  PREVISTAS). Nunca usa `dataInicio`/`dataTermino`/baseline/percentual/
+  tendência — exclusivamente `realInicio`/`realTermino`, mesmos campos já
+  usados pelas regras de Datas da Fase 1.
+- **LOGIC-009 (vínculo envolvendo tarefa-resumo)**: um único loop sobre
+  todas as tarefas (via `TarefasPorUid`, que inclui resumo) resolve os 2
+  lados possíveis ao mesmo tempo — "predecessora é resumo" (a tarefa
+  referenciada por `predecessoraUid` tem `isSummary=true`) e "sucessora é
+  resumo" (a própria tarefa dona do vínculo, i.e. a que declara
+  `predecessoras`, tem `isSummary=true`) — sem duplicar lógica pros dois
+  casos. Campo `direcao` no registro do finding distingue
+  `predecessora_e_resumo`/`sucessora_e_resumo`/`ambas_resumo`. Severidade
+  Informativo — o MS Project não bloqueia vínculo com resumo de nenhum
+  dos dois lados, então o texto nunca afirma que é erro. Não altera em
+  nada o comportamento do grafo estrutural (Fase 2B.1) nem das regras
+  STRUCT-*, que continuam ignorando esses vínculos silenciosamente — esta
+  regra é só um diagnóstico complementar que enxerga o que o grafo não
+  enxerga.
+- **LOGIC-010 (sucessora ativa com predecessora(s) inativa(s))**: só
+  considera sucessoras executáveis e ativas (`!isSummary && ativa`) com
+  ao menos 1 predecessora capturada; resolve cada predecessora via
+  `TarefasPorUid` (que não exclui inativas, ao contrário do grafo) e
+  separa em ativas/inativas. **Duas severidades diferentes, decisão
+  tomada durante a implementação** (não estava fixada no pedido, registro
+  explícito da justificativa): quando **todas** as predecessoras
+  capturadas estão inativas → severidade `Baixo` (sinal mais forte, a
+  atividade não tem mais nenhuma base lógica ativa remanescente); quando
+  há **mistura** de ativas e inativas → severidade `Informativo` (sinal
+  mais fraco, a lógica ainda é sustentada pela(s) predecessora(s) ativa(s)
+  restante(s)). Em ambos os casos o texto deixa claro que a desativação
+  pode ter sido decisão deliberada do planejador — nunca acusa como erro.
+- **Risco de falso positivo conhecido, por regra** (documentado
+  explicitamente, nenhuma regra afirma "erro"): LOGIC-005 Caso B (tipos
+  diferentes) e Caso C (lag diferente) podem ser 100% intencionais;
+  LOGIC-008 é a de menor risco (só dados já realizados); LOGIC-009 é
+  sempre informativo (MS Project permite os dois lados); LOGIC-010
+  explicitamente pode refletir desativação deliberada.
+- **UI**: `resources/views/pages/radar/_partials/health-check-findings.blade.php`
+  ganhou 4 layouts novos (branches por `regra_id`) — LOGIC-005 (tabela de
+  vínculos por par predecessora/sucessora), LOGIC-008 (tabela predecessora
+  ×término real / sucessora×início real), LOGIC-009 (tabela com coluna
+  "Lado resumo"), LOGIC-010 (lista de predecessoras inativas em vermelho +
+  ativas). Resumo por categoria/severidade já funciona sem nenhuma mudança
+  de código (mesmo mecanismo genérico documentado na Fase 2B.1) — só
+  passou a mostrar "Lógica" porque o enum ganhou o case novo.
+- **`HealthCheckEngine::regrasEstruturaisPadrao()`** ganhou as 4 classes
+  novas ao final do array já existente — **nenhuma mudança de assinatura,
+  nenhum novo parâmetro de construtor**: as regras LOGIC reaproveitam
+  exatamente o mesmo `HealthCheckRegraEstruturalInterface`/mesmo array
+  `$regrasEstruturais` das regras STRUCT (Fase 2B.1), já que a interface
+  já suportava múltiplos findings por regra desde o desenho original.
+  Verificado que isso não contamina nenhum teste pré-existente: os
+  fixtures de `HealthCheckEngineTest.php` (Fase 1) nunca populam
+  `predecessoras`; os de `HealthCheckEstruturalTest.php` (Fase 2B.1) nunca
+  criam vínculos duplicados, tarefas-resumo linkadas ou predecessoras
+  inativas referenciadas por uma sucessora ativa; e as asserções desses
+  arquivos sempre buscam o finding por `regraId` específico (nunca a
+  lista completa), tolerando naturalmente a presença de findings de
+  outras regras.
+- Testes: `tests/Unit/HealthCheckLogicaTest.php` (26 testes — as 4 regras
+  isoladas via `regras: []`, cobrindo todos os cenários pedidos: os 3
+  casos de LOGIC-005 + pares diferentes/vínculo único não disparam; os 10
+  cenários de LOGIC-008 incluindo os 4 tipos de relacionamento e resumo/
+  inativa; os 5 cenários de LOGIC-009; os 6 cenários de LOGIC-010),
+  `tests/Feature/HealthCheckLogicaIntegrationTest.php` (6 testes — fluxo
+  completo XML → `MsProjectImporter::analisar()` → `HealthCheckEngine::
+  avaliar()` com o motor PADRÃO, fixture nova `tests/Fixtures/
+  cronograma_fase2b2b_logica.xml` cobrindo as 4 regras + confirmando que
+  as regras STRUCT-* da Fase 2B.1 continuam funcionando lado a lado). 32
+  testes novos no total. Suíte completa: **1101 passed / 6 skipped, 0
+  failures** (de 1069 antes desta fase), incluindo `TenantIsolationTest` e
+  toda a suíte de Fase 1/2A/2B.1/2B.2A sem nenhuma regressão.
+- **Não tocado**: `MsProjectImporter.php` (Fase 2A/2B.2A já capturaram
+  tudo que esta fase precisa — nenhuma linha alterada), Score
+  (`scorePreliminar()` continua `null`), as 24 regras da Fase 1, as 5
+  regras STRUCT da Fase 2B.1, migrations, HH/baseline/realizado/
+  tendência/reconciliação/`aplicar()`, polling, fluxo de abortar.
+- **Não avançar pra nenhuma regra LOGIC adicional (001/002/003/004/006/
+  007/011), regras de folga (SLACK-*), ou qualquer outra fase sem
+  validação do usuário** (instrução explícita) — aguardando aprovação
+  desta etapa antes de continuar.
+
+## Health Check — Fase 2B.3 (SLACK-001, SLACK-002, SLACK-005)
+
+- **Contexto**: última leva aprovada do diagnóstico de folga — só as 3
+  regras que não dependem de `Critical`/`CriticalSlackLimit`.
+  SLACK-003/004/007/008 ficam bloqueadas até `CriticalSlackLimit` (campo
+  de nível `<Project>`, não `<Task>` — nunca capturado) ser lido e sua
+  unidade validada; SLACK-006 (folga elevada) foi descartada por exigir
+  um threshold arbitrário sem critério técnico objetivo. Categoria nova:
+  `Slack` (label "Folgas"). Total de regras do Health Check: 24 (Fase 1)
+  + 5 (STRUCT) + 4 (LOGIC) + 3 (SLACK) = **36**.
+- **Achado do diagnóstico que definiu a arquitetura**: `TotalSlack`/
+  `FreeSlack` são medidos em "décimos de minuto" (fonte: documentação da
+  API do mpxj, com fórmula de exemplo — confiança maior que a que
+  tínhamos pra `LagFormat`), mas SEM nenhum campo "Format" companheiro —
+  diferente de `LinkLag`/`LagFormat`, a unidade aqui é fixa, não
+  configurável por vínculo. Ainda assim, **nenhuma conversão foi feita**
+  nesta fase (decisão do usuário) — as 3 regras usam só comparação de
+  sinal/relação (`< 0`, `> `), nunca magnitude convertida.
+- **`App\Support\HealthCheck\RegraHealthCheckSlackPorAtividadeBase`**
+  (novo, espelha `RegraHealthCheckEstruturalPorAtividadeBase` mas SEM
+  depender de `HealthCheckGrafoCronograma`) — folga é um valor já
+  calculado pelo MS Project por atividade, não uma propriedade da rede
+  que reconstruímos via `PredecessorLink`, então não faz sentido
+  reaproveitar o grafo nem sua guarda de "sem nenhuma relação capturada".
+  Itera `$plano->criar + $plano->atualizar` (nunca `pacotes`), filtra
+  `isSummary`/`!ativa` explicitamente (redundante com o fato de resumo
+  nunca estar em criar/atualizar, mas mantido por clareza/robustez), e
+  cada regra concreta só implementa `combina(TarefaImportada): bool`.
+- **SLACK-001 (TotalSlack negativo)**: severidade Alto. **SLACK-002
+  (FreeSlack negativo)**: severidade Médio. **SLACK-005 (FreeSlack >
+  TotalSlack)**: severidade Médio, comparação puramente matemática
+  (testado explicitamente com os dois valores negativos, ex.: `-50 >
+  -100` dispara, `-100 > -50` não dispara — não é baseado em sinal).
+  Nenhuma das 3 usa `Critical` em nenhum momento (fora de escopo
+  explícito desta fase). `null` nunca vira zero — ausência de
+  `totalSlack`/`freeSlack` faz a regra simplesmente não avaliar aquele
+  campo pra aquela tarefa (`combina()` retorna `false`).
+- **Tratamento de tipos especiais** (igual pras 3 regras): tarefa-resumo
+  SEMPRE ignorada (achado do diagnóstico: um artigo técnico independente
+  confirma que `TotalSlack` de resumo é calculado a partir de datas
+  adiantada/tardia herdadas de até 4 subtarefas possivelmente
+  desconectadas entre si, "sem significado lógico" — recomendação do
+  próprio autor é ignorar esse valor); tarefa inativa SEMPRE ignorada
+  (valor congelado, mesmo padrão de STRUCT-*/LOGIC-*); **marco NÃO é
+  ignorado** (participa do CPM normalmente, sem quirk documentado);
+  atividade sem predecessora/sucessora capturada **NÃO é excluída por
+  esse motivo** — SLACK analisa o resultado que o MS Project já calculou
+  internamente, diferente de STRUCT (que analisa a rede que
+  reconstruímos via `PredecessorLink`).
+- **Achado durante os testes de integração, não um bug**: `SLACK-001` e
+  `SLACK-002` co-ocorrem com frequência em dados realistas — como
+  `FreeSlack <= TotalSlack` é uma relação matemática garantida por
+  definição de CPM, `TotalSlack < 0` quase sempre força `FreeSlack < 0`
+  também (a exceção teórica exigiria um `FreeSlack` positivo com
+  `TotalSlack` negativo, o que violaria a própria relação e seria pego
+  por SLACK-005). A fixture `cronograma_fase2b3_slack.xml` e o teste de
+  integração documentam isso explicitamente (UID 10 e o marco UID 15
+  disparam as duas regras juntas; UID 11 é o caso isolado — TotalSlack
+  positivo, só FreeSlack negativo).
+- **UI**: `health-check-findings.blade.php` ganhou 1 layout novo (tabela
+  código/atividade/UID/TotalSlack bruto/FreeSlack bruto, com nota
+  explícita "valores brutos do XML, sem conversão"). Resumo por
+  categoria/severidade já funciona sem nenhuma mudança de código — só
+  passou a mostrar "Folgas" porque o enum ganhou o case novo.
+- **`HealthCheckEngine::regrasEstruturaisPadrao()`** ganhou as 3 classes
+  novas ao final do array — nenhuma mudança de assinatura do construtor.
+  Verificado que isso não contamina nenhum teste pré-existente: nenhuma
+  fixture de Fase 1/2A/2B.1/2B.2B popula `totalSlack`/`freeSlack` com
+  valores que disparariam as novas regras (a maioria nem popula o campo).
+- Testes: `tests/Unit/HealthCheckSlackTest.php` (23 testes — as 3 regras
+  isoladas via `regras: []`, cobrindo os 7 cenários de cada uma:
+  negativo/zero/positivo/nulo/resumo/inativa/marco para 001 e 002, e os
+  7 equivalentes + 2 comparações matemáticas puras com valores negativos
+  pra 005), `tests/Feature/HealthCheckSlackIntegrationTest.php` (5
+  testes — fluxo completo XML → `MsProjectImporter::analisar()` →
+  `HealthCheckEngine::avaliar()` com o motor PADRÃO, fixture nova
+  `tests/Fixtures/cronograma_fase2b3_slack.xml` com os 8 cenários
+  pedidos). 28 testes novos no total. Suíte completa: **1129 passed / 6
+  skipped, 0 failures** (de 1101 antes desta fase), incluindo
+  `TenantIsolationTest` e toda a suíte de Fase 1/2A/2B.1/2B.2A/2B.2B sem
+  nenhuma regressão.
+- **Achados de implementação, não do código de produção**: (1) um
+  comentário PHPDoc continha literalmente `STRUCT-*/LOGIC-*`, cuja
+  substring `*/` fechou o comentário prematuramente e quebrou o parser
+  PHP — corrigido trocando por vírgula; (2) a primeira versão da fixture
+  de integração dava `FreeSlack` negativo também às atividades pensadas
+  pra isolar só SLACK-001, o que fez SLACK-002 dispará-las também — não
+  é bug (é a matemática de CPM descrita acima), só corrigida a
+  expectativa do teste, não o código.
+- **Não implementado nesta fase, aguardando decisão futura**:
+  `CriticalSlackLimit` (campo de `<Project>`, não capturado), SLACK-003/
+  004/006/007/008, qualquer comparação envolvendo `Critical`, conversão
+  de unidade de `TotalSlack`/`FreeSlack`.
+- **Não tocado**: `MsProjectImporter.php` (Fase 2A já capturou
+  `totalSlack`/`freeSlack` — nenhuma linha alterada nesta fase), Score,
+  as 24 regras da Fase 1, as 5 regras STRUCT, as 4 regras LOGIC,
+  migrations, HH/baseline/realizado/tendência/reconciliação/`aplicar()`,
+  polling, fluxo de rollback/abortar.
+
+## Health Check — 3 ajustes de UX pós-Fase 2 (achados em teste real do usuário)
+
+- **Contexto**: depois de um teste real e completo de tudo que foi
+  construído na Fase 2 (2A a 2B.3), o usuário identificou 3 problemas de
+  UX/comportamento de interface — **nenhuma regra de Health Check,
+  severidade, código STRUCT/LOGIC/SLACK, DTO, parser, Engine ou Score foi
+  tocado nesta etapa**, só Blade/Alpine das duas telas de importação e do
+  partial compartilhado de findings.
+- **1) Corrida entre `x-on:change` e o upload do Livewire**: o botão
+  "Analisar" (`⚡cronograma.blade.php`) ficava clicável um instante antes
+  de o Livewire terminar de processar o upload, porque `hasFile` era
+  setado dentro do `x-on:change` bruto do `<input type="file">` — esse
+  evento nativo `change` é o MESMO evento que o listener interno do
+  `wire:model` do Livewire escuta pra iniciar o upload, sem nenhuma ordem
+  de execução garantida entre os dois listeners. Corrigido movendo TODA
+  transição de `hasFile` pros eventos que o próprio Livewire dispara,
+  nessa ordem garantida: `livewire-upload-start` (`hasFile = false`),
+  `livewire-upload-finish` (`hasFile = true`), `livewire-upload-error`
+  (`hasFile = false`) — o `x-on:change` do input agora só lê o tamanho do
+  arquivo pra mensagem de limite de plano (`tamanhoSelecionadoMb`), nunca
+  mais mexe em `hasFile`. `⚡relatorio-importar-avanco.blade.php` **não
+  tinha NENHUM controle de estado do botão** antes deste ajuste (upload
+  "cru", sem feedback) — ganhou o mesmo mecanismo do zero (sem a parte de
+  limite de upload por plano, que não existe nessa tela).
+- **2) Feedback "discreto demais" durante a análise**: como
+  `HealthCheckEngine::avaliar()` roda inteiro DENTRO da mesma requisição
+  síncrona de `analisar()` (não há Job/fila nessa etapa — só a
+  persistência final em `confirmar()`/`ImportarCronogramaJob` é
+  assíncrona), não existe um checkpoint real de progresso pra reportar
+  percentual de conclusão com honestidade. Em vez de inventar uma barra
+  de progresso fake (como a versão anterior fazia, com um `%` estimado
+  por tempo), o bloco `wire:loading wire:target="analisar"` das duas
+  telas passou a mostrar uma **checklist de etapas reais do pipeline**
+  (Recebendo arquivo → identificando EAP → interpretando atividades →
+  montando predecessoras/sucessoras → estrutura da rede → lógica →
+  folgas → Health Check → consolidando prévia), com um Alpine `setInterval`
+  só pra avançar QUAL etapa está em destaque (✓ concluída / ⏳ atual /
+  ○ pendente) — nunca um número de "X% concluído". Nomes das etapas
+  batem com a ordem real de `HealthCheckEngine::regrasEstruturaisPadrao()`
+  (STRUCT → LOGIC → SLACK) seguida pelas 24 regras da Fase 1. O
+  formulário inteiro (incluindo o botão) fica atrás de
+  `wire:loading.remove wire:target="analisar"` — a MESMA técnica já
+  usada no projeto pra impedir dupla submissão (o botão literalmente some
+  do DOM durante a requisição, não só fica desabilitado).
+- **3) Accordion de findings não fechava no segundo clique**:
+  `data-bs-toggle="collapse"` nativo do Bootstrap mantém seu PRÓPRIO
+  estado em JS (classe `.show`/`.collapse` no elemento), que pode
+  dessincronizar do DOM real depois que o Livewire faz um morph na
+  árvore — resultado observado: `fechado → expandido → expandido` (nunca
+  voltava a fechar). Confirmado via grep que `@alpinejs/collapse` NÃO
+  está instalado no projeto — corrigido substituindo o mecanismo inteiro
+  por um toggle explícito do Alpine core (`x-data="{ aberto: false }"` no
+  card, `@click="aberto = !aberto"` no cabeçalho, `x-show="aberto"
+  x-transition x-cloak` no conteúdo, sem nenhuma dependência nova) em
+  `health-check-findings.blade.php` — mesmo padrão já documentado no
+  projeto de `wire:key` estável por linha (`wire:key="{{ $idPrefix }}-{{
+  $loop->index }}"`) pra Alpine nunca perder seu escopo entre renders do
+  Livewire. Nenhum dos layouts internos por tipo de regra (STRUCT/LOGIC/
+  SLACK/Fase 1) foi alterado — só o mecanismo de abrir/fechar o
+  cabeçalho.
+- **Achado nos próprios testes novos (não é bug de produção)**: o
+  primeiro teste do accordion pro caminho de Avanço
+  (`relatorio-importar-avanco`) falhou porque a importação de Avanço só
+  ATUALIZA atividades já casadas por `external_uid` (nunca cria) — sem
+  nenhuma atividade pré-existente na obra de teste, o XML inteiro virava
+  "ignorado" e o Health Check não tinha nada pra avaliar (0 findings),
+  mesmo usando uma fixture que dispara alertas garantidos pelo caminho de
+  Baseline. Corrigido no teste (não no código): importa a MESMA fixture
+  como Baseline primeiro (mesmo setup já usado em
+  `CronogramaHealthCheckTest::test_importacao_de_avanco_calcula_e_persiste_health_check`),
+  só depois testa o Avanço sobre as atividades já casadas.
+- **Não tocado**: `MsProjectImporter.php`, `HealthCheckEngine`, todas as
+  36 regras (24 Fase 1 + 5 STRUCT + 4 LOGIC + 3 SLACK), DTOs, Score,
+  `ImportarCronogramaJob`, o polling de status já existente (reaproveitado
+  como estava, não duplicado), qualquer lógica de negócio.
+- Testes: `tests/Feature/ImportacaoUxAjustesTest.php` (13 testes) —
+  estado do botão nas duas telas, checklist de etapas reflete o pipeline
+  real, formulário atrás de `wire:loading.remove`, accordion usa toggle
+  do Alpine (nunca mais `data-bs-toggle="collapse"`) nas duas telas, e um
+  teste de regressão confirmando que analisar/confirmar continuam
+  funcionando normalmente. Suíte completa sem regressão, incluindo
+  `TenantIsolationTest` e toda a suíte de Fase 1/2A/2B.1/2B.2A/2B.2B/2B.3.
+
+## Health Check — Fase 3, Etapa 3 (motor de cálculo do Score de Saúde)
+
+- **Contexto**: primeira etapa da Fase 3 (Score de Saúde + Histórico de
+  Importações) — implementa SOMENTE o motor matemático do Score
+  (`ScoreCalculator`) e seus testes unitários. **Nenhuma persistência,
+  migration, UI, Blade, Livewire ou histórico foi tocado nesta etapa** —
+  isso fica para as etapas 4-11, aguardando validação desta primeira.
+  Score era, até aqui, `HealthCheckResultado::scorePreliminar()` retornando
+  `null` sempre (decisão deliberada da Fase 1 de não inventar uma fórmula
+  sem validação) — essa etapa implementa a fórmula validada pelo usuário,
+  num serviço separado, sem tocar `scorePreliminar()` nem nenhuma regra das
+  Fases 1/2A/2B.1/2B.2A/2B.2B/2B.3.
+- **`app/Support/HealthCheck/Score/`** (subpasta nova, mesmo espírito de
+  `Rules/Estrutura|Logic|Slack/` — isola o domínio novo sem poluir o nível
+  raiz de `HealthCheck/`): `FaixaScore` (enum), `ScoreDimensao`/
+  `AcaoRecomendada`/`ScoreResultado` (DTOs `readonly`, mesmo padrão de
+  `HealthCheckFinding`/`HealthCheckResultado`), `ScoreCalculator` (o
+  serviço, `final class`, sem estado). `ScoreCalculator::calcular
+  (HealthCheckResultado $resultado, PlanoImportacao $plano): ScoreResultado`
+  — consome o resultado JÁ produzido pelo `HealthCheckEngine`, nunca
+  reimplementa nenhuma regra.
+- **4 camadas explícitas** (nunca uma fórmula obscura, por pedido
+  explícito do usuário): (1) Severidade → peso bruto
+  (`HealthCheckSeveridade::peso()`, já existente, reaproveitado sem
+  alteração); (2) peso bruto → peso máximo (`peso_bruto × FATOR_ESCALA`,
+  `FATOR_ESCALA = 10` como constante nomeada em `ScoreCalculator` — nunca
+  um número mágico espalhado); (3) peso máximo → impacto do finding
+  (`peso_maximo × (quantidade_atividades_do_finding ÷
+  total_atividades_elegiveis)` — quantidade vem de
+  `HealthCheckFinding::quantidade()`, já existente, nunca uma nova forma de
+  contar); (4) soma de todos os impactos → Score
+  (`clamp(100 + soma, 0, 100)`, arredondado **só no resultado final**,
+  nunca finding a finding antes da soma — evita erro de arredondamento
+  acumulado).
+- **Score por dimensão** deriva de `HealthCheckCategoria::cases()`
+  dinamicamente (nunca uma lista fixa de 7/10 categorias) — mesma fórmula
+  de 4 camadas, só somando os impactos dos findings daquela categoria;
+  categoria sem finding fica em 100. Uma categoria nova implementada no
+  futuro entra automaticamente no Score, sem tocar `ScoreCalculator`.
+- **"Atividades elegíveis" = mesmo universo já usado por STRUCT/SLACK**
+  (`!isSummary && ativa`, contado direto de `$plano->criar + $plano->
+  atualizar`) — não é um conceito novo, é literalmente o mesmo filtro de
+  `HealthCheckGrafoCronograma`/`RegraHealthCheckSlackPorAtividadeBase`,
+  reaproveitado (não duplicado em espírito, mas replicado em código já que
+  `ScoreCalculator` não depende do grafo nem da base de regras — decisão
+  deliberada de manter o motor de Score desacoplado dessas classes).
+- **Cobertura** = atividades executáveis E ativas ÷ atividades executáveis
+  (ativas ou não) × 100. **Achado/decisão desta etapa**: o pedido original
+  associava "cobertura = null" ao caso "total de atividades elegíveis =
+  0" — mas isso colide com o caso em que existem atividades executáveis,
+  porém TODAS inativas (elegíveis = 0, mas executáveis > 0). Resolvido
+  assim: `null` só no caso de divisão por zero de verdade (nenhuma
+  atividade executável no plano — nada pra medir); quando existem
+  executáveis mas todas inativas, cobertura = `0` (não `null`) — decisão
+  deliberada, porque `0%` é o sinal de baixa confiança mais forte que
+  existe e é exatamente isso que deve ser sinalizado ao usuário, nunca
+  silenciado como "sem dado". Tarefas-resumo nunca entram em nenhum dos
+  dois lados da conta (filtro `!isSummary`, defensivo — resumo nunca
+  aparece em `criar`/`atualizar` de qualquer forma).
+- **Caso sem atividades elegíveis** (`total_atividades_elegiveis === 0`):
+  Score geral = 100, todas as dimensões = 100, Mapa de Ações vazio,
+  potencial recuperável = 0, cobertura conforme a regra acima — sem
+  nenhuma divisão por zero.
+- **`FaixaScore`** (enum): 90-100 Excelente · 80-89 Bom · 70-79 Atenção ·
+  60-69 Necessita atenção · 0-59 Crítico — única fonte de verdade dos
+  thresholds, resolvida via `FaixaScore::paraScore(int $score): self`.
+- **Mapa de Ações**: filtra findings com `severidade->peso() < 0`
+  (Informativo nunca entra — não reduz Score, não é "ação penalizadora"),
+  ordena por severidade mais grave → impacto absoluto maior → quantidade
+  de atividades maior → `regra_id` ascendente (desempate estável).
+  **Achado de arquitetura**: como todos os findings de uma mesma chamada
+  compartilham o mesmo `total_atividades_elegiveis`, "mesma severidade +
+  mesmo impacto" implica matematicamente "mesma quantidade" (impacto é
+  proporcional à quantidade para severidade/total fixos) — o critério de
+  desempate por quantidade nunca decide de forma diferente do critério por
+  impacto dentro desta fórmula específica. Os 4 critérios foram
+  implementados exatamente como especificado (defesa barata caso a fórmula
+  mude no futuro), documentado no teste correspondente. `recomendacao` de
+  cada `AcaoRecomendada` é sempre copiada verbatim de
+  `HealthCheckFinding::$recomendacao` — nenhum texto novo inventado.
+  `potencialRecuperavel = 100 - score` (quantos pontos, no máximo, seriam
+  recuperados corrigindo tudo — bounded em [0,100], ao contrário da soma
+  bruta dos impactos, que pode superar 100 quando o Score já bateu no
+  piso 0).
+- **Decisão de calibração explícita, sem piso mínimo para ciclos
+  (STRUCT-005)**: tratado exatamente como qualquer outra regra, 100%
+  proporcional à quantidade de atividades afetadas — um ciclo lógico de 3
+  atividades num cronograma de 2.000 fica quase invisível no Score geral
+  (impacto ≈ -0,15, arredonda para Score 100), mesmo sendo um problema
+  estrutural grave em termos absolutos (CPM não fecha com ciclo). Decisão
+  deliberada do usuário, documentada explicitamente no teste
+  `test_mesmo_finding_cronograma_grande_sem_piso_minimo_para_ciclos` — se
+  o comportamento não for satisfatório na prática, é um ajuste de
+  calibração futuro (ex.: piso mínimo por regra), não implementado agora.
+- **Nada alterado**: `MsProjectImporter`, `HealthCheckEngine`, as 36 regras
+  (24 Fase 1 + 5 STRUCT + 4 LOGIC + 3 SLACK), `HealthCheckResultado::
+  scorePreliminar()` (continua retornando `null` — o Score novo vive
+  inteiramente em `ScoreCalculator`, fora do resultado do Engine), DTOs
+  existentes, migrations, HH/baseline/realizado/tendência/reconciliação/
+  `aplicar()`, polling, os 3 ajustes de UX da etapa anterior.
+- Testes: `tests/Unit/ScoreCalculatorTest.php` (31 testes — score básico
+  por severidade, proporcionalidade incluindo os Exemplos A/B/C exatos
+  aprovados pelo usuário, quantidade de atividades, dimensões dinâmicas,
+  limites 0/100, cobertura nos 5 cenários, mapa de ações com os 4
+  critérios de desempate, explicabilidade) + `tests/Unit/FaixaScoreTest.php`
+  (10 testes — os 10 limites exatos pedidos: 100/90/89/80/79/70/69/60/59/0).
+  41 testes novos no total, todos passando isolados na primeira rodada.
+  Suíte completa sem regressão (ver resultado da rodada no relatório de
+  conclusão desta etapa).
+- **Não avançar para persistência do Score, migration, Histórico de
+  Importações, tela de detalhe ou UI sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta etapa antes de continuar.
+
+## Health Check — Fase 3, Etapa 4 (persistência do Score)
+
+- **Contexto**: segunda etapa da Fase 3 — persiste o `ScoreResultado` (já
+  validado na Etapa 3) como parte do snapshot de
+  `CronogramaImportacaoHealthCheck`, 1:1 com `CronogramaImportacao`. Nenhum
+  Histórico de Importações, tela de detalhe ou UI do Score foi tocado —
+  fica pras próximas etapas.
+- **Migration nova** (nunca editar a de 28/07 já aplicada):
+  `2026_07_31_000001_add_score_to_cronograma_importacao_health_checks_table.php`
+  — 7 colunas, **todas nullable, sem default**: `score`/`cobertura`/
+  `potencial_recuperavel` (`unsignedTinyInteger`, cabem em 0-100),
+  `faixa_score`/`versao_score` (`string`), `score_por_dimensao`/
+  `mapa_acoes` (`json`). Registros de `CronogramaImportacaoHealthCheck`
+  criados ANTES desta etapa ficam com as 7 em `NULL` — **sem backfill,
+  sem Score retroativo inventado**, decisão explícita do usuário.
+- **Ponto de integração — achado que evitou tocar Blade/Livewire**: em vez
+  de calcular o Score na prévia (`analisar()` dos componentes Livewire, que
+  já teve 3 ajustes de UX recém-aprovados — risco desnecessário de mexer
+  ali), o Score é calculado dentro do `DB::transaction()` já existente em
+  `ImportarCronogramaJob::handle()`, **reaproveitando o `$plano`
+  (`PlanoImportacao`) que o próprio Job já produz** ao chamar
+  `$importer->analisar()` antes de `aplicar()` — nenhum parse novo,
+  nenhuma fila nova, nenhuma segunda análise. O `HealthCheckResultado` é
+  reidratado de volta a partir do MESMO `$this->healthCheckSerializado`
+  que a prévia já mostrou ao usuário (`HealthCheckResultado::fromArray()`,
+  já existente) — o Score nasce do que o usuário viu, nunca de um
+  recálculo divergente. `ScoreCalculator` (Etapa 3) permanece a ÚNICA
+  fonte de verdade do cálculo — zero fórmula duplicada.
+- **Atomicidade de graça**: Health Check e Score são gravados no MESMO
+  `CronogramaImportacaoHealthCheck::create()` (um único array combinado de
+  `camposParaPersistir()` + `camposDeScoreParaPersistir()`, o novo método
+  irmão) — não existe estado intermediário possível "Health Check gravado,
+  Score não". Se `ScoreCalculator::calcular()` ou o `create()` falhar,
+  toda a transação (incluindo `aplicar()`) reverte, como já acontecia
+  antes desta etapa — nenhuma mudança no mecanismo de rollback.
+- **`ScoreDimensao`/`AcaoRecomendada` ganharam `toArray()`/`fromArray()`**
+  (mesmo padrão de `HealthCheckFinding`) — só essas duas; `ScoreResultado`
+  em si NÃO precisou de round-trip próprio, porque `score_por_dimensao` e
+  `mapa_acoes` são colunas JSON SEPARADAS (não um blob único), então o
+  model monta/desmonta cada uma independentemente.
+  `CronogramaImportacaoHealthCheck::scoreResultado(): ?ScoreResultado`
+  (irmã de `resultado(): HealthCheckResultado`, já existente) reidrata o
+  snapshot completo a partir das 7 colunas — retorna `null` sem lançar
+  exceção pra registros antigos (`score === null`).
+  `versao_score` vem de `ScoreResultado::$versaoFormula`, que por sua vez
+  já veio de `ScoreCalculator::VERSAO_FORMULA` — nunca duplicada em
+  lugar nenhum.
+- **Achado de teste, não de produto**: `App\Models\Concerns\BelongsToTenant`
+  carimba `tenant_id` a partir de `TenantContext::currentId()` no evento
+  `creating`, **ignorando qualquer valor explícito** passado em
+  `Model::create()` (mesma trava de segurança já documentada no início
+  deste arquivo: "nunca definir tenant_id à mão em código de request").
+  O teste de isolamento desta etapa precisou criar o registro do "outro
+  tenant" dentro de `TenantContext::actingAs($outroTenant, ...)` — passar
+  `'tenant_id' => $outroTenant->id` direto no array de `create()` é
+  silenciosamente sobrescrito pelo tenant do usuário autenticado no teste,
+  o que inicialmente mascarou o teste (o registro "de outro tenant" virava,
+  na prática, um registro do PRÓPRIO tenant do teste).
+- **Não tocado**: `MsProjectImporter`, `HealthCheckEngine`, as 36 regras,
+  `ScoreCalculator` (matemática intocada — só passou a ser chamada de um
+  lugar novo), `HealthCheckResultado::scorePreliminar()` (continua
+  `null`), a migration de 28/07 já aplicada, `camposParaPersistir()`
+  (Health Check) existente, os 3 ajustes de UX aprovados, nenhum Blade/
+  Livewire, polling, baseline/realizado/tendência/HH/reconciliação.
+- Testes: `tests/Feature/CronogramaImportacaoScoreTest.php` (14 testes —
+  persistência básica dos 7 campos, Score bate com cálculo independente do
+  `ScoreCalculator`, snapshot/imutabilidade, JSON round-trip via DTOs,
+  registro antigo carrega com tudo `null` sem exceção e sem backfill,
+  rollback preserva a garantia "nunca Health Check sem Score", isolamento
+  de tenant). Suíte completa sem regressão, incluindo `TenantIsolationTest`
+  e toda a suíte de Fase 1/2A/2B.1/2B.2A/2B.2B/2B.3/Score-Etapa-3/UX-fixes.
+- **Não avançar para Histórico de Importações, tela de detalhe ou UI do
+  Score sem validação do usuário** (instrução explícita) — aguardando
+  aprovação desta etapa antes de continuar.
+
+## Health Check — Fase 3, Etapa 5 (Histórico de Importações + Detalhe do Score)
+
+- **Contexto**: última etapa da Fase 3 — expõe o Score/Health Check
+  persistidos (Etapa 4) numa experiência de consulta: histórico
+  consolidado + página de detalhe por importação, tratada como fotografia
+  auditável. **Nenhuma regra, `ScoreCalculator`, `HealthCheckEngine` ou
+  `MsProjectImporter` foi tocado** — só leitura do que já está persistido.
+- **Achado de diagnóstico que mudou o plano original**: `⚡cronograma.blade.php`
+  já tinha uma seção "Histórico de Importações de Linha de Base" própria
+  (computed `historicoImportacoes()` com `withSum`/`withMin`/`withMax`
+  pra HH/datas de baseline, tabela com avatar do autor) — não detectada na
+  investigação inicial (focada em rotas/Policies, não no conteúdo interno
+  das duas páginas de importação). Por decisão explícita do usuário
+  ("não quero duas implementações diferentes do histórico"), essa
+  implementação foi **substituída** pelo partial novo — colunas
+  específicas de Baseline (datas de início/término, Total HH, foto do
+  avatar) saíram da lista em troca de uma experiência única e consistente
+  nas 3 telas. Documentado aqui como decisão consciente, não perda
+  acidental.
+- **`app/Policies/CronogramaImportacaoPolicy.php`** (novo, registrado em
+  `AuthServiceProvider`): só o método `view`, mesmo padrão de
+  `ReportPolicy` — `$user->temPermissaoNaObra($importacao->obra_id,
+  'obras.importar_cronograma', 'ver')`. `ver` é liberado por padrão pra
+  qualquer perfil com vínculo na obra (`Perfil::REGRAS_ESCRITA` nunca lista
+  `ver` — comentário no próprio código confirma "ninguém é bloqueado de
+  visualizar hoje"). Isolamento de tenant vem de graça do global scope de
+  `BelongsToTenant`; isolamento de obra é o que a Policy garante.
+- **Rota nova `radar.importacoes.show`** (`/radar/importacoes/{importacao}`),
+  dentro do grupo `obra.context` já existente, mesmo padrão exato de
+  `radar.relatorios.show` (closure com route-model-binding +
+  `abort_unless(auth()->user()->can('view', $importacao), 403)`).
+- **Achado de teste — `AuthorizationException` em `mount()` não propaga
+  como exceção crua pro teste**: `App\Exceptions\Handler::render()`
+  (Fase de "popup de acesso negado") intercepta qualquer 403 de navegação
+  de página cheia e converte num redirect com `flash.popup =
+  'acesso-negado'` — mesmo comportamento já usado por
+  `⚡relatorio-detalhe.blade.php` (confirmado em
+  `ReportDetalheTest::test_encarregado_nao_acessa_detalhe_de_rascunho`).
+  Os testes de segurança desta etapa usam `assertRedirect()` +
+  `assertSessionHas('flash.popup', 'acesso-negado')`, não
+  `expectException()` — descoberto só depois de um teste inicial
+  (`expectException(AuthorizationException::class)`) passar silenciosamente
+  sem detectar nada, isolado via `tinker` confirmando que a Policy em si
+  nega corretamente (`$user->can('view', ...)` já retornava `false`) — o
+  problema era só a forma errada de testar, nunca um bug de autorização.
+- **`⚡importacao-detalhe.blade.php`**: `mount(CronogramaImportacao
+  $importacao)` com `$this->authorize('view', $importacao)` +
+  eager-load `['obra', 'autor', 'healthCheck']`. Nunca chama
+  `ScoreCalculator`/`HealthCheckEngine` — só lê
+  `$importacao->healthCheck->scoreResultado()`/`resultado()` (Etapa 4).
+  3 estados tratados sem exceção: sem `healthCheck` nenhum (importação
+  anterior à Fase 1) → mensagem amigável, seção de Score/dimensões/mapa
+  de ações inteira omitida; `healthCheck` existe mas `scoreResultado()`
+  é `null` (importação anterior à Fase 3) → "Score não disponível",
+  mesma omissão; ambos presentes → experiência completa. Score por
+  dimensão itera `HealthCheckCategoria::cases()` dinamicamente (nunca uma
+  lista fixa) — categoria nova aparece sozinha, sem tocar o Blade.
+  Findings completos reaproveitam `health-check-findings.blade.php`
+  **sem nenhuma alteração**. Faixa por dimensão resolvida via
+  `FaixaScore::paraScore($dimensao->score)` — classificação de um número
+  já persistido, não recálculo da fórmula (a única matemática nova na
+  Blade é `abs()`/`number_format()` de exibição do impacto já calculado).
+- **`_partials/score-explicacao.blade.php`** (novo): texto didático
+  estático, fonte única, toggle via Alpine puro (`x-data`/`@click`),
+  nunca `data-bs-toggle="collapse"` — mesmo motivo já documentado nos
+  ajustes de UX pós-Fase 2 (Bootstrap desincroniza dentro de conteúdo
+  remontado pelo Livewire).
+- **`_partials/historico-importacoes.blade.php`** (novo, único, usado nas
+  3 telas — `⚡cronograma.blade.php`, `⚡relatorio-importar-avanco.blade.php`,
+  `⚡obra-detalhe.blade.php`): recebe `$importacoes` (paginado,
+  `WithPagination` + `paginationTheme = 'bootstrap'`, mesmo padrão já
+  usado em `notificacoes/⚡index.blade.php`). Cada página filtra por
+  `tipo` no seu próprio computed (`Baseline+Ambos` em `⚡cronograma`,
+  `Avanco+Ambos` em `⚡relatorio-importar-avanco`, sem filtro em
+  `⚡obra-detalhe`), mas a apresentação é 100% a mesma. Linha clicável via
+  `onclick="window.location='...'"` + `style="cursor:pointer"` (sem
+  precedente de `wire:navigate` em linha de tabela no projeto — escolhida
+  a forma mais simples e robusta). Coluna "Situação" com 3 estados
+  (`Sem análise registrada` / `Análise disponível — Score indisponível`
+  / `Analisado`), nunca inventando Score pra importação antiga.
+- **Não tocado**: `MsProjectImporter`, `HealthCheckEngine`, as 36 regras,
+  `ScoreCalculator`, `HealthCheckResultado`, `health-check-findings.blade.php`
+  (só incluído, zero linha alterada), fluxo de importação/rollback/polling,
+  os 3 ajustes de UX aprovados, migrations existentes (nenhuma migration
+  nova nesta etapa — tudo já estava persistido desde a Etapa 4).
+- Testes: `tests/Feature/ImportacaoDetalheTest.php` (12 testes — Score/
+  faixa/cobertura/potencial recuperável/cabeçalho/dimensões dinâmicas/
+  mapa de ações/findings/totais por severidade, 3 cenários de
+  compatibilidade sem exceção, dinamismo do enum, 2 cenários de
+  segurança) + `tests/Feature/HistoricoImportacoesTest.php` (8 testes —
+  aparece nas 3 telas, Score/faixa/cobertura no histórico, situação nos 3
+  estados, link de navegação correto, paginação). 20 testes novos no
+  total, todos passando isolados na primeira rodada real (após corrigir
+  2 falsos-negativos de teste: nome de arquivo persistido não é o nome
+  original do upload, e a forma correta de testar negação de acesso via
+  redirect, não exceção).
+
+## Health Check — Fase 3.1 (Evolução do Score e Histórico)
+
+- **Contexto**: melhoria de UX em cima do que já está persistido (Etapa 4)
+  — nenhuma regra, `ScoreCalculator`, `HealthCheckEngine`, `MsProjectImporter`,
+  migration existente ou fluxo de importação/rollback/polling foi tocado.
+  Tudo aqui é leitura de dado já gravado; nada é recalculado.
+- **`CronogramaImportacao::importacaoAnterior(): ?self`** (novo): resolve a
+  importação imediatamente anterior da MESMA obra e do MESMO `tipo`
+  (comparação exata — Baseline com Baseline, Avanço com Avanço, Ambos com
+  Ambos, nunca misturado) via `where('importado_em', '<', ...)->orderByDesc(...)
+  ->first()`, com `healthCheck` eager-loaded (1 query). "Mesmo tipo" é
+  decisão deliberada: comparar Scores calculados sobre universos de
+  findings potencialmente diferentes (ex.: Avanço nunca dispara regras
+  estruturais/estáticas que dependem de dados só presentes numa importação
+  completa) produziria uma comparação sem sentido.
+- **`⚡importacao-detalhe.blade.php`** ganhou 3 blocos novos, todos dentro do
+  `@if ($healthCheck)` já existente:
+  - **Evolução do Score**: usa `$anterior` (resolvido em `mount()`) e
+    `$anterior->healthCheck?->scoreResultado()`. 3 mensagens amigáveis sem
+    exceção: sem `$anterior` → "Esta é a primeira importação deste tipo
+    para esta obra."; `$anterior` existe mas sem Score → "A importação
+    anterior não possui Score disponível para comparação."; ambos com
+    Score → delta (`atual->score - anterior->score`) com ícone
+    ▲/▼/■ (`bx-up-arrow-alt`/`bx-down-arrow-alt`/`bx-minus`) e frase
+    "A saúde do cronograma melhorou/piorou/permaneceu igual."
+  - **Indicadores da Importação**: card único com Obra/Arquivo/Usuário/
+    Data/Tipo (já no cabeçalho) + Quantidade de atividades
+    (`criadas+atualizadas`), Cobertura, Score, Faixa, Total de ocorrências,
+    Versão das regras/do Score — tudo lido direto de colunas já
+    persistidas. Duas decisões de derivação aritmética documentadas em
+    comentário no próprio Blade (não são recálculo do Health Check/Score):
+    "Atividades analisadas (estimado)" = `round(cobertura/100 ×
+    (criadas+atualizadas))`, uma conta de exibição sobre 2 valores já
+    persistidos; "Regras com ocorrências" = contagem de `regra_id`
+    distintos no JSON de `findings` já gravado — deliberadamente DIFERENTE
+    de "total de regras executadas" (esse número não é persistido em lugar
+    nenhum e não seria seguro derivar sem reexecutar o motor).
+  - **O que mudou desde a última importação**: `compararFindings()` conta
+    ocorrências por `regra_id` nos dois JSONs de `findings` já persistidos
+    (somando `count($finding['atividades'])`, cobre findings
+    multi-ocorrência como STRUCT-004/005/LOGIC-005) e lista só os
+    `regra_id` cuja quantidade mudou, com ícone de melhora
+    (`bx-check-circle text-success`, quando `atual < anterior`) ou piora
+    (`bx-error text-warning`). Nunca reexecuta nenhuma regra — é
+    comparação pura de 2 arrays já em memória.
+- **Navegação por categoria** (item 4 do pedido): cada card de "Score por
+  Dimensão" virou clicável (`wire:click="filtrarCategoria('{{ valor }}')"`),
+  com destaque visual (`border-primary`) na categoria ativa. Novo método
+  `findingsFiltrados()` no componente filtra `$healthCheck->findings` pelo
+  `categoriaFiltro` selecionado (`null` = todas) — a seção "Ocorrências do
+  Health Check" passou a incluir esse array filtrado em vez do array bruto,
+  reaproveitando o `health-check-findings.blade.php` **sem nenhuma
+  alteração nele**. Botão "Mostrar todas as categorias" (`wire:click=
+  "filtrarCategoria(null)"`) aparece nos dois cards (Score por Dimensão e
+  Ocorrências) só quando há filtro ativo. **Decisão importante**: o filtro
+  NÃO afeta "Mapa de Ações" nem "Indicadores da Importação" — esses dois
+  cards são resumos globais da importação inteira, não uma lista navegável
+  por categoria (só "Ocorrências do Health Check" é filtrada).
+- **Mapa de Ações** ganhou a frase "resultado esperado" pedida (item 5):
+  a linha que já mostrava "Potencial: recuperar até X pontos" virou "Após
+  corrigir esta ocorrência, espera-se recuperar aproximadamente X ponto(s)
+  no Score e eliminar N ocorrência(s) de '<título>' (<severidade>)." — só
+  reformatação de texto sobre os MESMOS campos que `AcaoRecomendada` já
+  carregava (`impacto`, `quantidadeAtividades`, `titulo`, `severidade`);
+  nenhum campo novo, nenhum cálculo novo.
+- **`_partials/historico-importacoes.blade.php`** ganhou a coluna "Δ Score"
+  (item 6 — Timeline). Calculado em memória: 1 única query extra busca
+  TODO o histórico de `CronogramaImportacao` da obra (`id`/`tipo`/
+  `importado_em`/`healthCheck:score`, ordenado por `importado_em`) — não
+  paginado, mas ainda 1 query, nunca N+1 — e um loop em PHP puro resolve,
+  pra cada `tipo`, o score da importação anterior IMEDIATA (mesma
+  semântica de `importacaoAnterior()`, sem chamar o método linha a linha).
+  Ícone ▲ (verde, `+N`) / ▼ (vermelho, `N`) / ■ (cinza, `0`) / "—" (sem
+  comparação possível: primeira importação do tipo, ou anterior/atual sem
+  Score). **Trade-off documentado no próprio partial**: o custo é
+  O(total de importações da obra), não O(linhas da página) — aceitável
+  porque ainda é 1 query, mas cresce com o histórico da obra; se algum dia
+  isso pesar, o próximo passo seria persistir o delta no momento da
+  importação em vez de recalculá-lo a cada render do histórico.
+- **`_partials/score-explicacao.blade.php`** ganhou 1 bullet novo (item 7):
+  "o objetivo não é atingir 100 a qualquer custo — é reduzir os riscos do
+  cronograma", reforçando que o Score não substitui o julgamento do
+  planejador.
+- **Compatibilidade** (item 8): todos os estados de ausência de Score/
+  Health Check já tratados na Etapa 5 continuam intocados — os 3 blocos
+  novos desta etapa vivem dentro do MESMO `@if ($scoreResultado)`/
+  `@if ($healthCheck)` já existentes, então importação antiga (sem Score
+  ou sem Health Check) nunca chega a renderizar "Evolução do Score"/"O que
+  mudou" com dado inventado.
+- **Performance** (item 9): zero chamada a `HealthCheckEngine`/
+  `ScoreCalculator` em qualquer novo código desta etapa; `mount()` ganhou
+  exatamente 1 query nova (`importacaoAnterior()`); o histórico ganhou
+  exatamente 1 query nova (delta em lote, não por linha).
+- Testes: `tests/Feature/ImportacaoEvolucaoScoreTest.php` (15 testes) —
+  `importacaoAnterior()` isolado (resolve corretamente, não mistura tipos,
+  nunca cruza obra, nunca cruza tenant), Evolução do Score nos 5 cenários
+  (primeira importação, melhorou, piorou, igual, anterior sem Score,
+  anterior sem Health Check), "O que mudou" (lista mudanças reais, omite
+  quando não há mudança), navegação por categoria (filtra e reseta,
+  verificado via `$component->instance()->findingsFiltrados()` — checar o
+  HTML inteiro não funciona aqui porque "Mapa de Ações" sempre mostra
+  todas as categorias, então `assertDontSee` cru dava falso-negativo),
+  timeline (delta correto entre importações consecutivas do mesmo tipo,
+  primeira importação sem delta). **Achado de teste**: a coluna
+  `importado_em` é `timestamp` (precisão de segundo, sem frações) — dois
+  imports disparados em sequência rápida num teste podem cair no mesmo
+  segundo, empatando a comparação `<` estrita de `importacaoAnterior()`;
+  os testes que precisam de ordem garantida backdatam explicitamente a
+  importação mais antiga (`->update(['importado_em' => now()->subDays(2)])`)
+  em vez de confiar na ordem real de execução. Suíte completa sem
+  regressão, incluindo `TenantIsolationTest` e toda a suíte de Fase 1/2A/
+  2B.1/2B.2A/2B.2B/2B.3/Score-Etapa-3/Score-Etapa-4/Score-Etapa-5/UX-fixes.
+
+## Health Check — Fase 4 (diagnóstico) e Fase 4.1 (domínio do Plano de Ação)
+
+- **Fase 4 foi só diagnóstico** (nenhum código alterado) — investigou como
+  transformar o Mapa de Ações num Plano de Ação acompanhável ao longo do
+  tempo. Decisões aprovadas pelo usuário: (1) **Modelo B** — o Plano de
+  Ação sobrevive a reimportações, não pertence a uma única
+  `CronogramaImportacao`; (2) identidade entre importações por
+  **sobreposição de `external_uid`** (mesmo `regra_id`), sem threshold
+  numérico; (3) Score projetado fica pra uma fase futura (nunca recalcula
+  nem altera o Score persistido); (4) UI em página própria, futura,
+  com só um atalho no Mapa de Ações; (5) **status principal enxuto**
+  (Aberta/Resolvida/Cancelada) — "Agravado"/"Alterado"/"Persistente" são
+  EVENTOS de reconciliação, nunca status permanentes da ação.
+- **Fase 4.1 implementa só o domínio** (migrations + models + enums +
+  serviço de reconciliação + testes) — **sem Blade, sem Livewire, sem
+  Policy, sem integração com `ImportarCronogramaJob`** (deliberadamente
+  adiada pro usuário poder validar a regra de reconciliação isolada
+  antes de conectá-la ao fluxo de importação já aprovado).
+- **`planos_acao`** (nova tabela, mesmo padrão de `restricoes`):
+  `tenant_id`/`obra_id`/`cronograma_importacao_origem_id` (FK, todas
+  `cascadeOnDelete` — a FK pra `cronograma_importacoes` segue a MESMA
+  convenção já usada por `AvancoPeriodo`/`LinhaBase`/`AtividadeSnapshot`/
+  `Report`/`CronogramaImportacaoHealthCheck`), `regra_id`, `titulo`/
+  `recomendacao` (snapshot de texto no momento da criação — nunca relê a
+  regra ao vivo depois), `responsavel_id`/`created_by_id` (nullable,
+  `nullOnDelete`, autoria via `HasAuthorship`), `prazo`, `status`
+  (`StatusPlanoAcao`, default `aberta`), **`uids_referencia`** (json — a
+  identidade da Fase 4/Etapa 5, **atualizada a cada reconciliação**,
+  nunca presa ao valor da criação), `resolvida_em`, timestamps,
+  `softDeletes`. **Decisão deliberada**: sem colunas `categoria`/
+  `severidade` — não estavam na lista aprovada de campos e nenhuma lógica
+  de reconciliação desta fase precisa delas (severidade é constante por
+  `regra_id`, não varia entre ocorrências da mesma regra); dá pra
+  adicionar depois quando a UI precisar de "Prioridade", sem quebrar nada.
+- **`plano_acao_reconciliacoes`** (nova tabela, append-only, mesmo
+  espírito de `DocumentoEngenhariaReprogramacao`): `plano_acao_id`/
+  `cronograma_importacao_id` (FK cascade), `resultado`
+  (`ResultadoReconciliacaoPlanoAcao`), `status_anterior`/`status_novo`,
+  `uids_anteriores`/`uids_atuais` (json), `quantidade_anterior`/
+  `quantidade_atual`, `impacto_anterior`/`impacto_atual` (float,
+  **nullable, sempre `null` nesta fase** — ver achado abaixo), timestamps
+  (`updated_at` nunca gerenciado, `const UPDATED_AT = null` — log
+  imutável). Existe porque "Agravado"/"Alterado"/"Persistente"/
+  "Resolvido" (decisão do usuário) são eventos, não status permanentes —
+  sem esta tabela, essa informação simplesmente desapareceria a cada
+  reconciliação.
+- **`StatusPlanoAcao`** (`Aberta`|`Resolvida`|`Cancelada`, com
+  `estaAberta()`) e **`ResultadoReconciliacaoPlanoAcao`**
+  (`Persistente`|`Agravado`|`Alterado`|`Resolvido`, com `label()`) —
+  dois enums novos, mesmo estilo simples de `StatusRestricao`.
+- **Achado importante, reportado ao usuário antes de codificar (Parte F
+  do pedido)**: `impacto_anterior`/`impacto_atual` ficam **sempre `null`
+  nesta fase**, de propósito. `AcaoRecomendada` (Mapa de Ações) não
+  carrega o conjunto de `uid`s de cada ocorrência — quando uma regra
+  gera múltiplas ocorrências na mesma importação (ex.: 3 ciclos
+  STRUCT-005 viram 3 `AcaoRecomendada` distintas, todas com
+  `regraId=STRUCT-005`), não há como casar com certeza qual impacto do
+  Mapa de Ações pertence a qual ocorrência específica sem alterar
+  `ScoreCalculator`/`AcaoRecomendada` — fora do escopo autorizado desta
+  fase (`ScoreCalculator::calcular()` foi propositalmente NÃO tocado).
+  **Quantidade**, ao contrário, é confiável e usada como critério de
+  piora — extraída diretamente do finding via `UidExtractor`.
+- **`App\Support\HealthCheck\PlanoAcao\UidExtractor`**: extração
+  **recursiva e genérica** de todo valor associado à chave literal
+  `'uid'`, em qualquer profundidade. Achado da investigação (lendo o
+  código real das regras, não presumido): `HealthCheckFinding::$atividades`
+  tem pelo menos 3 formas — plana (`[{uid,...}]`), agrupada por grupo
+  (`[{ciclo_id|componente_id, atividades:[{uid,...}], relacoes:[...]}]`,
+  STRUCT-004/005), e par (`[{predecessora:{uid,...}, sucessora:{uid,...},
+  vinculos:[...]}]`, LOGIC-005/009, mais a variante com
+  `predecessoras_ativas`/`predecessoras_inativas` do LOGIC-010). Em vez
+  de hardcodar cada nome de chave de agrupamento (frágil a cada regra
+  nova), a extração percorre QUALQUER array aninhado — cobre as 3 formas
+  atuais e continua funcionando pra formas futuras, desde que a
+  convenção `'uid'` (já usada por TODAS as 36 regras) se mantenha. Nunca
+  modifica os findings persistidos — só lê.
+- **`App\Support\HealthCheck\PlanoAcao\PlanoAcaoReconciliador`**:
+  serviço isolado (`reconciliar(Collection $acoesAbertas,
+  CronogramaImportacao $novaImportacao, CronogramaImportacaoHealthCheck
+  $healthCheck): Collection`), NÃO integrado a `ImportarCronogramaJob`
+  ainda (Parte I do pedido). Classificação **derivada literalmente dos
+  exemplos do usuário**, pra eliminar a ambiguidade entre "cresceu" e
+  "mudou": sejam `prevSet` (uids da última reconciliação/criação) e
+  `currSet` (união dos uids de TODOS os findings da mesma `regra_id` que
+  têm QUALQUER sobreposição com `prevSet` — findings da mesma regra sem
+  nenhuma sobreposição são ignorados, tratados como "problema novo",
+  nunca associados a esta ação):
+  - `currSet` vazio -> **Resolvido** (nunca apaga a ação — só marca
+    status e grava `resolvida_em`; `uids_referencia` mantém a última
+    referência conhecida, nunca é limpo).
+  - `prevSet ⊆ currSet` e `currSet == prevSet` -> **Persistente**.
+  - `prevSet ⊆ currSet` e `currSet` estritamente maior (nada saiu, só
+    cresceu) -> **Agravado**.
+  - Qualquer uid de `prevSet` ausente de `currSet` (mesmo que outros
+    tenham entrado) -> **Alterado** — NUNCA resolve sozinho, sempre fica
+    `Aberta`, exige revisão humana (regra explícita do usuário).
+  - Defesa em profundidade: uma ação passada ao reconciliador que já não
+    esteja `Aberta` é ignorada silenciosamente (nenhum evento gerado) —
+    nunca reabre `Resolvida`/`Cancelada` sozinha, mesmo que o chamador
+    passe uma coleção "suja" por engano.
+  - Todo o lote roda dentro de UM `DB::transaction()`.
+- **`PlanoAcao::criarDeFinding()`** (factory estático, não um Action
+  separado — evita duplicar em UI/testes): congela `titulo`/`recomendacao`
+  do finding, extrai `uids_referencia` via `UidExtractor`, e valida que o
+  responsável (se informado) tem vínculo com a obra
+  (`$responsavel->temAcessoAObra($obraId)`, helper já existente de
+  `HasObraPapel`) — lança `\InvalidArgumentException` se não tiver. Essa
+  validação vive no DOMÍNIO, não só numa camada de UI futura, porque é
+  uma invariante de segurança (Fase 4 diagnóstico, Etapa 9).
+- **Não tocado**: `MsProjectImporter`, `HealthCheckEngine`, as 36 regras,
+  `ScoreCalculator::calcular()` (nenhum método novo foi necessário nesta
+  fase — Score projetado ficou pra depois), `HealthCheckResultado`,
+  `ImportarCronogramaJob`, nenhuma migration existente, nenhum Blade/
+  Livewire, nenhuma Policy nova (Fase 4.1, Parte J: preparado o domínio —
+  `temAcessoAObra()` reaproveitado — mas Policy de verdade fica pra
+  quando existir UI).
+- Testes: `tests/Unit/UidExtractorTest.php` (10 testes — plana, agrupada
+  STRUCT-004/005, par LOGIC-005/009/010, múltiplos grupos, uids
+  repetidos em 2 formas, conjunto vazio, estrutura sem nenhum `uid`),
+  `tests/Unit/PlanoAcaoTest.php` (8 testes — criação com dados
+  congelados, responsável+prazo, autoria via `HasAuthorship`, uids de
+  finding agrupado, responsável sem acesso à obra lança exceção,
+  isolamento de tenant em 2 cenários, isolamento de obra),
+  `tests/Unit/PlanoAcaoReconciliadorTest.php` (16 testes — os 4
+  resultados com finding plano E agrupado, finding de regra diferente
+  não associa, múltiplos grupos na mesma regra só considera o grupo com
+  sobreposição, uids repetidos não inflam quantidade, `atividades` vazio
+  tratado como sem sobreposição, ação já resolvida/cancelada nunca
+  reconciliada de novo, snapshot de Health Check e Score persistidos
+  permanecem intactos após reconciliação, evento grava dados suficientes
+  pra auditoria). 34 testes novos no total. Suíte completa sem
+  regressão, incluindo `TenantIsolationTest` e toda a suíte de Fase 1/
+  2A/2B.1/2B.2A/2B.2B/2B.3/Score-Etapa-3/4/5/Fase-3.1/UX-fixes.
+- **Não avançar pra integração com `ImportarCronogramaJob`, Policy, UI
+  ou Blade sem validação do usuário** (instrução explícita) — aguardando
+  aprovação desta etapa antes de continuar pra Fase 4.2.
+
+## Health Check — Fase 4.2 (integração real + criação pela UI)
+
+- **Contexto**: liga o domínio da Fase 4.1 (migrations/models/enums/
+  `PlanoAcaoReconciliador`, isolado e não integrado de propósito) ao fluxo
+  real de importação, e permite criar uma ação a partir de um item do Mapa
+  de Ações direto na tela de detalhe da importação. Nenhuma regra da Fase
+  1/2, nenhuma matemática de `ScoreCalculator::calcular()`, nenhum snapshot
+  histórico de Health Check/Score foi alterado.
+- **Integração no `ImportarCronogramaJob`**: dentro do MESMO
+  `if ($this->healthCheckSerializado !== null)` e da MESMA transação já
+  existente, logo depois de `CronogramaImportacaoHealthCheck::create(...)`
+  (capturado numa variável) — busca `PlanoAcao::where('obra_id',
+  $this->obra->id)->where('status', Aberta)->get()` (tenant já garantido
+  por já estar dentro de `TenantContext::actingAs()`) e, se não-vazio,
+  chama `PlanoAcaoReconciliador::reconciliar()`. **Roda pra Baseline E
+  Avanço** (decisão do usuário: o Plano de Ação acompanha o PROBLEMA
+  TÉCNICO, não o tipo de importação — deliberadamente DIFERENTE da regra
+  de "Evolução do Score" da Fase 3.1, que continua exigindo mesmo tipo
+  pra comparar dois números). Uma falha na reconciliação propaga e desfaz
+  a transação INTEIRA (importação + Health Check + Score + reconciliação),
+  mesmo risco já aceito pra Health Check/Score desde a Fase 1.
+- **Achado confirmado por código, não hipotético (o "ponto crítico" do
+  diagnóstico)**: `HealthCheckFinding::quantidade()` retorna
+  `count($this->atividades)` — pra STRUCT-004/STRUCT-005, `$atividades` é
+  SEMPRE um array de 1 elemento (o descritor do grupo), então
+  `quantidade()` = 1 sempre, não importa o tamanho do ciclo/componente.
+  Como `ScoreCalculator::montarMapaAcoes()` gera uma `AcaoRecomendada` POR
+  FINDING (não por `regra_id` agregada), **duas ocorrências distintas da
+  mesma regra (ex.: 2 ciclos separados) produziam `AcaoRecomendada`
+  byte-a-byte IDÊNTICAS** — sem nenhum campo pra saber qual veio de qual
+  finding. Resolvido com a Opção A do diagnóstico (aprovada explicitamente
+  pelo usuário, já que contrariava a instrução "não alterar
+  ScoreCalculator" de fases anteriores):
+  - **`AcaoRecomendada` ganhou `findingIndex: ?int`** (aditivo, default
+    `null`) — a posição original do finding em
+    `HealthCheckResultado::$findings` (mesma ordem persistida em
+    `cronograma_importacao_health_checks.findings`).
+  - **`ScoreCalculator::montarMapaAcoes()`**: `array_filter()` já preserva
+    as chaves de `$impactos` (== índice original), mas o `array_values()`
+    antigo descartava isso antes do `usort()` (que sempre reindexa) — a
+    chave agora é capturada num 3º elemento da tupla ANTES do sort e
+    repassada como `findingIndex` no `AcaoRecomendada` final. **Nenhuma
+    fórmula, filtro, critério de ordenação ou número muda** — mesmo Score/
+    faixa/cobertura/`porDimensao`/`potencialRecuperavel`/`impacto` de
+    sempre, só uma referência de rastreabilidade a mais no JSON.
+    `calcular()` em si não precisou de nenhuma mudança (já preservava as
+    chaves via `array_map()` de um único array).
+  - `AcaoRecomendada::fromArray()` trata ausência de `finding_index` (JSON
+    de registros anteriores a esta fase) como `null` — nunca inventa um
+    índice retroativo.
+- **Duplicação controlada** (`PlanoAcao::criarDeFinding()`, decisão do
+  usuário com uma ressalva importante): bloqueia a criação SÓ quando já
+  existe uma ação `Aberta` da MESMA obra + `regra_id` cujo
+  `uids_referencia` tem sobreposição com o finding usado agora — MESMO
+  critério de identidade do `PlanoAcaoReconciliador`
+  (`SobreposicaoUid::temSobreposicao()`, extraído como helper público
+  reaproveitado nos dois lugares — nunca uma heurística nova). Findings
+  distintos da mesma regra SEM sobreposição entre si (ex.: o exemplo
+  literal do diagnóstico, Finding A `[1,2,3]` e Finding B `[10,11]`)
+  coexistem livremente, cada um pode virar sua própria ação. Lança
+  `App\Exceptions\PlanoAcaoDuplicadoException` (nova, carrega a ação
+  existente) — a UI traduz isso numa mensagem amigável dentro do modal,
+  nunca uma exceção crua na tela.
+- **`App\Support\HealthCheck\PlanoAcao\SobreposicaoUid`** (novo, único
+  ponto de verdade pra "esses dois conjuntos de uid representam o mesmo
+  problema?"): reaproveitado por `PlanoAcaoReconciliador` (refatorado pra
+  delegar, mesmo comportamento, testes da Fase 4.1 continuam passando sem
+  alteração), por `PlanoAcao::criarDeFinding()` (duplicação) e pela UI
+  (badge "N ações abertas").
+- **`PlanoAcaoReconciliador` deixou de ser `final`** — decisão adicional
+  necessária durante a implementação (não estava no plano aprovado):
+  Mockery não consegue gerar um double de uma classe `final` sem
+  interface, e o teste de rollback completo (Parte 7 do pedido) precisa
+  mockar `reconciliar()` pra forçar uma falha simulada dentro da
+  transação do Job. Nenhum comportamento muda — a classe continua sem ser
+  estendida em nenhum lugar do código de produção.
+- **Slug `restricoes.plano_acao`** (novo, `ESCOPO_OBRA`, seção
+  "Restrições") — deliberadamente independente de
+  `obras.importar_cronograma` (decisão do usuário: responsabilidades
+  diferentes). `App\Policies\PlanoAcaoPolicy` segue o mesmo molde de
+  `CronogramaImportacaoPolicy`/`ReportPolicy` (`view`/`update`/`delete`
+  recebem o model; `create` recebe `obra_id` direto, já que a ação ainda
+  não existe). **Decisão adicional necessária, não explicitamente
+  pedida**: `Perfil::REGRAS_ESCRITA` precisou de uma entrada nova pro
+  slug (senão NENHUM perfil, nem Admin, ganharia `criar`/`editar`/
+  `excluir` via `seedPadrao()`) — usado o mesmo limiar de
+  `restricoes.quadro` (Encarregado/Engenheiro/GerentePlanejamento), a
+  página irmã mais próxima em espírito.
+- **UI — card "Mapa de Ações" (`⚡importacao-detalhe.blade.php`), sem
+  nenhuma página nova**: cada item ganhou um botão "Criar Ação" (`@can`
+  em `restricoes.plano_acao|criar`) + badge "N ação(ões) aberta(s)"
+  quando aplicável (calculado via `SobreposicaoUid` contra o
+  `uids_referencia` de ações abertas da mesma regra). Itens com
+  `findingIndex === null` (Score calculado ANTES desta fase — registro
+  histórico) mostram uma mensagem amigável em vez do botão, nunca um
+  erro. Modal de criação segue o padrão de `⚡restricoes.blade.php`
+  (`@if($propriedadeBooleana) <div class="modal fade show d-block">`,
+  sem depender de JS do Bootstrap) — só 2 campos (responsável, prazo),
+  responsável vindo de `$obra->users()` (mesma fonte já usada em
+  Restrições, garante que o `<select>` nunca lista alguém sem acesso à
+  obra — defesa em profundidade, já que `criarDeFinding()` valida isso de
+  novo no domínio). Exceções (`PlanoAcaoDuplicadoException`,
+  `InvalidArgumentException`) são capturadas no método Livewire e viram
+  mensagem dentro do modal — nunca propagam pra tela.
+- **Não tocado**: `MsProjectImporter`, `HealthCheckEngine`, as 36 regras,
+  `ScoreCalculator::calcular()` (só `montarMapaAcoes()`, aditivo),
+  `HealthCheckResultado`, nenhuma migration existente, snapshots
+  históricos de Health Check/Score, o restante do detalhe da importação
+  (Evolução do Score/Indicadores/O que mudou/Score por Dimensão/
+  Ocorrências), notificações (não implementadas nesta fase, por pedido
+  explícito).
+- Testes: `tests/Unit/ScoreCalculatorTest.php` (+6 — `findingIndex`
+  aponta pro índice certo, distingue múltiplas ocorrências da mesma
+  regra, não afeta nenhum número de Score/faixa/cobertura/potencial/
+  `porDimensao`, `null` em DTOs antigos, round-trip `toArray`/
+  `fromArray`), `tests/Feature/PlanoAcaoDuplicacaoTest.php` (5 — bloqueio,
+  coexistência, regra diferente não conta, ação resolvida não bloqueia,
+  escopo por obra), `tests/Feature/PlanoAcaoReconciliacaoIntegracaoTest.php`
+  (12 — reconciliação executa em Baseline e Avanço via `ImportarCronogramaJob::
+  dispatchSync()` real, os 4 resultados com UIDs reais do fixture,
+  isolamento de obra/tenant, importação sem Health Check, rollback
+  completo com Mockery, imutabilidade do Health Check/Score da importação
+  anterior), `tests/Feature/ImportacaoDetalheCriarAcaoTest.php` (7 —
+  permissão, criação com `findingIndex`, duplicação, responsável sem
+  acesso, badge, cancelar). 30 testes novos no total. Suíte completa sem
+  regressão, incluindo `TenantIsolationTest` e toda a suíte de Fase 1
+  até 4.1.
+- **Não avançar pra Fase 4.3 (página própria do Plano de Ação, edição/
+  cancelamento de ações, notificações) sem validação do usuário**
+  (instrução explícita).
+
+## Health Check — Fase 4.3 (Plano de Ação: listagem, painel, edição)
+
+- Página própria `radar.plano-acao` (Etapa B), painel expansível inline
+  somente-leitura (Etapa C) e edição manual de responsável/prazo/status
+  (Etapa D) — documentação completa de todas as etapas fica pra Etapa F
+  (relatório final da Fase 4.3), registrado aqui só o ponto explicitamente
+  pedido nesta etapa:
+- **Lacuna de auditoria conhecida, registrada deliberadamente**: alterações
+  manuais de responsável, prazo e status (Etapa D,
+  `PlanoAcao::confirmarEditar()` em `⚡plano-acao.blade.php`) ainda não
+  possuem auditoria de usuário/data — não existe nenhum mecanismo de log
+  genérico no projeto (nenhum pacote de activity log, nenhuma tabela
+  equivalente em nenhum outro domínio), e `plano_acao_reconciliacoes`
+  **não é** essa auditoria (representa reconciliação automática contra
+  importação, não edição administrativa — misturar os dois conceitos foi
+  explicitamente rejeitado). Isso deverá ser tratado em etapa futura
+  específica, não implementado aqui.
+- **Etapa E — menu + integração com o Mapa de Ações**: item "Plano de Ação"
+  adicionado em `resources/menu/verticalMenu.json` (seção "2. RESTRIÇÕES",
+  último item — mesma seção da `funcionalidade` `restricoes.plano_acao` no
+  `CatalogoFuncionalidades`, ícone `bx-task` reaproveitado do próprio
+  cabeçalho da página), visível via o MESMO mecanismo já existente
+  (`CatalogoFuncionalidades::usuarioPodeVer()`) — nenhuma lógica de
+  visibilidade nova.
+- **Badge "N ação(ões) aberta(s)" do Mapa de Ações
+  (`⚡importacao-detalhe.blade.php`) virou link** pra
+  `route('radar.plano-acao', ['regra' => $finding->regraId])` quando
+  `$qtdAbertas > 0` (nunca quando `=== 0`, que continua sem badge nenhum,
+  como já era). **Decisão de implementação**: o link NÃO inclui um
+  parâmetro `obra` — a rota `radar.plano-acao` não tem `{obra}` como
+  segmento (obra sempre vem do `ObraContext`/sessão via o middleware
+  `obra.context`, mesmo mecanismo de todo link `radar.*` do projeto,
+  nunca um novo mecanismo de contexto). Limitação conhecida, aceita
+  deliberadamente: como `RequireObraContext` permite acessar o detalhe de
+  uma importação de uma obra diferente da obra ativa em sessão (a Policy
+  só valida vínculo com a obra DONA da importação, não que seja a obra
+  ativa), num cenário raro em que o usuário está vendo o detalhe de uma
+  importação de uma obra diferente da ativa, o link levaria pro Plano de
+  Ação da obra ATIVA, não da obra da importação — mesma classe de
+  limitação que já existiria em qualquer link `radar.*` de dentro dessa
+  tela; não construída nenhuma lógica de troca de obra pra cobrir esse
+  caso raro (fora do escopo aprovado desta etapa).
+- **`⚡plano-acao.blade.php::$filtroRegraId` ganhou `#[Url(as: 'regra')]`**
+  — só o atributo, `queryFiltrada()`/`aplicarOrdenacao()`/paginação/
+  eager-loading/badges/painel/edição/transições intocados. Permite
+  `/app/radar/plano-acao?regra=X` chegar com o filtro já preenchido.
+- **N+1 corrigido no Mapa de Ações**: `contarAcoesAbertasParaFinding()`
+  rodava 1 query em `planos_acao` POR finding exibido (até N queries pra N
+  itens do Mapa de Ações). Corrigido com `#[Computed] acoesAbertasDaObra()`
+  — busca TODAS as ações Abertas da obra numa única query, e a contagem
+  por finding passou a filtrar essa MESMA coleção em memória (mesmo
+  critério `SobreposicaoUid`, nenhuma heurística nova — nunca
+  `regra_id + quantidadeAtividades`). **Achado de implementação**:
+  `#[Computed]` só cacheia quando acessado via sintaxe de propriedade
+  (`$this->acoesAbertasDaObra`, sem parênteses) — chamar como método
+  normal (`$this->acoesAbertasDaObra()`) executa a query de novo a cada
+  chamada, silenciosamente ignorando o cache. Descoberto porque o teste
+  de contagem de queries (`DB::listen`) pegou 2 queries em vez de 1 na
+  primeira rodada — corrigido trocando pra sintaxe de propriedade.
+
+## Health Check — Ciclo 10 (transparência de aplicabilidade Baseline)
+
+- **Contexto**: correção de UX derivada da revisão funcional/arquitetural
+  pós-Ciclos 1-9 (separação Planejamento/Execução) — o card "Score por
+  Dimensão" mostrava "Score 100 · 0 ocorrências" de forma idêntica tanto
+  pra uma categoria genuinamente avaliada e limpa quanto pra uma categoria
+  cujas regras nem chegaram a rodar (ex.: categoria Avanço Físico, 100%
+  Execução, numa importação Baseline). **App\Support\HealthCheck\
+  AplicabilidadeCategoria** (novo, camada de apresentação — nunca de
+  domínio de Score) resolve isso calculando, por categoria, quantas
+  regras eram aplicáveis ao tipo desta importação, e classifica em 3
+  estados (`App\Enums\EstadoAplicabilidadeCategoria`): **Avaliada** (todas
+  aplicáveis), **Parcialmente avaliada** (algumas — Datas/HH/Marcos/
+  Lógica são categorias mistas, com regras de Planejamento E de Execução
+  ao mesmo tempo) e **Não avaliada** (nenhuma — Avanço Físico é a única
+  categoria 100% Execução).
+- **A aplicabilidade das regras por tipo de importação é derivada em
+  tempo de leitura a partir do catálogo atual de regras, não persistida
+  no snapshot.** Isso preserva o escopo aditivo e evita migration, mas
+  significa que eventual mudança futura da natureza de uma regra poderá
+  alterar a classificação visual de importações históricas. Se
+  reclassificações de natureza se tornarem frequentes, deverá ser
+  considerada a persistência da lista de regras avaliadas.
+- **`HealthCheckEngine::catalogoRegras()`** (novo, introspecção pura,
+  mesmo espírito de `naturezaDaRegra()` da Fase 4.2 — nunca usado por
+  `avaliar()`/`regrasFiltradas()`): expõe categoria+natureza de todas as
+  36 regras, indexado por `regra_id`. As regras "por atividade"
+  (`HealthCheckRuleInterface`) já expõem `categoria()` no próprio
+  contrato, lidas polimorficamente; as 12 regras estruturais
+  (`HealthCheckRegraEstruturalInterface`, Fase 2B) não têm `categoria()`
+  no contrato — cada uma hardcoda a categoria dentro do próprio
+  `avaliar()` — então são mapeadas explicitamente por `regra_id` numa
+  constante privada (`CATEGORIA_REGRAS_ESTRUTURAIS`), verificada contra o
+  valor real por teste dedicado (roda `avaliar()` de verdade e confirma
+  que o mapa nunca diverge).
+- **`AplicabilidadeCategoria::calcularTodas()`** reaproveita o MESMO
+  predicado de `HealthCheckEngine::regrasFiltradas()` ("Baseline só avalia
+  Planejamento") — sem tocar o método original, protegido por teste
+  dedicado, nunca um mapa paralelo de classificação.
+- **UI**: `⚡importacao-detalhe.blade.php` — card "Score por Dimensão"
+  ganhou um badge de aplicabilidade (só visível quando não é "Avaliada",
+  pra não poluir Avanço/Ambos, onde as 10 categorias são sempre
+  Avaliada); `score-explicacao.blade.php` ganhou 3 itens explicando a
+  separação Baseline/Avanço e o significado de "não avaliada" (nem
+  saudável, nem problemática). Cores do badge deliberadamente neutras
+  (nunca reaproveitam vermelho/laranja de severidade) — aplicabilidade
+  não é um julgamento de saúde do cronograma.
+- **Plano de Ação**: card "Mapa de Ações" ganhou um aviso informativo,
+  só em Baseline e só quando existem ações Abertas originadas de regra de
+  Execução (`acoesExecucaoAguardandoAvanco`, reaproveita
+  `$this->acoesAbertasDaObra` já carregada — nenhuma query nova).
+  Puramente informativo — nunca altera, resolve ou reabre nenhuma ação;
+  `PlanoAcaoReconciliador` não foi tocado.
+- **Não alterado nesta etapa**: `ScoreCalculator`, `ScoreDimensao`,
+  `ScoreResultado`, nenhuma das 36 regras, `HealthCheckEngine` no
+  comportamento de avaliação (`avaliar()`/`regrasFiltradas()`),
+  `PlanoAcaoReconciliador`, `DiagnosticoReport`, `ReportGerador`,
+  `MsProjectImporter`, Lookahead, nenhuma migration.
+
+## Health Check — Ciclo 11 (ponte PlanoAcao → Restrição)
+
+- **Contexto**: 5 rodadas de investigação 100% somente-leitura (Etapas A,
+  A.1, A.2, B.0, B.1) precederam a implementação — avaliaram e
+  descartaram criação automática de Restrição a partir de Finding/
+  importação (risco de falso positivo documentado no próprio docblock de
+  `SLACK-001`: folga negativa "NÃO é necessariamente erro de
+  planejamento"), confirmaram que `PlanoAcao`/`Restricao` nunca tiveram
+  nenhum acoplamento antes desta fase, e recomendaram a arquitetura
+  implementada aqui: `Health Check Finding → PlanoAcao → decisão humana
+  explícita → Restrição por atividade`. **Nenhuma sincronização de ciclo
+  de vida** entre os dois: resolver/cancelar/reabrir um `PlanoAcao` nunca
+  toca as Restrições que ele originou, e vice-versa — são conceitos
+  relacionados mas não equivalentes (`PlanoAcao` responde se o
+  diagnóstico do Health Check continua presente; `Restricao` responde se
+  existe impedimento operacional pra comprometimento/prontidão).
+- **`restricoes.origem_plano_acao_id`** (nullable FK →
+  `planos_acao.id`, `nullOnDelete`, mesmo padrão de
+  `origem_suprimento_item_id` já existente) + índice
+  `UNIQUE(tenant_id, origem_plano_acao_id, atividade_id)`
+  (`restricoes_origem_plano_acao_atividade_unique`, nome curto explícito
+  — mesmo motivo já documentado no projeto pro limite de 64 chars do
+  MySQL). Protege só a combinação PlanoAcao+Atividade — nunca a
+  atividade isoladamente: `NULL` nunca colide consigo mesmo no MySQL,
+  então Restrições manuais e de Suprimento (sempre
+  `origem_plano_acao_id = null`) continuam livres pra coexistir na mesma
+  atividade, exatamente como já documentado pra Suprimento.
+- **`PlanoAcao::transformarEmRestricoes(array $atividadeIdsSelecionados): array`**
+  (domínio, mesmo espírito de `criarDeFinding()`): cria no máximo 1
+  Restricao por atividade selecionada. **Revalida tudo no servidor** — a
+  lista recebida é só a intenção do usuário (checkboxes marcados no
+  Alpine), nunca fonte confiável: (i) atividade precisa pertencer à
+  MESMA obra do PlanoAcao; (ii) seu `external_uid` precisa estar em
+  `uids_referencia` (mesma identidade já usada por
+  `atividadesRelacionadas()`, não um id solto forjável); (iii) não pode
+  estar `fora_do_cronograma` (ignorada silenciosamente, nunca vira
+  Restrição "inativa"/"resolvida" — decisão do usuário); (iv) não pode
+  já ter Restricao originada deste MESMO PlanoAcao (ignorada
+  silenciosamente, contabilizada como "já vinculada"). Retorna contagens
+  (`criadas`/`ignoradasForaDoCronograma`/`ignoradasJaVinculadas`/
+  `ignoradasInvalidas`) pra UX informar o resultado sem nunca expor erro
+  técnico cru. **Corrida concorrente**: a proteção definitiva é o índice
+  UNIQUE — um `\Illuminate\Database\QueryException` com `errorInfo[1] ===
+  1062` (MySQL, duplicate entry) é capturado e tratado como "já
+  vinculada", nunca propagado cru; qualquer outro código de erro sobe
+  normalmente. Defaults da Restrição criada: `bloqueante = false`
+  (usuário promove manualmente depois, se decidir), `categoria_id =
+  null` (sem pilar Lean novo criado nesta fase — decisão do usuário),
+  `status = Aberta`, `aberta_em = now()`. **Nunca cria `RestricaoAcao`**
+  — decisão do usuário: a origem já é 100% rastreável via
+  `origem_plano_acao_id` + os timestamps da própria Restricao, sem
+  mecanismo de auditoria paralelo (mesmo achado já documentado: a
+  criação MANUAL de Restrição em `⚡restricoes.blade.php` também nunca
+  cria `RestricaoAcao` — só `resolver()` cria, com o texto de
+  justificativa do usuário).
+- **Dupla autorização, obrigatória e sequencial**: `$this->authorize
+  ('update', $acao)` (PlanoAcaoPolicy) seguido de `$this->authorize
+  ('create', [Restricao::class, $acao->obra_id])` (RestricaoPolicy) —
+  nenhuma Policy existente foi alterada. Ter permissão num domínio NÃO
+  implica ter no outro (`restricoes.plano_acao` e `restricoes.quadro`
+  são slugs independentes) — qualquer uma falhando lança
+  `AuthorizationException` imediatamente, antes de qualquer Restrição
+  ser criada (nunca criação parcial).
+- **UI** (`_partials/plano-acao-detalhe.blade.php`, seção "Atividades
+  Relacionadas"): checkbox por atividade elegível; "Fora do cronograma —
+  não elegível" (sem checkbox) pras arquivadas; "Restrição: {status}"
+  (sem checkbox) pras já vinculadas a este PlanoAcao; "Atividade não
+  encontrada" (já existente, sem checkbox) pros uids órfãos. Botão
+  "Transformar selecionadas em Restrição" só aparece com as duas
+  permissões (`$paDetPodeTransformar`), desabilitado (`x-bind:disabled`)
+  sem nenhuma seleção. **Seleção é 100% Alpine local**
+  (`selecionadas: []`, estendendo o `x-data="{ aberto: false }"` já
+  existente do `<tbody>` em `⚡plano-acao.blade.php`) — só um
+  `$wire.call('transformarEmRestricoes', acaoId, selecionadas)` no
+  clique do botão, nunca um `wire:model` por checkbox (evitaria round-
+  trips desnecessários por clique).
+- **N+1 evitado desde a primeira versão** (achado durante a
+  implementação, não depois): a primeira versão consultava
+  `fora_do_cronograma` e Restrições vinculadas **por linha** dentro do
+  partial — passava isolado, mas quebrava
+  `PlanoAcaoPainelTest::test_query_count_nao_escala_com_total_de_acoes_da_obra_apenas_com_perpage`
+  (teste pré-existente da Fase 4.3, achado de N+1 anterior). Corrigido
+  batendo as DUAS consultas 1x pra TODA a página, nunca por linha —
+  `⚡plano-acao.blade.php` ganhou `#[Computed] foraDoCronogramaPorUid()`
+  (usa `uids_referencia`, já em memória em cada `$acao`, pra nunca
+  precisar chamar `atividadesRelacionadas()` de novo) e `#[Computed]
+  restricoesVinculadasPorAcao()` (agrupada por `origem_plano_acao_id`),
+  mesmo padrão já usado em `acoesAbertasDaObra()` (Fase 4.3). O partial
+  passou a receber os dois resultados prontos via `@include(...)`, sem
+  nenhuma query própria — `atividadesRelacionadas()` continua sendo
+  chamada 1x por linha exatamente como antes (não tocada, fora do
+  escopo desta fase).
+- **`PlanoAcaoPainelTest::test_painel_fechado_inicialmente`** precisou de
+  1 linha de ajuste (`assertSeeHtml`) — o `x-data` do `<tbody>` mudou de
+  `{ aberto: false }` pra `{ aberto: false, selecionadas: [] }`, mudança
+  de HTML legítima e esperada desta fase, não uma quebra de
+  comportamento.
+- **Não implementado nesta fase** (deliberadamente, por instrução
+  explícita do usuário): criação automática de Restrição a partir de
+  Finding/importação/reconciliação/mudança de status do PlanoAcao,
+  auto-resolução, auto-reabertura, sincronização de status/prazo/
+  responsável entre PlanoAcao e Restricao, alteração de `bloqueante`
+  após a criação, categoria/pilar Lean novo, rota de detalhe individual
+  de Restrição (não existe hoje — só o quadro/lista), deep-link
+  PlanoAcao↔Restrição.
+- **Não tocado**: `HealthCheckEngine`, as 36 regras, `PlanoAcaoReconciliador`,
+  `Atividade::estaPronta()`/`scopeProntas()`/`scopeNaoProntas()`,
+  `ScoreCalculator`/`ScoreDimensao`/`ScoreResultado`, `DiagnosticoReport`,
+  `ReportGerador`, `MsProjectImporter`, Lookahead,
+  `SincronizarRestricaoSuprimento`, `StatusPlanoAcao`, `StatusRestricao`,
+  `PlanoAcaoPolicy`, `RestricaoPolicy`, `PlanoAcao::atividadesRelacionadas()`.
+- Testes: `tests/Feature/PlanoAcaoTransformarEmRestricaoTest.php` (18
+  testes novos — criação individual/lote, `fora_do_cronograma`, uid sem
+  atividade, duplicidade, proteção UNIQUE a nível de banco, idempotência
+  de chamadas sequenciais, as duas permissões isoladamente, usuário de
+  outro tenant, seleção vazia, ausência de `RestricaoAcao`, PlanoAcao
+  intacto, campos default corretos, isolamento de obra/tenant,
+  coexistência com Restrição manual e de Suprimento na mesma atividade,
+  mensagem de toast com contagens). Suíte completa: **1607 passed / 6
+  skipped, 2 failures pré-existentes e sem relação** (`DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`, fixtures com data relativa — mesmas 2
+  falhas já documentadas em fases anteriores), incluindo
+  `TenantIsolationTest` e toda a suíte de Plano de Ação/Restrições/
+  Suprimentos sem nenhuma regressão.
+
+## Importação Segura — Health Check (Fase 1)
+
+- **Contexto**: pedido do usuário pra transformar a importação de
+  cronograma num processo mais seguro — analisar a coerência do arquivo
+  ANTES da confirmação definitiva, mostrar os problemas encontrados e
+  deixar o usuário decidir entre abortar ou importar mesmo assim. Regra
+  de ouro do pedido: **não reescrever o importador existente**
+  (`MsProjectImporter`/`ImportadorCronograma`/`PlanoImportacao`/
+  `TarefaImportada`/`HorasPeriodo`, a transação de `aplicar()`, o
+  comportamento de rollback) — o Health Check é um módulo complementar,
+  não uma refatoração.
+- **Achado que definiu a arquitetura**: `analisar()` já era 100%
+  read-only e síncrona (retorna `PlanoImportacao` em memória) e `aplicar()`
+  já era atômica dentro de `DB::transaction()` — as duas telas Livewire
+  (`⚡cronograma.blade.php` seção Obra, `⚡relatorio-importar-avanco.blade.php`
+  seção Relatórios) já mostravam uma prévia (criar/atualizar/arquivar)
+  ANTES de confirmar. A separação análise/persistência que o pedido
+  descrevia já existia — o Health Check só precisava rodar dentro dessa
+  janela já existente, sem tocar `MsProjectImporter` em nenhuma linha.
+- **`App\Support\HealthCheck\`**: `HealthCheckEngine` (orquestra),
+  `HealthCheckRuleInterface` (contrato — `bloqueante()` sempre `false`
+  na Fase 1, decisão do usuário: nenhuma regra bloqueia a importação
+  automaticamente, mesmo severidade Crítico), `RegraHealthCheckBase`
+  (classe base pra regras que filtram `TarefaImportada` uma a uma —
+  cobre a maioria), `HealthCheckFinding` (1 regra × N atividades
+  afetadas), `HealthCheckResultado` (agrega, `scorePreliminar()`
+  retorna `null` de propósito — decisão do usuário de NÃO calcular Score
+  ainda, pra evitar um número aparentemente preciso baseado só em soma
+  de pesos por severidade; a estrutura pro cálculo futuro já existe em
+  `HealthCheckSeveridade::peso()`, só não é usada). Toda regra consome
+  **só** o `PlanoImportacao` já produzido por `analisar()` — nenhuma
+  regra da Fase 1 faz query nova no banco nem relê o arquivo.
+- **23 regras em 7 categorias** (`Rules/{Datas,Avanco,Hh,Duracao,
+  CaminhoCritico,Marcos,Baseline}/`): Datas (DATE-001..006), Avanço
+  Físico (PROG-001..004), HH (WORK-001..006), Duração (DUR-001..002),
+  Caminho Crítico (CRIT-001, regra global — nenhuma atividade crítica no
+  cronograma inteiro), Marcos (MILE-001..002, usa `isMarco` já
+  capturado), Baseline (BASE-002 atividades arquivadas — reaproveita
+  `$plano->removerNomes` já calculado; BASE-003 baseline incompleta).
+  Deliberadamente **fora de escopo da Fase 1** (dependem de dado que o
+  importador não lê hoje — predecessoras/sucessoras, calendários,
+  slack/folga, alocação de recursos): toda a categoria Lógica, Folgas,
+  Calendários, Recursos, Produtividade, Pesos, e as regras estruturais
+  de rede (isoladas/desconectadas) — ficam pra quando o parser do XML
+  for estendido (aí sim precisaria de aprovação prévia, por tocar
+  `MsProjectImporter`). `BASE-001` (atividades novas) foi cogitada mas
+  descartada: toda importação nova tem `criar` não-vazio, então isso
+  nunca seria uma "inconsistência" de verdade, só ruído.
+- **Severidade**: 🔴 Crítico / 🟠 Alto / 🟡 Médio / 🟢 Baixo / 🔵
+  Informativo — nenhuma bloqueia. Um finding **Informativo** conta
+  como "alerta" pra fins de UI (aciona o fluxo de confirmação extra),
+  decisão deliberadamente conservadora pra Fase 1 — nunca esconder nada
+  do usuário, mesmo o de menor severidade.
+- **`cronograma_importacao_health_checks`** (nova tabela, 1:1 com
+  `cronograma_importacoes` via `cih_importacao_id_fk`/
+  `cih_importacao_id_unique` — nomes de constraint explícitos porque o
+  nome longo da tabela estourava o limite de 64 chars do MySQL nos
+  nomes automáticos do Laravel, mesma classe de problema já documentada
+  em `feedback_limite_identificador_mysql`). Guarda totais por
+  severidade, `total_ocorrencias`, `importado_com_alertas` (bool),
+  `versao_regras` e o JSON completo de `findings`. Como
+  `cronograma_importacoes` já É a revisão/versão do cronograma, isso já
+  dá de graça o histórico "Revisão 10 → resultado do Health Check,
+  Revisão 11 → ..." pedido pelo usuário — sem inventar um conceito novo
+  de versão.
+- **O resultado persistido é EXATAMENTE o que o usuário viu, nunca
+  recalculado**: `HealthCheckEngine::avaliar()` roda uma única vez,
+  dentro de `analisar()` do componente Livewire (`⚡cronograma.blade.php`/
+  `⚡relatorio-importar-avanco.blade.php`), logo depois de montar o
+  `PlanoImportacao` — o resultado serializado (`HealthCheckResultado::
+  toArray()`) fica numa propriedade Livewire (`$healthCheckResultado`) e
+  é reaproveitado até a persistência. Quando o usuário confirma,
+  `confirmar()` passa esse array já pronto pro
+  `ImportarCronogramaJob::dispatch(..., healthCheckSerializado: ...)` —
+  um parâmetro novo, opcional, no fim do construtor (`?array
+  $healthCheckSerializado = null`), sem quebrar nenhum outro chamador.
+  O Job **não recalcula** o Health Check — só persiste o que recebeu.
+- **Persistência só acontece se a importação for concluída** (decisão
+  do usuário): `ImportarCronogramaJob::handle()` passou a envolver as
+  chamadas já existentes de `analisar()`+`aplicar()` (que o Job já fazia
+  — comportamento preservado, incluindo o Job re-parsear o arquivo do
+  zero em vez de reaproveitar o `PlanoImportacao` da prévia, que
+  continua como estava) dentro de um `DB::transaction()` **do próprio
+  Job**, e cria o registro de `CronogramaImportacaoHealthCheck` dentro
+  desse mesmo closure, logo depois de `aplicar()` retornar. Como
+  `aplicar()` já abre sua própria transação internamente, essa é uma
+  transação ANINHADA (Laravel/PDO usam savepoint) — se qualquer coisa
+  falhar em qualquer ponto (inclusive na criação do Health Check), a
+  transação externa nunca comita e TUDO reverte junto, inclusive as
+  atividades/pacotes/avanço já gravados por `aplicar()`. Nenhuma linha
+  de `MsProjectImporter.php` foi tocada pra conseguir isso — só a
+  orquestração de chamadas dentro do Job.
+- **UI**: nova seção "Health Check — Análise de Coerência do
+  Cronograma" inserida ANTES do card de prévia já existente (que
+  continua 100% intacto), nas duas telas de importação — mesma ordem
+  pedida (identificação do arquivo → Health Check → resumo por
+  categoria/severidade → prévia já existente → ações). Cada finding é
+  expansível (`data-bs-toggle="collapse"`) mostrando descrição/impacto/
+  recomendação + tabela das atividades afetadas. Botão final: sem
+  alertas, continua `wire:click="confirmar"` normal ("Confirmar
+  importação"); com alertas, vira `onclick="confirmarAcao(...)"`
+  reaproveitando o modal genérico já existente
+  (`resources/views/components/confirmacao-acao.blade.php`, mesmo
+  padrão de todo o resto do sistema) com o texto "Importar mesmo
+  assim"/aviso de inconsistências antes de chamar `confirmar()` de
+  verdade. Botão "Cancelar" não foi renomeado (já cobre "abortar" —
+  decisão de risco mínimo, sem mexer no que já funcionava).
+- **Cancelar continua 100% seguro sem mudança nenhuma**: como o Health
+  Check roda inteiramente dentro da janela de `analisar()` (antes de
+  qualquer escrita), e `cancelar()` já só apagava o arquivo temp e
+  resetava estado do Livewire, abortar depois de ver alertas nunca
+  toca o banco — comportamento herdado de graça da arquitetura
+  existente, não precisou de nenhum código novo de segurança.
+- Testes: `tests/Unit/HealthCheckEngineTest.php` (29 testes, uma por
+  regra + agregação de severidade/categoria + `scorePreliminar()` null +
+  round-trip `toArray()/fromArray()`, tudo com `PlanoImportacao`/
+  `TarefaImportada` construídos à mão, sem banco). `tests/Feature/
+  CronogramaHealthCheckTest.php` (7 testes cobrindo os 12 cenários
+  pedidos): XML sem alertas, XML com alertas, abortar sem persistência,
+  confirmar com alertas persiste Health Check idêntico ao exibido, falha
+  simulada dentro de `aplicar()` (importador fake que quebra só nesse
+  método) reverte tudo e não deixa Health Check órfão, regressão
+  confirmando que `MsProjectImporter::aplicar()` continua criando as
+  mesmas atividades de sempre, e o fluxo completo de Avanço (segunda
+  tela). Um teste pré-existente
+  (`CronogramaImportacaoLivewireTest::test_confirmar_desabilita_botoes_e_mostra_status_enquanto_job_nao_termina`)
+  precisou de ajuste — usava `cronograma_sample.xml`, que legitimamente
+  dispara 2 alertas (PROG-001/WORK-004) sob as novas regras, então o
+  botão de confirmar virou `onclick="confirmarAcao(...)"` em vez de
+  `wire:click="confirmar"` direto; o teste passou a checar
+  `wire:target="confirmar"` (presente nos dois casos) em vez do atributo
+  `wire:click` específico. **Achado durante os testes**: nome de
+  constraint FK/unique com o nome completo da tabela
+  (`cronograma_importacao_health_checks_cronograma_importacao_id_foreign`)
+  estourava os 64 chars do MySQL — corrigido com nomes explícitos
+  curtos na migration. Suíte completa: 961 passed / 6 skipped
+  (skips pré-existentes), incluindo `TenantIsolationTest`.
+- **Não tocado**: `MsProjectImporter.php`, `ImportadorCronograma.php`,
+  `PlanoImportacao`/`TarefaImportada`/`HorasPeriodo`, regras de HH,
+  reconciliação por `external_uid`, a transação/rollback de `aplicar()`.
+- **Não avançar pra Fase 2 sem validação do usuário** (instrução
+  explícita) — próximas fases (Baseline x atual/duração/HH/lógica/
+  caminho crítico/folgas, depois Curva S/produtividade/recursos/
+  calendários/pesos/forecast, depois Score de verdade/histórico/
+  dashboard) dependem de estender o parser do XML pra capturar
+  predecessoras, calendários e slack — qualquer mudança em
+  `MsProjectImporter.php` nessas fases futuras exige aprovação prévia
+  explícita, conforme combinado.
+
+### Validação final da Fase 1 + ajustes pós-validação
+
+- **Validação funcional**: como upload real de arquivo via seletor
+  nativo do SO não é automatizável nas ferramentas de browser
+  disponíveis, a validação dos 7 cenários centrais (Baseline, Avanço,
+  sem/com alertas, abortar, importar mesmo assim, rollback) foi feita
+  via `Livewire::test()` disparado de dentro de `php artisan tinker`
+  contra o banco de desenvolvimento real — não os testes automatizados
+  (mockados/fila sync), o RUNTIME de produção de verdade: fila Redis
+  real, worker de fila real, banco real. **Achado de processo**: a
+  migration da Fase 1 nunca tinha rodado no banco de dev (só existia
+  no banco `testing`, criado automaticamente pelos testes) — corrigido
+  rodando `artisan migrate`. Esse é o motivo de sempre rodar
+  `artisan migrate` manualmente depois de criar uma migration nova,
+  mesmo com a suíte de testes verde.
+- **Severidade ajustada** (decisão do usuário, após revisão da tabela
+  das 23 regras): `DATE-001`/`DATE-002` (datas reais após a data de
+  status) de Crítico pra Alto — "Crítico" fica reservado
+  prioritariamente pra inconsistências logicamente impossíveis
+  (`DATE-005`/`DATE-006`, datas invertidas) ou de impacto muito grave
+  comprovado. `CRIT-001` (nenhuma atividade em caminho crítico) de
+  Médio pra Informativo, com o texto reescrito pra não soar como
+  acusação — muitas organizações legitimamente não usam o cálculo de
+  caminho crítico do MS Project, e essa era a regra com maior risco de
+  falso positivo de todo o conjunto (achado da própria revisão).
+- **`DATE-007` — nova regra** (0% de conclusão com término real
+  informado, severidade Alto — o inverso de `DATE-003`, que já cobria
+  100% sem término real): mesmo padrão das outras 23, mesmo cuidado de
+  precisão (`percentualConcluido === 0.0`, nunca trata ausência/`null`
+  como zero — 2 testes dedicados garantem essa distinção). Some da
+  tabela de 24 regras agora.
+- **Polling da tela de Avanço corrigido** (achado da validação: essa
+  tela dava sucesso falso, sem esperar o Job assíncrono terminar de
+  verdade): `⚡relatorio-importar-avanco.blade.php` ganhou o MESMO
+  mecanismo de tracking-id + `Cache` + `wire:poll.2s` já usado em
+  `⚡cronograma.blade.php` desde sempre (`$importacaoTrackingId`/
+  `$statusImportacao`, `verificarStatusImportacao()`, botões
+  desabilitados durante o processamento). **Decisão deliberada**: não
+  extrair um trait/serviço compartilhado entre as duas telas — o
+  padrão já é pequeno e auto-contido, e duplicar aqui segue a mesma
+  convenção já estabelecida no projeto (não compartilhar helper pequeno
+  via trait) em vez de arriscar tocar o fluxo de Baseline, que já
+  funcionava, só pra economizar ~30 linhas. `⚡cronograma.blade.php`
+  não foi alterado nesta etapa.
+- Testes novos: 3 unitários pra `DATE-007` em `HealthCheckEngineTest`
+  (dispara com 0%+término real; NÃO dispara com percentual ausente;
+  NÃO dispara sem término real) + `RelatorioImportarAvancoPollingTest`
+  (7 testes, espelhando 1:1 os cenários já cobertos em
+  `CronogramaImportacaoLivewireTest` pro fluxo de Baseline: fila
+  síncrona finaliza sem ficar "processando"; fila assíncrona mostra
+  "processando" e desabilita botões; `verificarStatusImportacao()`
+  finaliza com sucesso quando o cache marca concluído; mostra erro
+  amigável quando o cache marca erro; cancelar bloqueado durante
+  processamento; Health Check associado à importação correta após
+  conclusão real; falha dentro de `aplicar()` não deixa Health Check
+  órfão). Suíte completa: 971 passed / 6 skipped (skips pré-existentes),
+  incluindo `TenantIsolationTest`.
+
+## Report — Assistente de criação: bug "Salvar rascunho não funciona"
+
+- **Contexto**: usuário relatou que o botão "Salvar rascunho" (Passo 5 do
+  assistente, `⚡relatorio-novo.blade.php`) parecia não fazer nada ao
+  clicar. Nenhum dos 27 testes automatizados do wizard falhava — a causa
+  raiz só apareceu investigando o Blade e o ciclo de vida real de upload
+  de arquivo do Livewire, não a lógica de negócio em si.
+- **Causa raiz nº1 (a mais grave — trava ANTES do usuário chegar no botão)**:
+  o Passo 4 (Fotos) sempre renderizava `<img src="{{ $foto->temporaryUrl() }}">`
+  pra CADA arquivo em `$novasFotos`, sem checagem nenhuma. `temporaryUrl()`
+  lança `FileNotPreviewableException` pra qualquer mimetype fora de
+  `config('livewire.temporary_file_upload.preview_mimes')` — que NÃO
+  inclui `heic` (formato padrão de foto do iPhone, aceito pelo próprio
+  atributo `accept="image/*"` do input em várias combinações de
+  navegador/SO). Um usuário anexando uma foto de celular no formato
+  nativo quebrava o render do Passo 4 inteiro antes mesmo de conseguir
+  avançar pro Passo 5. Corrigido com `@if($foto->isPreviewable()) <img
+  ...> @else <ícone + nome do arquivo> @endif` — nunca aceita o arquivo
+  por baixo dos panos (a validação de mimes em `salvar()` continua
+  rejeitando-o do jeito de sempre), só evita o crash da prévia.
+- **Causa raiz nº2**: `salvar()` chama `$this->validate(['periodoReferencia'
+  => ..., 'novasFotos.*' => 'image|mimes:jpeg,jpg,png,webp|max:5120'])` —
+  mas o usuário está sempre no Passo 5 quando clica em "Salvar rascunho",
+  e os únicos blocos `@error` pra essas duas chaves vivem no Passo 1 e no
+  Passo 4 respectivamente. Uma `ValidationException` interrompe o método e
+  o Livewire re-renderiza o Passo 5 sem NENHUM indício visual do erro —
+  o clique parecia literalmente não fazer nada. Corrigido envolvendo a
+  chamada num `try/catch(ValidationException)` que redireciona
+  `$this->etapa` pro passo onde o erro já tem UI própria (`'1'` ou `'4'`)
+  antes de deixar a exceção subir do jeito normal (o `$errors` continua
+  populado pelo Livewire exatamente como sempre foi).
+- **Rede de segurança adicionada**: `⚡relatorio-novo.blade.php` nunca
+  tinha o trait `App\Support\Concerns\ExecutaComTransacaoSegura`, ao
+  contrário das 5 páginas centrais do Radar (`⚡restricoes`/`⚡lookahead`/
+  `⚡linhas-base`/`⚡plano-semanal`/`⚡curvas`) — qualquer falha inesperada
+  em `salvar()` (ex.: erro de storage ao gravar uma foto) desfazia
+  silenciosamente, sem toast, sem indicação nenhuma. Agora o corpo de
+  `salvar()` (criação/reaproveitamento do Report, pontos de atenção,
+  fotos) roda dentro de `$this->transacaoSegura(fn () => ..., 'mensagem')`
+  — autorização/validação continuam subindo normalmente (tratadas antes),
+  só falhas de verdade caem no toast de erro do trait.
+- **Nada do ciclo de vida do Report foi tocado**: `avancar()`,
+  `prepararRascunhoDoDiagnostico()`, `hydrate()`, `#[Computed] diagnostico()`,
+  `DiagnosticoReport`, `ReportGerador`, `ImpactoRestricoesGerador` — zero
+  linha alterada. Os dois caminhos de `salvar()` (Report já existe vs.
+  fallback direto) continuam exatamente como estavam, só agora dentro do
+  wrapper seguro.
+- Testes novos em `tests/Feature/ReportWizardDiagnosticoTest.php`:
+  `test_salvar_com_foto_invalida_no_passo_5_volta_pro_passo_4_com_erro_visivel`
+  (o erro fica visível, o usuário nunca fica preso no Passo 5 sem
+  feedback, nada é perdido — mesmo Report, sem redirecionamento) e
+  `test_salvar_com_foto_valida_apos_corrigir_o_erro_funciona_normalmente`
+  (corrige a foto e salva de novo, sem sair do zero). Suíte completa do
+  wizard: 27/27. Suíte completa do projeto: sem regressão (as 2 falhas
+  pré-existentes de fixture com data relativa — `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest` — continuam as mesmas, sem relação com esta
+  correção). `TenantIsolationTest`: 20/20.
+- **Achado paralelo, ambiente (não código, corrigido separadamente)**: o
+  cache de descoberta de pacotes do container Sail (`bootstrap/cache/
+  packages.php`) estava desatualizado desde antes da Fase 1 do roadmap de
+  maturidade SaaS (12/07), nunca regenerado depois de `sentry/sentry-laravel`
+  ser adicionado ao `composer.json` (20/07) — fazendo o canal de log
+  padrão (`stack` → `sentry`) quebrar com `Driver [sentry] is not
+  supported` sempre que QUALQUER exceção precisasse ser logada, em
+  qualquer parte do sistema. Corrigido rodando `php artisan package:discover`
+  + `php artisan clear-compiled` no container — nenhum arquivo
+  versionado alterado (`bootstrap/cache/*` está no `.gitignore`). Isso
+  por si só não era a causa raiz do botão "Salvar rascunho" (os dois bugs
+  reais estão documentados acima), mas era um problema de ambiente real e
+  independente, que mascarava mensagens de erro sempre que uma exceção de
+  verdade acontecia — vale rodar esse par de comandos sempre que um pacote
+  novo for adicionado ao `composer.json` e o container não for recriado
+  do zero.
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:

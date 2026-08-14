@@ -208,11 +208,19 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
                 return view('app.radar.relatorio-detalhe', ['report' => $report]);
             })->name('radar.relatorios.show');
 
+            Route::get('/importacoes/{importacao}', function (\App\Models\CronogramaImportacao $importacao) {
+                abort_unless(auth()->user()->can('view', $importacao), 403);
+                return view('app.radar.importacao-detalhe', ['importacao' => $importacao]);
+            })->name('radar.importacoes.show');
+
             Route::get('/suprimentos', fn() => view('app.radar.suprimentos'))
                 ->name('radar.suprimentos');
 
             Route::get('/plano-acao', fn() => view('app.radar.plano-acao'))
                 ->name('radar.plano-acao');
+
+            Route::get('/central-prontidao', fn() => view('app.radar.central-prontidao'))
+                ->name('radar.central-prontidao');
         });
 
     });

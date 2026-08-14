@@ -42,7 +42,7 @@ $customizerHidden = 'customizer-hide';
         </div>
         <!-- /Logo -->
         <h4 class="mb-2">Reset Password 🔒</h4>
-        <form id="formAuthentication" class="mb-3" action="{{ route('password.update') }}" method="POST">
+        <form id="formAuthentication" class="mb-3" action="{{ route('password.store') }}" method="POST">
           @csrf
           <input type="hidden" name="token" value="{{ $request->route('token') }}">
 

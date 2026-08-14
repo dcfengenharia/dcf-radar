@@ -56,8 +56,18 @@ class CronogramaImportacaoLivewireTest extends TestCase
         $this->assertEquals(2, Atividade::where('obra_id', $this->obra->id)->count());
     }
 
-    public function test_historico_de_importacoes_mostra_inicio_e_termino_da_linha_de_base(): void
+    public function test_historico_de_importacoes_mostra_a_importacao_com_health_check_carregado(): void
     {
+        // Fase 3, Etapa 5: historicoImportacoes() foi simplificado pra usar
+        // o partial compartilhado historico-importacoes.blade.php (mesma
+        // apresentação em ⚡cronograma/⚡relatorio-importar-avanco/
+        // ⚡obra-detalhe) — as colunas específicas de Baseline que este
+        // teste verificava antes (baseline_inicio/baseline_termino via
+        // withMin/withMax) saíram de propósito, trocadas por Score/Faixa/
+        // Cobertura/Situação (ver tests/Feature/HistoricoImportacoesTest.php
+        // e CLAUDE.md). Este teste passa a verificar só o que continua
+        // sendo verdade: a importação aparece, paginada, com o Health
+        // Check já carregado (evita N+1).
         Livewire::test('pages::radar.cronograma', ['obra' => $this->obra])
             ->set('arquivoTemp', $this->arquivoFixture('cronograma_sample.xml'))
             ->call('analisar')
@@ -66,9 +76,10 @@ class CronogramaImportacaoLivewireTest extends TestCase
         $historico = Livewire::test('pages::radar.cronograma', ['obra' => $this->obra])
             ->instance()->historicoImportacoes;
 
-        $this->assertCount(1, $historico);
-        $this->assertSame('2024-01-01', $historico->first()->baseline_inicio);
-        $this->assertSame('2024-02-14', $historico->first()->baseline_termino);
+        $this->assertSame(1, $historico->total());
+        $this->assertTrue($historico->first()->relationLoaded('healthCheck'));
+        $this->assertNotNull($historico->first()->healthCheck);
+        $this->assertNotNull($historico->first()->healthCheck->score);
     }
 
     public function test_confirmar_desabilita_botoes_e_mostra_status_enquanto_job_nao_termina(): void
@@ -89,7 +100,12 @@ class CronogramaImportacaoLivewireTest extends TestCase
             ->assertSee('wire:poll', false);
 
         $html = $component->html();
-        $this->assertMatchesRegularExpression('/wire:click="confirmar"[^>]*disabled/s', $html);
+        // wire:target="confirmar" (não wire:click="confirmar") porque este fixture
+        // dispara alertas do Health Check — nesse caso o botão vira
+        // onclick="confirmarAcao(...)" em vez de wire:click direto (ver
+        // ⚡cronograma.blade.php), mas continua tendo wire:target="confirmar" +
+        // wire:loading.attr="disabled" nos dois casos.
+        $this->assertMatchesRegularExpression('/wire:target="confirmar"[^>]*disabled/s', $html);
         $this->assertMatchesRegularExpression('/wire:click="cancelar"[^>]*disabled/s', $html);
     }
 

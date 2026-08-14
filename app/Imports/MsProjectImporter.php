@@ -4,11 +4,14 @@ namespace App\Imports;
 
 use App\DTOs\HorasPeriodo;
 use App\DTOs\PlanoImportacao;
+use App\DTOs\PredecessoraLink;
 use App\DTOs\TarefaImportada;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemAtividade;
 use App\Enums\SerieAvanco;
 use App\Enums\TipoCronogramaImportacao;
+use App\Enums\TipoRelacionamentoPredecessora;
+use App\Enums\TipoRestricaoCronograma;
 use App\Imports\Contracts\ImportadorCronograma;
 use App\Models\Atividade;
 use App\Models\CronogramaImportacao;
@@ -569,6 +572,17 @@ class MsProjectImporter implements ImportadorCronograma
                     'realHoras'       => $this->horas((string)($el->ActualWork  ?? '')),
                     'percentualConcluido' => $this->percentualTrabalho($el),
                     'textos'          => $this->textosDaTarefa($el, $mapaTextosHdr),
+                    // --- Dados estruturais (Fase 2A do Health Check, aditivo) ---
+                    'predecessoras'       => $this->parsearPredecessoras($el),
+                    'totalSlack'          => $this->intOuNulo((string)($el->TotalSlack ?? '')),
+                    'freeSlack'           => $this->intOuNulo((string)($el->FreeSlack ?? '')),
+                    'constraintTypeCodigo' => $this->intOuNulo((string)($el->ConstraintType ?? '')),
+                    'dataRestricao'       => $this->parseData((string)($el->ConstraintDate ?? '')),
+                    // <Active> ausente do XML NUNCA é tratado como inativa —
+                    // só '0' explícito marca a tarefa como inativa.
+                    'ativa'               => ((string)($el->Active ?? '')) !== '0',
+                    // --- Modo de agendamento (Fase 2B.2A do Health Check, aditivo) ---
+                    'agendamentoManualBruto' => $this->stringOuNulo((string)($el->Manual ?? '')),
                 ];
                 continue;
             }
@@ -685,6 +699,17 @@ class MsProjectImporter implements ImportadorCronograma
             realHoras: $raw['realHoras'],
             percentualConcluido: $raw['percentualConcluido'],
             textos: $raw['textos'],
+            predecessoras: $raw['predecessoras'],
+            totalSlack: $raw['totalSlack'],
+            freeSlack: $raw['freeSlack'],
+            tipoRestricao: $raw['constraintTypeCodigo'] !== null
+                ? TipoRestricaoCronograma::fromCodigoMsProject($raw['constraintTypeCodigo'])
+                : null,
+            tipoRestricaoCodigoOriginal: $raw['constraintTypeCodigo'],
+            dataRestricao: $raw['dataRestricao'],
+            ativa: $raw['ativa'],
+            agendamentoManual: $this->boolOuNulo($raw['agendamentoManualBruto']),
+            agendamentoManualBruto: $raw['agendamentoManualBruto'],
         );
     }
 
@@ -692,6 +717,64 @@ class MsProjectImporter implements ImportadorCronograma
     private function semNamespace(string $xml): string
     {
         return preg_replace('/\sxmlns="[^"]*"/', '', $xml, 1);
+    }
+
+    /**
+     * Extrai as relações de predecessora (<PredecessorLink>, 0 a N por
+     * tarefa) — Fase 2A do Health Check. LinkLag/LagFormat são preservados
+     * brutos, sem conversão de unidade (ver PredecessoraLink). Type ausente
+     * assume FS (1), o default do próprio MS Project pra vínculos novos.
+     */
+    private function parsearPredecessoras(SimpleXMLElement $task): array
+    {
+        $predecessoras = [];
+
+        foreach ($task->PredecessorLink as $link) {
+            $predecessoraUid = (string)($link->PredecessorUID ?? '');
+            if ($predecessoraUid === '') {
+                continue;
+            }
+
+            // Type ausente assume FS (1) — default do próprio MS Project pra vínculos novos.
+            $tipoCodigo = $this->intOuNulo((string)($link->Type ?? '')) ?? 1;
+
+            $predecessoras[] = new PredecessoraLink(
+                predecessoraUid: $predecessoraUid,
+                tipo: TipoRelacionamentoPredecessora::fromCodigoMsProject($tipoCodigo),
+                tipoCodigoOriginal: $tipoCodigo,
+                linkLag: $this->intOuNulo((string)($link->LinkLag ?? '')),
+                lagFormat: $this->intOuNulo((string)($link->LagFormat ?? '')),
+            );
+        }
+
+        return $predecessoras;
+    }
+
+    /** Converte string vazia (elemento ausente) em null; senão faz cast pra int. Nunca trata ausência como zero. */
+    private function intOuNulo(string $value): ?int
+    {
+        return $value === '' ? null : (int) $value;
+    }
+
+    /** Converte string vazia (elemento ausente) em null; preserva o valor bruto como veio do XML nos demais casos. */
+    private function stringOuNulo(string $value): ?string
+    {
+        return $value === '' ? null : $value;
+    }
+
+    /**
+     * Normaliza um valor booleano bruto do MSPDI (<Manual>, tipo xs:boolean —
+     * aceita tanto '1'/'0' quanto 'true'/'false' conforme o schema) em
+     * true/false/null. Qualquer valor fora desses 4 literais (ou ausência)
+     * vira null — nunca inventa um sentido pra um valor inesperado.
+     */
+    private function boolOuNulo(?string $valorBruto): ?bool
+    {
+        return match ($valorBruto) {
+            '1', 'true' => true,
+            '0', 'false' => false,
+            default => null,
+        };
     }
 
     /** Localiza o Baseline principal (Number === '0') da tarefa. */

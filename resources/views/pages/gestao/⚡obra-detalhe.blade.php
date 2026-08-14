@@ -22,8 +22,13 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
+use Livewire\WithPagination;
 
 new class extends Component {
+    use WithPagination;
+
+    protected $paginationTheme = 'bootstrap';
+
     public Work $obra;
     public string $abaAtiva = 'visao-geral';
 
@@ -764,13 +769,20 @@ new class extends Component {
     // HISTÓRICO DE IMPORTAÇÕES
     // =========================================================================
 
+    /**
+     * Histórico de Importações (Fase 3, Etapa 5) — usa o partial
+     * compartilhado historico-importacoes.blade.php, mesma apresentação de
+     * ⚡cronograma.blade.php/⚡relatorio-importar-avanco.blade.php. Aqui,
+     * sem filtro por tipo (visão consolidada de todas as importações da
+     * obra, como já era antes desta etapa).
+     */
     #[Computed]
     public function importacoes()
     {
         return CronogramaImportacao::where('obra_id', $this->obra->id)
-            ->with(['autor:id,first_name,last_name', 'linhaBase:id,cronograma_importacao_id,nome'])
+            ->with(['autor', 'healthCheck'])
             ->orderByDesc('importado_em')
-            ->get();
+            ->paginate(10);
     }
 };
 ?>
@@ -1294,44 +1306,7 @@ new class extends Component {
 <div class="card">
     <div class="card-body">
         <h5 class="mb-3">Histórico de Importações</h5>
-        @if ($this->importacoes->isEmpty())
-        <p class="text-muted">Nenhuma importação de cronograma registrada ainda.</p>
-        @else
-        <div class="table-responsive">
-            <table class="table table-hover align-middle">
-                <thead>
-                    <tr>
-                        <th>Arquivo</th>
-                        <th>Importado em</th>
-                        <th>Autor</th>
-                        <th class="text-center">Criadas</th>
-                        <th class="text-center">Atualizadas</th>
-                        <th class="text-center">Arquivadas</th>
-                        <th class="text-center">Linha de Base</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach ($this->importacoes as $imp)
-                    <tr>
-                        <td>{{ $imp->arquivo ?? '—' }}</td>
-                        <td>{{ $imp->importado_em->format('d/m/Y H:i') }}</td>
-                        <td>{{ $imp->autor ? "{$imp->autor->first_name} {$imp->autor->last_name}" : '—' }}</td>
-                        <td class="text-center">{{ $imp->criadas }}</td>
-                        <td class="text-center">{{ $imp->atualizadas }}</td>
-                        <td class="text-center">{{ $imp->removidas }}</td>
-                        <td class="text-center">
-                            @if ($imp->linhaBase)
-                            <span class="badge bg-success">{{ $imp->linhaBase->nome }}</span>
-                            @else
-                            <span class="text-muted">—</span>
-                            @endif
-                        </td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
-        </div>
-        @endif
+        @include('pages.radar._partials.historico-importacoes', ['importacoes' => $this->importacoes])
     </div>
 </div>
 @endif

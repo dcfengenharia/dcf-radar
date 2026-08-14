@@ -18,6 +18,19 @@ class Kernel extends ConsoleKernel
         $schedule->command('reports:gerar-automatico')->dailyAt('06:00');
         $schedule->command('assinaturas:processar')->dailyAt('07:00');
 
+        // Ciclo 16, Etapa A.4 — Digest Semanal de Prontidão. Segunda-feira
+        // (início da semana de planejamento, mesma convenção do Last
+        // Planner System que o produto já assume) às 08:00, logo após a
+        // sequência diária 05h-07h já existente (sem colidir com ela).
+        // withoutOverlapping() evita que a MESMA execução agendada rode 2x
+        // em paralelo (ex.: execução anterior atrasada) — a proteção real
+        // contra duplicidade por semana (inclusive execução manual) é o
+        // lock/marcador do próprio Command (App\Console\Commands\
+        // NotificarProntidaoSemanalCommand), não este mutex do Scheduler.
+        // onOneServer() não foi adicionado — sem evidência de deployment
+        // multi-servidor neste projeto (nenhum outro comando agendado usa).
+        $schedule->command('prontidao:notificar-semanal')->weeklyOn(1, '08:00')->withoutOverlapping();
+
         $schedule->command('backup:run --only-db')->dailyAt('03:00');
         $schedule->command('backup:clean')->dailyAt('04:00');
     }

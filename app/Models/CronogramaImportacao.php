@@ -63,4 +63,27 @@ class CronogramaImportacao extends Model
     {
         return $this->hasOne(LinhaBase::class, 'cronograma_importacao_id');
     }
+
+    public function healthCheck(): HasOne
+    {
+        return $this->hasOne(CronogramaImportacaoHealthCheck::class, 'cronograma_importacao_id');
+    }
+
+    /**
+     * Importação imediatamente anterior da MESMA obra e do MESMO `tipo`
+     * (Fase 3.1 — Evolução do Score) — usada só pra exibir "desde a última
+     * importação", nunca recalcula nada. "Mesmo tipo" é comparação exata
+     * (Baseline com Baseline, Avanço com Avanço, Ambos com Ambos) — não
+     * mistura Baseline com Ambos, para não comparar Scores calculados
+     * sobre universos de findings potencialmente diferentes.
+     */
+    public function importacaoAnterior(): ?self
+    {
+        return static::where('obra_id', $this->obra_id)
+            ->where('tipo', $this->tipo)
+            ->where('importado_em', '<', $this->importado_em)
+            ->orderByDesc('importado_em')
+            ->with('healthCheck')
+            ->first();
+    }
 }
