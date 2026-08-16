@@ -162,6 +162,12 @@ class Atividade extends Model
         return $this->hasMany(AtividadeComentario::class);
     }
 
+    /** Ciclo 17, A.7.1 — anexos PDF pertencem à Atividade (identidade lógica), sobrevivem a nova baseline/avanço/reimportação. */
+    public function anexos(): HasMany
+    {
+        return $this->hasMany(AtividadeAnexo::class);
+    }
+
     public function causasNaoCumprimento(): HasMany
     {
         return $this->hasMany(CausaNaoCumprimento::class);

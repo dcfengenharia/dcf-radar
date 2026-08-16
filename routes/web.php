@@ -74,6 +74,15 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
         return view('app.gestao.perfis-acesso');
     })->name('gestao.perfis-acesso');
 
+    // ANEXOS DE ATIVIDADE (Ciclo 17, A.7.1) — deliberadamente FORA do grupo
+    // obra.context: o ID do anexo já é suficiente pra resolver tenant/obra
+    // e autorizar (ver App\Http\Controllers\AtividadeAnexoController), um
+    // link de download não deve depender da obra ativa na sessão.
+    Route::get('/atividade-anexos/{anexo}/download', [\App\Http\Controllers\AtividadeAnexoController::class, 'download'])
+        ->name('atividade-anexos.download');
+    Route::delete('/atividade-anexos/{anexo}', [\App\Http\Controllers\AtividadeAnexoController::class, 'destroy'])
+        ->name('atividade-anexos.destroy');
+
     // cadastros
     Route::prefix('cadastros')->group(function () {
 

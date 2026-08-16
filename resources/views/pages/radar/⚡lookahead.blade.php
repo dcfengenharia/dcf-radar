@@ -1,5 +1,7 @@
 <?php
 
+use App\Actions\Atividade\AnexarArquivoAtividade;
+use App\Actions\Atividade\RemoverAnexoAtividade;
 use App\Actions\ProgramacaoSemanal\RegistrarComprometimentoSemanal;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemAtividade;
@@ -11,8 +13,10 @@ use App\Enums\TipoCronogramaImportacao;
 use App\Exports\LookaheadExport;
 use App\Models\Atividade;
 use App\Notifications\PlanoSemanalGeradoNotification;
+use App\Models\AtividadeAnexo;
 use App\Models\AtividadeItemProntidao;
 use App\Models\AtividadeSnapshot;
+use App\Models\AvancoPeriodo;
 use App\Models\CategoriaRestricao;
 use App\Models\CronogramaImportacao;
 use App\Models\Disciplina;
@@ -34,15 +38,18 @@ use App\Services\CurvaAvanco;
 use App\Support\Concerns\ExecutaComTransacaoSegura;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 use Maatwebsite\Excel\Facades\Excel;
 
 new class extends Component {
-  use ExecutaComTransacaoSegura;
+  use ExecutaComTransacaoSegura, WithFileUploads;
 
   // Mesmo formato "MÊS/AA" já usado em ⚡curvas.blade.php::dadosGraficoCurvaS()
   // e ⚡dashboard.blade.php::formatarPeriodoPt() — duplicado aqui por
@@ -99,6 +106,7 @@ new class extends Component {
   public ?string $modalBaselineId = null; // Baseline selecionada só pra Curva S do popup — independente do $linhaBaseId da página
   public string $modalGranularidade = 'semanal'; // Escala da Curva S do popup: 'semanal' | 'mensal'
   public ?string $modalTendenciaImportacaoId = null; // Tendência/Avanço selecionada só pra Curva S do popup — independente do $tendenciaImportacaoId da página (Ciclo 17, A.4)
+  public $novoAnexo = null; // A.7.2 — upload de anexo PDF do popup, via WithFileUploads
 
   // ---- Modal dar baixa na restrição ----
   public ?string $baixandoRestricaoId = null;
@@ -334,6 +342,24 @@ new class extends Component {
       ->get(['id', 'nome', 'cronograma_importacao_id']);
   }
 
+  /**
+   * Correção pós-QA (Ciclo 17) — fonte ÚNICA de verdade pra "o Lookahead
+   * está operacional nesta obra": uma CronogramaImportacao (baseline,
+   * avanço, ou qualquer outro histórico) NUNCA é, sozinha, uma Linha de
+   * Base operacional — só uma LinhaBase salva/ativa (ver App\Models\LinhaBase,
+   * unique(obra_id, cronograma_importacao_id), SoftDeletes) representa a
+   * referência de planejamento formal escolhida pelo usuário. Todo ponto do
+   * componente que decide se mostra tabela/datas/%Peso/Previsto/Realizado/
+   * Tendência/Curva S consulta ESTA condição, nunca uma checagem paralela
+   * (`count()`/`exists()` duplicado) nem um fallback pra última importação/
+   * campos ao vivo da Atividade/último Report.
+   */
+  #[Computed]
+  public function temLinhaBaseAtiva(): bool
+  {
+    return $this->linhasBase->isNotEmpty();
+  }
+
   /** Importação sendo tratada como "tendência" — a selecionada, ou a mais recente (Avanço/Ambos). */
   #[Computed]
   public function importacaoTendenciaAtual(): ?CronogramaImportacao
@@ -395,6 +421,109 @@ new class extends Component {
     return $this->linhasBase->firstWhere('id', $this->linhaBaseId);
   }
 
+  /**
+   * Ciclo 17, A.6 — resolve um `LinhaBase.id` (seleção da tabela OU do
+   * popup, cada chamador passa a sua) pro `cronograma_importacao_id` que
+   * de fato alimenta `avanco_periodos` — mesma resolução já feita inline
+   * em modalCurvaAtividade() (linha ~1250), extraída aqui só pra reuso
+   * pelo % Peso (tabela e popup), sem duplicar a leitura de
+   * `$this->linhasBase` (já em memória, 0 query nova). Sem seleção
+   * explícita, cai pra `linhasBase->first()` — MESMO fallback que o
+   * popup já usa (Ciclo 17, A.4) — decisão deliberada de reaproveitar
+   * essa convenção já estabelecida em vez de inventar uma segunda regra
+   * de fallback só pro % Peso.
+   */
+  private function cronogramaImportacaoIdDaBaseline(?string $linhaBaseIdSelecionada): ?string
+  {
+    $linhaBaseId = $linhaBaseIdSelecionada ?: $this->linhasBase->first()?->id;
+
+    return $linhaBaseId ? $this->linhasBase->firstWhere('id', $linhaBaseId)?->cronograma_importacao_id : null;
+  }
+
+  /**
+   * Ciclo 17, A.6 — HH Previsto total do projeto inteiro (obra toda, não
+   * escopado por pacote — diferente de PacoteTrabalho::totalHhBaseline(),
+   * que exclui atividades órfãs sem pacote) na baseline efetiva da
+   * TABELA ($linhaBaseId). Fonte: avanco_periodos, série Previsto,
+   * granularidade Mensal (evita contar em dobro — a importação grava o
+   * mesmo HH faseado em Semanal E Mensal simultaneamente). Denominador
+   * do % Peso de cada atividade da tabela.
+   */
+  #[Computed]
+  public function totalHhPrevistoProjeto(): float
+  {
+    $importacaoId = $this->cronogramaImportacaoIdDaBaseline($this->linhaBaseId);
+    if (!$importacaoId) {
+      return 0.0;
+    }
+
+    return (float) AvancoPeriodo::where('cronograma_importacao_id', $importacaoId)
+      ->where('serie', SerieAvanco::Previsto->value)
+      ->where('granularidade', GranularidadePeriodo::Mensal->value)
+      ->sum('horas');
+  }
+
+  /** Equivalente a totalHhPrevistoProjeto(), mas pra baseline efetiva do POPUP ($modalBaselineId) — independente da tabela. */
+  #[Computed]
+  public function modalTotalHhPrevistoProjeto(): float
+  {
+    $importacaoId = $this->cronogramaImportacaoIdDaBaseline($this->modalBaselineId);
+    if (!$importacaoId) {
+      return 0.0;
+    }
+
+    return (float) AvancoPeriodo::where('cronograma_importacao_id', $importacaoId)
+      ->where('serie', SerieAvanco::Previsto->value)
+      ->where('granularidade', GranularidadePeriodo::Mensal->value)
+      ->sum('horas');
+  }
+
+  /**
+   * Ciclo 17, A.6 — % Peso da atividade aberta no popup: HH Previsto da
+   * própria atividade ÷ HH Previsto do projeto inteiro, ambos na mesma
+   * baseline efetiva do popup. Computed SEPARADO de modalCurvaAtividade()
+   * de propósito — nunca invalidado por updatedModalTendenciaImportacaoId()
+   * nem updatedModalGranularidade(), então trocar tendência/escala do
+   * gráfico nunca recalcula nem afeta o Peso (só a curva/datas mudam).
+   * Distingue "sem nenhum registro de HH Previsto pra essa atividade"
+   * (COUNT=0 → null → exibido "—") de "registro(s) somando zero" (COUNT>0,
+   * SUM=0 → 0,0% de verdade) via COUNT explícito, nunca `?? 0`.
+   */
+  #[Computed]
+  public function modalPeso(): ?float
+  {
+    // Correção pós-QA (Ciclo 17) — defesa em profundidade: mesma regra
+    // central de temLinhaBaseAtiva(), reforçada aqui porque este computed
+    // não depende só de atividades()/verAtividade() (que já bloqueiam o
+    // caminho normal) — $modalBaselineId/$modalAtividadeId são propriedades
+    // públicas Livewire, manipuláveis direto.
+    if (!$this->temLinhaBaseAtiva) {
+      return null;
+    }
+
+    $atividade = $this->atividadeDetalhe['atividade'] ?? null;
+    $importacaoId = $this->cronogramaImportacaoIdDaBaseline($this->modalBaselineId);
+
+    if (!$atividade || !$importacaoId) {
+      return null;
+    }
+
+    $agregado = AvancoPeriodo::where('cronograma_importacao_id', $importacaoId)
+      ->where('serie', SerieAvanco::Previsto->value)
+      ->where('granularidade', GranularidadePeriodo::Mensal->value)
+      ->where('atividade_id', $atividade->id)
+      ->selectRaw('COUNT(*) as total_registros, SUM(horas) as total_horas')
+      ->first();
+
+    if (!$agregado || (int) $agregado->total_registros === 0) {
+      return null;
+    }
+
+    $totalProjeto = $this->modalTotalHhPrevistoProjeto;
+
+    return $totalProjeto > 0 ? round((float) $agregado->total_horas / $totalProjeto * 100, 1) : null;
+  }
+
   // =========================================================================
   // COMPUTED — LISTAGEM PRINCIPAL
   // =========================================================================
@@ -402,6 +531,17 @@ new class extends Component {
   #[Computed]
   public function atividades()
   {
+    // Correção pós-QA (Ciclo 17) — regra central: Lookahead operacional
+    // exige pelo menos 1 LinhaBase ativa da obra (temLinhaBaseAtiva()).
+    // Retorno cedo ANTES de qualquer query (atividades, snapshots,
+    // AvancoPeriodo, itens de prontidão) — sem isso, os fallbacks de baixo
+    // (campos ao vivo da Atividade, tendência resolvida só por
+    // CronogramaImportacao) deixavam o Lookahead "parecer configurado"
+    // mesmo sem nenhuma LinhaBase salva.
+    if (!$this->temLinhaBaseAtiva) {
+      return collect();
+    }
+
     $query = Atividade::with(['frenteTrabalho:id,nome', 'disciplina:id,nome'])
       ->where('obra_id', $this->obra->id)
       ->where('fora_do_cronograma', false)
@@ -413,6 +553,7 @@ new class extends Component {
           ->where('bloqueante', false)
           ->whereIn('status', ['aberta', 'em_tratamento', 'aguardando_terceiros']),
         'comentarios',
+        'anexos',
       ]);
 
     if ($this->ocultarConcluidas) {
@@ -488,13 +629,31 @@ new class extends Component {
           ->pluck('total', 'atividade_id')
         : collect();
 
+    // Ciclo 17, A.6 — % Peso: mesma baseline efetiva da tabela
+    // ($linhaBaseId, com o fallback de cronogramaImportacaoIdDaBaseline()),
+    // 1 query em lote (nunca por linha) pra HH Previsto de cada atividade
+    // visível, cruzada com totalHhPrevistoProjeto() (já cacheado). Ausência
+    // de chave no map = sem nenhum registro de HH Previsto pra essa
+    // atividade (peso null/"—"); presença com soma 0 = 0,0% de verdade.
+    $importacaoIdBaselineTabela = $this->cronogramaImportacaoIdDaBaseline($this->linhaBaseId);
+    $totalHhProjeto = $this->totalHhPrevistoProjeto;
+    $hhPrevistoPorAtividade = $importacaoIdBaselineTabela
+      ? AvancoPeriodo::where('cronograma_importacao_id', $importacaoIdBaselineTabela)
+        ->where('serie', SerieAvanco::Previsto->value)
+        ->where('granularidade', GranularidadePeriodo::Mensal->value)
+        ->whereIn('atividade_id', $atividades->pluck('id'))
+        ->selectRaw('atividade_id, SUM(horas) as total_horas')
+        ->groupBy('atividade_id')
+        ->pluck('total_horas', 'atividade_id')
+      : collect();
+
     $hoje = now()->startOfDay();
     $fimJanela = now()
       ->startOfDay()
       ->addDays($this->janelaDias);
 
     return $atividades
-      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $tendenciaIdEfetivo, $hoje, $fimJanela) {
+      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $tendenciaIdEfetivo, $hhPrevistoPorAtividade, $totalHhProjeto, $hoje, $fimJanela) {
         if ($tendenciaIdEfetivo) {
           $snap = $snapshotsTendencia->get($at->id);
           $inicioTend = $snap?->inicio_planejado;
@@ -537,6 +696,10 @@ new class extends Component {
         $itensOk = $totalItens > 0 ? (int) ($itensOkMap->get($at->id) ?? 0) : $totalItens;
         $pronta = $at->restricoes_bloqueantes === 0 && ($totalItens === 0 || $itensOk >= $totalItens);
 
+        $peso = $hhPrevistoPorAtividade->has($at->id) && $totalHhProjeto > 0
+          ? round((float) $hhPrevistoPorAtividade->get($at->id) / $totalHhProjeto * 100, 1)
+          : null;
+
         return [
           'atividade' => $at,
           'inicioTendencia' => $inicioTend,
@@ -548,6 +711,7 @@ new class extends Component {
           'itensOk' => $itensOk,
           'totalItens' => $totalItens,
           'pronta' => $pronta,
+          'peso' => $peso,
         ];
       })
       ->filter()
@@ -783,6 +947,7 @@ new class extends Component {
   }
   public function updatedLinhaBaseId(): void
   {
+    unset($this->totalHhPrevistoProjeto);
     $this->invalidarListagem();
   }
   /**
@@ -793,7 +958,7 @@ new class extends Component {
    */
   public function updatedModalBaselineId(): void
   {
-    unset($this->modalCurvaAtividade);
+    unset($this->modalCurvaAtividade, $this->modalTotalHhPrevistoProjeto, $this->modalPeso);
     $this->dispatch('curva-atividade-atualizada', dados: $this->modalCurvaAtividade);
   }
   /** Mesmo motivo de updatedModalBaselineId() — troca de escala também é "Tipo B". */
@@ -947,7 +1112,25 @@ new class extends Component {
 
     // Confirma se a atividade recém-criada realmente aparece na lista com
     // os filtros atuais — se não aparecer, avisa o motivo em vez de deixar
-    // o usuário achando que "sumiu" sem explicação.
+    // o usuário achando que "sumiu" sem explicação. Correção pós-QA (Ciclo
+    // 17, ressalva da auditoria): a criação manual é estruturalmente
+    // independente de LinhaBase (nunca bloqueada), mas sem nenhuma
+    // LinhaBase ativa a tabela operacional está SEMPRE vazia por definição
+    // — "ajuste os filtros" seria enganoso nesse estado, já que a causa
+    // real não tem nada a ver com janela/etapa/frente. Checa
+    // temLinhaBaseAtiva() PRIMEIRO, antes de checar visibilidade nos
+    // filtros — a lógica antiga (visível vs. fora do filtro) só se aplica
+    // quando o Lookahead está de fato operacional.
+    if (!$this->temLinhaBaseAtiva) {
+      $this->dispatch(
+        'show-toast',
+        message: 'Atividade criada com sucesso. Ela ficará disponível no Lookahead assim que esta obra possuir uma linha de base ativa.',
+        type: 'warning'
+      );
+
+      return;
+    }
+
     $visivel = $this->atividades->contains(fn($row) => $row['atividade']->id === $atividade->id);
 
     if ($visivel) {
@@ -1099,6 +1282,28 @@ new class extends Component {
 
   public function verAtividade(string $atividadeId): void
   {
+    // Correção pós-QA (Ciclo 17) — defesa em profundidade: a tabela nunca
+    // oferece nenhuma atividade pra clicar quando não há LinhaBase ativa
+    // (atividades() já retorna vazio), mas verAtividade() é um método
+    // Livewire público, acionável direto (ex.: manipulação via DevTools),
+    // sem passar pela tabela. Sem essa guarda, o popup abriria
+    // normalmente (só os computeds de curva/peso ficariam vazios, já
+    // gatekeepados acima) — mais coerente simplesmente não abrir o popup
+    // operacional nesse estado, mesmo raciocínio de "o Lookahead não
+    // existe" pra quem tenta contornar a UI.
+    if (!$this->temLinhaBaseAtiva) {
+      return;
+    }
+
+    // Ciclo 17, A.7.2.CORREÇÃO — isolamento contextual: o popup só abre
+    // atividades da MESMA obra do componente ($this->obra), nunca de outra
+    // obra do tenant — mesmo que o usuário tenha acesso/permissão lá
+    // também (tenant != obra). Guarda de ESCRITA aqui; atividadeDetalhe()
+    // e modalAnexos() têm a MESMA guarda na LEITURA, porque
+    // $modalAtividadeId é propriedade pública Livewire e pode ser setada
+    // diretamente (sem passar por este método).
+    Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+
     $this->modalAtividadeId = $atividadeId;
     // Ciclo 17, A.4.CORREÇÃO — o popup HERDA o contexto temporal da página
     // ao abrir, pros dois seletores. Baseline: $linhaBaseId quando a
@@ -1115,7 +1320,8 @@ new class extends Component {
     $this->modalBaselineId = $this->linhaBaseId;
     $this->modalGranularidade = 'semanal';
     $this->modalTendenciaImportacaoId = $this->tendenciaIdEfetiva();
-    unset($this->atividadeDetalhe, $this->modalCurvaAtividade, $this->modalTendenciaSnapshot);
+    $this->reset('novoAnexo');
+    unset($this->atividadeDetalhe, $this->modalCurvaAtividade, $this->modalTendenciaSnapshot, $this->modalTotalHhPrevistoProjeto, $this->modalPeso, $this->modalAnexos);
     // Ciclo 17, A.3 — o <canvas> da Curva S vive dentro de um wire:ignore
     // (ver Blade), então o Livewire nunca mais o desenha sozinho: todo
     // (re)desenho, inclusive o da primeira abertura do popup, passa por
@@ -1128,10 +1334,25 @@ new class extends Component {
   #[Computed]
   public function atividadeDetalhe()
   {
+    // Correção pós-QA (Ciclo 17, ressalva da auditoria) — mesma regra
+    // central de temLinhaBaseAtiva() aplicada aqui: $modalAtividadeId é
+    // propriedade pública Livewire e pode ser manipulada diretamente
+    // (bypass de verAtividade(), que já bloqueia no caminho normal). Sem
+    // LinhaBase ativa, o popup inteiro (atividade/restrições/comentários/
+    // checklist) fica indisponível — não só a curva/%Peso. Guarda ANTES
+    // de qualquer query, reaproveitando temLinhaBaseAtiva() (nunca uma
+    // checagem paralela).
+    if (!$this->temLinhaBaseAtiva) {
+      return null;
+    }
+
     if (!$this->modalAtividadeId) {
       return null;
     }
 
+    // Ciclo 17, A.7.2.CORREÇÃO — defesa em profundidade: mesma guarda de
+    // obra de verAtividade(), reaplicada aqui porque $modalAtividadeId é
+    // propriedade pública Livewire e pode chegar setada por outro caminho.
     $at = Atividade::with([
       'restricoes' => fn($q) => $q
         ->with(['categoria:id,nome', 'responsavel:id,first_name,last_name'])
@@ -1139,7 +1360,7 @@ new class extends Component {
       'frenteTrabalho:id,nome',
       'disciplina:id,nome',
       'comentarios' => fn($q) => $q->with('autor:id,first_name,last_name')->latest(),
-    ])->find($this->modalAtividadeId);
+    ])->where('obra_id', $this->obra->id)->find($this->modalAtividadeId);
 
     if (!$at) {
       return null;
@@ -1186,6 +1407,17 @@ new class extends Component {
   #[Computed]
   public function modalTendenciaSnapshot(): ?AtividadeSnapshot
   {
+    // Correção pós-QA (Ciclo 17) — defesa em profundidade: mesma regra
+    // central de temLinhaBaseAtiva() (ver comentário em modalPeso()).
+    // Tendência é uma fonte de dado independente de LinhaBase por
+    // natureza (modalTendenciaIdEfetiva() só olha CronogramaImportacao),
+    // mas o produto exige que ela SUMA junto com o resto do Lookahead
+    // quando não há nenhuma LinhaBase ativa — nunca aparecer como se o
+    // Lookahead estivesse configurado.
+    if (!$this->temLinhaBaseAtiva) {
+      return null;
+    }
+
     $atividade = $this->atividadeDetalhe['atividade'] ?? null;
     $tendenciaIdEfetivo = $this->modalTendenciaIdEfetiva();
 
@@ -1235,7 +1467,20 @@ new class extends Component {
     }
 
     $curvaAvanco = app(CurvaAvanco::class);
-    $baselineId = $this->modalBaselineId ?? $this->linhasBase->first()?->id;
+
+    // Correção pós-QA (Ciclo 17) — defesa em profundidade: mesma regra
+    // central de temLinhaBaseAtiva() (ver comentário em modalPeso()). Sem
+    // isso, o Previsto ficaria corretamente vazio (guardado abaixo por
+    // $baselineId), mas Realizado/Tendência (resolvidos só por
+    // CronogramaImportacao, independente de LinhaBase) continuariam
+    // aparecendo — exatamente o bug relatado em QA. Forçar os dois IDs a
+    // null (em vez de um `return []` cedo) preserva o FORMATO do array
+    // esperado pelo Blade (baseline_id/tem_baseline/tem_tendencia_selecionada/
+    // etc. sempre presentes) — o resto do método já trata "sem baseline"/
+    // "sem tendência" corretamente através desses dois IDs.
+    $baselineId = $this->temLinhaBaseAtiva
+      ? ($this->modalBaselineId ?? $this->linhasBase->first()?->id)
+      : null;
 
     // Datas de Início/Término (Linha de Base) exibidas junto do %Previsto
     // PRECISAM vir da MESMA baseline usada pra calcular a curva — nunca do
@@ -1244,8 +1489,12 @@ new class extends Component {
     // aqui. Sem isso, dava pra ver "% Previsto" > 0 com uma data de início
     // no futuro (datas de uma baseline, % de outra) — mesmo padrão de
     // resolução via snapshot já usado em ⚡linhas-base.blade.php.
-    $baselineInicio = $atividade->baseline_inicio;
-    $baselineTermino = $atividade->baseline_termino;
+    // Correção pós-QA (Ciclo 17) — sem LinhaBase ativa, nem o fallback pro
+    // campo ao vivo da Atividade pode aparecer aqui (mesma regra central:
+    // Início/Término de Linha de Base nunca aparecem sem uma LinhaBase
+    // formal salva).
+    $baselineInicio = $this->temLinhaBaseAtiva ? $atividade->baseline_inicio : null;
+    $baselineTermino = $this->temLinhaBaseAtiva ? $atividade->baseline_termino : null;
     if ($baselineId) {
       $linhaBaseSelecionada = $this->linhasBase->firstWhere('id', $baselineId);
       $snapshotBaseline = $linhaBaseSelecionada
@@ -1271,7 +1520,12 @@ new class extends Component {
 
     $totalPrevisto = array_sum(array_column($previsto, 'horas'));
 
-    $tendenciaIdEfetivoModal = $this->modalTendenciaIdEfetiva();
+    // Correção pós-QA (Ciclo 17) — Tendência/Realizado são resolvidos só
+    // por CronogramaImportacao (modalTendenciaIdEfetiva() nunca olha
+    // LinhaBase) — é exatamente essa independência que fazia "informações
+    // de avanço" aparecerem sem nenhuma LinhaBase salva. Forçar null aqui
+    // é o que faz a regra central valer pras duas séries também.
+    $tendenciaIdEfetivoModal = $this->temLinhaBaseAtiva ? $this->modalTendenciaIdEfetiva() : null;
 
     $realizado = $tendenciaIdEfetivoModal
       ? $curvaAvanco->calcular(
@@ -1382,6 +1636,133 @@ new class extends Component {
     unset($this->atividadeDetalhe);
     $this->invalidarListagem();
     $this->dispatch('show-toast', message: 'Comentário adicionado.');
+  }
+
+  // =========================================================================
+  // ANEXOS (Ciclo 17, A.7.2) — orquestração só: toda regra de storage,
+  // validação de conteúdo real e persistência vive em AnexarArquivoAtividade/
+  // RemoverAnexoAtividade (A.7.1), nunca duplicada aqui.
+  // =========================================================================
+
+  #[Computed]
+  public function modalAnexos()
+  {
+    // Correção pós-QA (Ciclo 17, ressalva da auditoria) — mesma regra
+    // central de temLinhaBaseAtiva(), mesmo raciocínio de atividadeDetalhe()
+    // logo acima: sem LinhaBase ativa, a EXPOSIÇÃO dos anexos dentro do
+    // Lookahead fica bloqueada (nunca o registro/arquivo em si — download
+    // protegido por rota própria continua intocado, ver AtividadeAnexoController).
+    if (!$this->temLinhaBaseAtiva) {
+      return collect();
+    }
+
+    if (!$this->modalAtividadeId) {
+      return collect();
+    }
+
+    // Ciclo 17, A.7.2.CORREÇÃO — mesma guarda de obra de verAtividade()/
+    // atividadeDetalhe(): não depende de $modalAtividadeId ter vindo de
+    // verAtividade() (propriedade pública, pode ser setada por outro
+    // caminho), então filtra a atividade dona do anexo pela obra atual
+    // diretamente na query, dentro da MESMA consulta (whereHas vira um
+    // WHERE EXISTS — continua sendo 2 queries fixas, nunca N+1).
+    return AtividadeAnexo::where('atividade_id', $this->modalAtividadeId)
+      ->whereHas('atividade', fn($q) => $q->where('obra_id', $this->obra->id))
+      ->with('enviadoPor:id,first_name,last_name')
+      ->latest()
+      ->get();
+  }
+
+  /**
+   * Ciclo 17, A.7.2.CORREÇÃO — substitui transacaoSegura() SÓ pra anexos:
+   * a auditoria da A.7.2 encontrou que envolver AnexarArquivoAtividade/
+   * RemoverAnexoAtividade num DB::transaction() externo introduzia uma
+   * janela nova de inconsistência (arquivo já gravado/apagado no
+   * filesystem, fora de qualquer controle transacional, enquanto o
+   * DELETE/INSERT do banco ainda dependia de um commit que podia falhar
+   * DEPOIS que a Action já tinha terminado) — pior ainda no caso da
+   * exclusão, onde o resultado possível virava uma row ativa apontando
+   * pra um arquivo já apagado. As duas Actions da A.7.1 já têm sua
+   * própria estratégia de consistência filesystem/banco (documentada nos
+   * respectivos docblocks); este helper preserva só o comportamento de
+   * ERRO de transacaoSegura() (autorização/validação sobem normais, erro
+   * inesperado vira report()+toast), sem nenhum DB::transaction().
+   */
+  private function executarAcaoDeAnexo(\Closure $callback): bool
+  {
+    try {
+      $callback();
+
+      return true;
+    } catch (AuthorizationException|ValidationException $e) {
+      throw $e;
+    } catch (\Throwable $e) {
+      report($e);
+      $this->dispatch('show-toast', message: 'Não foi possível concluir a ação. Tente novamente em instantes.', type: 'error');
+
+      return false;
+    }
+  }
+
+  public function anexarArquivoAtividade(string $atividadeId): void
+  {
+    // Validação rápida de UI, sempre igual à validação interna (definitiva)
+    // de AnexarArquivoAtividade — nunca diverge, reaproveita a mesma constante.
+    $this->validate(
+      ['novoAnexo' => 'required|file|mimes:pdf|max:' . AtividadeAnexo::TAMANHO_MAXIMO_KB],
+      [],
+      ['novoAnexo' => 'arquivo']
+    );
+
+    // Ciclo 17, A.7.2.CORREÇÃO — atividade precisa pertencer à obra ATUAL
+    // do componente antes de qualquer outra checagem (isolamento
+    // contextual: mesmo usuário com 'editar' em outra obra do tenant não
+    // pode anexar a uma atividade de lá através do componente desta obra).
+    $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+    // CRÍTICO: autorização real aqui, nunca só a UI escondida — mesma
+    // permissão (restricoes.lookahead|editar) que já esconde o botão de upload.
+    $this->authorize('update', $atividade);
+
+    if (!$this->executarAcaoDeAnexo(fn () => app(AnexarArquivoAtividade::class)->execute($atividade, $this->novoAnexo, Auth::user()))) {
+      return;
+    }
+
+    $this->reset('novoAnexo');
+    unset($this->modalAnexos);
+    $this->invalidarListagem();
+    $this->dispatch('show-toast', message: 'Anexo adicionado com sucesso.');
+  }
+
+  public function removerAnexoAtividade(string $anexoId): void
+  {
+    // Ciclo 17, A.7.2.CORREÇÃO — o anexo precisa pertencer a uma atividade
+    // da obra ATUAL do componente (mesmo raciocínio do upload acima).
+    $anexo = AtividadeAnexo::with('atividade')
+      ->whereHas('atividade', fn($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($anexoId);
+    // CRÍTICO: autorização real aqui, nunca só a UI escondida — mesma
+    // permissão (restricoes.lookahead|excluir) que já esconde o botão de exclusão.
+    $this->authorize('delete', $anexo->atividade);
+
+    if (!$this->executarAcaoDeAnexo(fn () => app(RemoverAnexoAtividade::class)->execute($anexo))) {
+      return;
+    }
+
+    unset($this->modalAnexos);
+    $this->invalidarListagem();
+    $this->dispatch('show-toast', message: 'Anexo removido com sucesso.');
+  }
+
+  private function formatarTamanhoArquivo(int $bytes): string
+  {
+    if ($bytes < 1024) {
+      return $bytes . ' B';
+    }
+    $kb = $bytes / 1024;
+    if ($kb < 1024) {
+      return number_format($kb, 0, ',', '.') . ' KB';
+    }
+    return number_format($kb / 1024, 1, ',', '.') . ' MB';
   }
 
   // =========================================================================
@@ -1515,7 +1896,28 @@ new class extends Component {
 {{-- =========================================================================
      TABELA (hierarquia EAP: pacotes expansíveis + atividades)
      ========================================================================= --}}
-@if ($this->atividades->count() > 0)
+@if (!$this->temLinhaBaseAtiva)
+{{-- Correção pós-QA (Ciclo 17) — regra central: sem nenhuma LinhaBase
+     ativa da obra, o Lookahead não é operacional. Importações e todo o
+     histórico continuam intactos no banco (nada é apagado por esta tela),
+     só a apresentação fica indisponível até o usuário salvar uma Linha de
+     Base. Nunca mostrar a tabela vazia/parcial nesse estado — sempre este
+     aviso didático. --}}
+<div class="card">
+    <div class="card-body text-center py-5">
+        <i class="bx bx-bookmark display-3 text-muted"></i>
+        <h5 class="fw-bold mt-3">Esta obra ainda não possui uma linha de base ativa.</h5>
+        <p class="text-muted mb-3">
+            Crie uma linha de base a partir de uma importação de cronograma para começar a usar o Lookahead.
+        </p>
+        @if (\Illuminate\Support\Facades\Auth::user()->temPermissaoNaObra($obra->id, 'obras.linhas_base', 'criar'))
+        <a href="{{ route('radar.linhas-base') }}" class="btn btn-primary">
+            <i class="bx bx-bookmark-plus me-1"></i>Criar linha de base
+        </a>
+        @endif
+    </div>
+</div>
+@elseif ($this->atividades->count() > 0)
 @php
     $niveisExistentes = collect($this->linhasArvore)
         ->where('tipo', 'pacote')
@@ -1565,6 +1967,7 @@ new class extends Component {
                 <th style="width: 30%;">Tarefa</th>
                 <th style="width: 7%;">Disciplina</th>
                 <th style="width: 10%;">Frente de Trabalho</th>
+                <th class="text-center" style="width: 5%;" title="HH Previsto da atividade ÷ HH Previsto do projeto, na Linha de Base selecionada">% Peso</th>
                 <th class="text-center" style="width: 5%;">Início LB</th>
                 <th class="text-center" style="width: 5%;">Término LB</th>
                 <th class="text-center" style="width: 5%;">Início</th>
@@ -1584,7 +1987,7 @@ new class extends Component {
             <tr wire:key="pacote-{{ $linha['id'] }}"
                 x-show="!({{ $ancestraisJson }}).some(id => recolhidos.includes(id))"
                 class="table-light">
-                <td colspan="12" style="padding-left: {{ $linha['nivel'] * 24 }}px">
+                <td colspan="13" style="padding-left: {{ $linha['nivel'] * 24 }}px">
                     <button type="button" class="btn btn-sm btn-link p-0 me-1 text-dark"
                             @click="recolhidos.includes('{{ $linha['id'] }}') ? recolhidos.splice(recolhidos.indexOf('{{ $linha['id'] }}'), 1) : recolhidos.push('{{ $linha['id'] }}')">
                         <i class="bx" :class="recolhidos.includes('{{ $linha['id'] }}') ? 'bx-chevron-right' : 'bx-chevron-down'"></i>
@@ -1614,9 +2017,15 @@ new class extends Component {
                         <i class="bx bx-comment-detail"></i> {{ $at->comentarios_count }}
                     </span>
                     @endif
+                    @if ($at->anexos_count > 0)
+                    <span class="badge bg-label-secondary ms-1" style="font-size:.65rem" title="{{ $at->anexos_count }} anexo(s)">
+                        <i class="bx bx-paperclip"></i> {{ $at->anexos_count }}
+                    </span>
+                    @endif
                 </td>
                 <td><small>{{ $at->disciplina?->nome ?? '—' }}</small></td>
                 <td><small>{{ $at->frenteTrabalho?->nome ?? '—' }}</small></td>
+                <td class="text-center"><small>{{ !is_null($row['peso']) ? number_format($row['peso'], 1, ',', '.') . '%' : '—' }}</small></td>
                 <td class="text-center"><small>{{ $row['inicioBaseline']?->format('d/m/y') ?? '—' }}</small></td>
                 <td class="text-center"><small>{{ $row['terminoBaseline']?->format('d/m/y') ?? '—' }}</small></td>
                 <td class="text-center"><small>{{ $this->temImportacaoAvanco ? ($row['inicioTendencia']?->format('d/m/y') ?? '—') : 'N/A' }}</small></td>
@@ -2009,6 +2418,12 @@ new class extends Component {
                         </h4>
                     </div>
                     <div class="col-6 col-md-4 col-lg">
+                        <div class="small text-muted">% Peso</div>
+                        <h4 class="fw-semibold" title="HH Previsto da atividade ÷ HH Previsto do projeto, na Linha de Base selecionada acima">
+                            {{ $this->modalPeso !== null ? number_format($this->modalPeso, 1, ',', '.') . '%' : '—' }}
+                        </h4>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg">
                         <div class="small text-muted">Desempenho</div>
                         <h4 class="fw-semibold" title="{{ match($curvaAtividade['indicador']) {
                             'favoravel' => 'Realizado dentro ou acima do previsto',
@@ -2256,6 +2671,65 @@ new class extends Component {
                     @error('comentarioNovoAtividade')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
                     @endcan
                 </div>
+
+                <div class="border-top p-4">
+                    <h6 class="fw-bold mb-3">
+                        <i class="bx bx-paperclip me-2 text-secondary"></i>Anexos
+                        <span class="badge bg-secondary">{{ $this->modalAnexos->count() }}</span>
+                    </h6>
+
+                    @if ($this->modalAnexos->isEmpty())
+                    <p class="text-muted small mb-3">Nenhum anexo ainda.</p>
+                    @else
+                    <div class="mb-3" style="max-height:220px; overflow-y:auto">
+                        @foreach ($this->modalAnexos as $anexo)
+                        <div class="d-flex align-items-start gap-2 mb-2" wire:key="anexo-{{ $anexo->id }}">
+                            <i class="bx bxs-file-pdf text-danger flex-shrink-0" style="font-size:1.1rem"></i>
+                            <div class="flex-grow-1">
+                                <small class="d-block">{{ $anexo->nome_original }}</small>
+                                <small class="text-muted d-block">
+                                    {{ $this->formatarTamanhoArquivo($anexo->tamanho_bytes) }}
+                                    — {{ $anexo->enviadoPor ? $anexo->enviadoPor->first_name . ' ' . $anexo->enviadoPor->last_name : 'Usuário removido' }}
+                                    — {{ $anexo->created_at->format('d/m/Y H:i') }}
+                                </small>
+                            </div>
+                            <div class="d-flex gap-1 flex-shrink-0">
+                                <a href="{{ route('atividade-anexos.download', $anexo) }}" class="btn btn-xs btn-outline-secondary py-0 px-1" title="Baixar">
+                                    <i class="bx bx-download"></i>
+                                </a>
+                                @can('delete', $at)
+                                <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" title="Excluir"
+                                        onclick="confirmarAcao(this, {
+                                            mensagem: 'Remover este anexo? A ação não pode ser desfeita.',
+                                            metodo: 'removerAnexoAtividade',
+                                            args: ['{{ $anexo->id }}'],
+                                            icone: 'bx-trash',
+                                        })">
+                                    <i class="bx bx-trash"></i>
+                                </button>
+                                @endcan
+                            </div>
+                        </div>
+                        @endforeach
+                    </div>
+                    @endif
+
+                    @can('update', $at)
+                    <div class="d-flex gap-2 align-items-start">
+                        <div class="flex-grow-1">
+                            <input type="file" wire:model="novoAnexo" accept="application/pdf"
+                                   class="form-control form-control-sm @error('novoAnexo') is-invalid @enderror">
+                            @error('novoAnexo')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
+                        </div>
+                        <button class="btn btn-sm btn-primary flex-shrink-0" style="height:fit-content"
+                                wire:click="anexarArquivoAtividade('{{ $at->id }}')"
+                                wire:loading.attr="disabled" wire:target="novoAnexo,anexarArquivoAtividade">
+                            <i class="bx bx-upload"></i>
+                        </button>
+                    </div>
+                    <small class="text-muted d-block mt-1">Somente PDF, até 10MB.</small>
+                    @endcan
+                </div>
             </div>
 
             <div class="modal-footer">
@@ -2363,6 +2837,22 @@ new class extends Component {
 
     <div class="canva-filtros-lookahead-body px-4 py-3">
         <div class="row g-2">
+            @if (!$this->temLinhaBaseAtiva)
+            {{-- Correção pós-QA (Ciclo 17) — os controles de janela, fonte de
+                 dados, seletor de Tendência e seletor de Linha de Base só
+                 fazem sentido com o Lookahead operacional (a tabela já fica
+                 100% indisponível nesse estado, ver bloco da TABELA acima) —
+                 evita deixar filtro "funcionando" sobre um Lookahead que
+                 oficialmente não existe. --}}
+            <div class="col-12">
+                <div class="alert alert-light border py-2 mb-0 small">
+                    <i class="bx bx-info-circle me-1"></i>
+                    Filtros de janela, fonte de dados, Tendência e Linha de Base
+                    ficam disponíveis assim que esta obra tiver uma linha de
+                    base ativa.
+                </div>
+            </div>
+            @else
             <div class="col-12">
                 <small class="text-muted d-block mb-1">Janela:</small>
                 <div class="btn-group btn-group-sm w-100" role="group">
@@ -2390,6 +2880,7 @@ new class extends Component {
                     </button>
                 </div>
             </div>
+            @endif
             <div class="col-12">
                 <div class="input-group input-group-sm">
                     <span class="input-group-text"><i class="bx bx-search"></i></span>
@@ -2476,6 +2967,7 @@ new class extends Component {
                     @endforeach
                 </select>
             </div>
+            @if ($this->temLinhaBaseAtiva)
             <div class="col-12">
                 <select class="form-select form-select-sm" wire:model.live="tendenciaImportacaoId">
                     <option value="">Tendência: mais recente</option>
@@ -2506,6 +2998,7 @@ new class extends Component {
                     {{ $this->linhaBaseSelecionada ? $this->linhaBaseSelecionada->nome . ' (' . $this->linhaBaseSelecionada->importacao?->importado_em?->format('d/m/Y') . ')' : 'última importação (ao vivo)' }}
                 </div>
             </div>
+            @endif
             <div class="col-12">
                 <div class="form-check form-switch mb-0">
                     <input class="form-check-input" type="checkbox" id="togOcultarConcluidas"
@@ -2716,6 +3209,31 @@ new class extends Component {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: { y: { min: 0, max: 100, ticks: { callback: (v) => v + '%' } } },
+                plugins: {
+                    // Ciclo 17, A.5.CORREÇÃO — os 3 datasets (Previsto/
+                    // Realizado/Tendência) continuam SEMPRE declarados,
+                    // por índice fixo (datasets[0]/[1]/[2]), pro .update()
+                    // da A.3/A.4 continuar funcionando sem mudança de
+                    // estrutura. O que muda é só a LEGENDA: uma série sem
+                    // nenhum ponto real (o backend já manda a série
+                    // inteira como null quando não há avanço/tendência —
+                    // nunca 0, nunca dado inventado) não pode aparecer,
+                    // senão parece existir avanço mesmo sem nenhuma
+                    // importação Avanço/Ambos selecionada. 0 é dado
+                    // válido — só null/undefined contam como ausência.
+                    // Reavaliado pelo Chart.js a cada render/update, então
+                    // acompanha os dados atuais mesmo quando o mesmo
+                    // canvas é reaproveitado entre trocas de baseline/
+                    // tendência/granularidade.
+                    legend: {
+                        labels: {
+                            filter: (legendItem, data) => {
+                                const dataset = data.datasets[legendItem.datasetIndex];
+                                return dataset.data.some((v) => v !== null && v !== undefined);
+                            },
+                        },
+                    },
+                },
             },
         });
     }

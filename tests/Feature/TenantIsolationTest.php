@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Assinatura;
 use App\Models\AssinaturaFatura;
 use App\Models\Atividade;
+use App\Models\AtividadeAnexo;
 use App\Models\AtividadeItemProntidao;
 use App\Models\Client;
 use App\Models\DocumentoEngenharia;
@@ -13,8 +14,10 @@ use App\Models\Feedback;
 use App\Models\Feriado;
 use App\Models\FluxoSuprimento;
 use App\Models\Fornecedor;
+use App\Models\CronogramaImportacao;
 use App\Models\ItemProntidao;
 use App\Models\ItemSuprimento;
+use App\Models\LinhaBase;
 use App\Models\Plano;
 use App\Models\ProgramacaoSemanal;
 use App\Models\ProgramacaoSemanalItem;
@@ -437,5 +440,63 @@ class TenantIsolationTest extends TestCase
         $this->actingAs($userA);
 
         $this->assertNull(ReportIndicadorSemana::find($indicadorB->id));
+    }
+
+    public function test_atividade_anexo_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $atividadeB = Atividade::factory()->create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+        ]);
+        $anexoB = AtividadeAnexo::create([
+            'tenant_id' => $tenantB->id,
+            'atividade_id' => $atividadeB->id,
+            'nome_original' => 'documento.pdf',
+            'caminho_arquivo' => 'lookahead-anexos/fake-obra/fake-atividade/fake.pdf',
+            'mime_type' => 'application/pdf',
+            'tamanho_bytes' => 1024,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(AtividadeAnexo::find($anexoB->id));
+    }
+
+    /**
+     * Ciclo 17, correção pós-QA (recriação de Linha de Base) — a checagem
+     * nova de salvar() usa onlyTrashed()/withTrashed() pra localizar uma
+     * LinhaBase excluída da MESMA importação antes de recriar; nenhuma
+     * dessas variantes pode enxergar a linha de outro tenant, mesmo já
+     * soft-deleted.
+     */
+    public function test_linha_base_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $importacaoB = CronogramaImportacao::create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'importado_em' => now(),
+        ]);
+        $linhaBaseB = LinhaBase::create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+            'nome' => 'Baseline B',
+            'cronograma_importacao_id' => $importacaoB->id,
+        ]);
+        $linhaBaseB->delete();
+
+        $this->actingAs($userA);
+
+        $this->assertNull(LinhaBase::find($linhaBaseB->id));
+        $this->assertNull(LinhaBase::onlyTrashed()->find($linhaBaseB->id));
+        $this->assertNull(LinhaBase::withTrashed()->find($linhaBaseB->id));
     }
 }

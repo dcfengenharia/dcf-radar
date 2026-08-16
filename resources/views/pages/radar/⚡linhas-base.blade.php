@@ -489,15 +489,74 @@ new class extends Component {
       ]
     );
 
-    $this->transacaoSegura(
-      fn() => LinhaBase::create([
+    // Correção de segurança (Ciclo 17, pós-auditoria) — importacaoSelecionada
+    // é propriedade pública Livewire, manipulável direto pelo cliente (ex.:
+    // DevTools). A regra exists:cronograma_importacoes,id acima NUNCA bastou
+    // sozinha: ela roda via Query Builder cru contra a tabela
+    // (Illuminate\Validation\DatabasePresenceVerifier::getCount()), sem
+    // aplicar NENHUM global scope — nem o de tenant (BelongsToTenant), nem
+    // qualquer filtro de obra. Resolver o Model explicitamente aqui, escopado
+    // por tenant (global scope automático de BelongsToTenant) E por obra_id
+    // (explícito — o scope de tenant sozinho não bloqueia uma importação de
+    // OUTRA obra do MESMO tenant), transforma o ID client-controlled num
+    // Model já validado: nenhuma query daqui pra baixo volta a usar
+    // $this->importacaoSelecionada, só $importacao->id.
+    $importacao = CronogramaImportacao::where('obra_id', $this->obra->id)
+      ->find($this->importacaoSelecionada);
+
+    if (! $importacao) {
+      $this->addError('importacaoSelecionada', 'Selecione uma importação válida desta obra.');
+      return;
+    }
+
+    // Correção pós-QA (Ciclo 17) — checagem explícita ANTES de qualquer
+    // escrita: uma importação só pode estar vinculada a UMA LinhaBase
+    // ATIVA por obra (unique(obra_id, cronograma_importacao_id) é a
+    // defesa final do banco, nunca a regra de negócio em si — o erro cru
+    // de constraint nunca deve chegar ao usuário). Se já existe uma
+    // LinhaBase ativa pra essa importação, orienta com o nome real dela,
+    // sem sequer tentar o INSERT.
+    $ativa = LinhaBase::where('obra_id', $this->obra->id)
+      ->where('cronograma_importacao_id', $importacao->id)
+      ->first();
+
+    if ($ativa) {
+      $this->addError('importacaoSelecionada', "Esta importação já está vinculada à linha de base \"{$ativa->nome}\". Escolha outra importação ou edite a linha de base existente.");
+      return;
+    }
+
+    // A mesma importação pode ter uma LinhaBase anterior EXCLUÍDA (soft
+    // delete) — o modelo é 1:1 por design (unique constraint acima), então
+    // reutilizar essa importação restaura o registro antigo em vez de
+    // tentar criar uma segunda row (que o banco rejeitaria de qualquer
+    // forma, mesmo com a checagem acima, por causa da linha em lixeira).
+    // Histórico (id, criado_em original) é preservado; nome/descrição/
+    // criado_por são atualizados com o que foi informado agora.
+    $excluida = LinhaBase::onlyTrashed()
+      ->where('obra_id', $this->obra->id)
+      ->where('cronograma_importacao_id', $importacao->id)
+      ->first();
+
+    $this->transacaoSegura(function () use ($excluida, $importacao) {
+      if ($excluida) {
+        $excluida->restore();
+        $excluida->update([
+          'nome' => $this->nome,
+          'descricao' => $this->descricao ?: null,
+          'criado_por' => auth()->id(),
+        ]);
+
+        return $excluida;
+      }
+
+      return LinhaBase::create([
         'obra_id' => $this->obra->id,
         'nome' => $this->nome,
         'descricao' => $this->descricao ?: null,
-        'cronograma_importacao_id' => $this->importacaoSelecionada,
+        'cronograma_importacao_id' => $importacao->id,
         'criado_por' => auth()->id(),
-      ])
-    );
+      ]);
+    }, 'Não foi possível salvar a linha de base devido a um erro interno. Nenhum dado foi alterado. Tente novamente; se o problema continuar, procure o administrador.');
 
     if ($this->transacaoSeguraFalhou()) {
       return;

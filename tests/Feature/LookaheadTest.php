@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Actions\Atividade\AnexarArquivoAtividade;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemAtividade;
 use App\Enums\Papel;
@@ -11,6 +12,7 @@ use App\Enums\StatusReport;
 use App\Enums\StatusRestricao;
 use App\Enums\TipoCronogramaImportacao;
 use App\Models\Atividade;
+use App\Models\AtividadeAnexo;
 use App\Models\AtividadeComentario;
 use App\Models\AtividadeSnapshot;
 use App\Models\AvancoPeriodo;
@@ -25,6 +27,9 @@ use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -39,11 +44,41 @@ class LookaheadTest extends TestCase
     {
         parent::setUp();
 
+        Storage::fake(AtividadeAnexo::DISCO);
+
         $tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $tenant->id]);
         $this->obra = Work::factory()->create(['tenant_id' => $tenant->id]);
         $this->vincularObra($this->obra, $this->user, Papel::Engenheiro->value);
         $this->actingAs($this->user);
+
+        // Correção pós-QA (Ciclo 17) — Lookahead exige pelo menos 1 LinhaBase
+        // ativa da obra pra ser operacional (ver temLinhaBaseAtiva() no
+        // componente). Praticamente todos os testes desta suíte exercitam
+        // comportamento OPERACIONAL (filtros/popup/curva/%peso/anexos/
+        // isolamento) — sem essa LinhaBase padrão aqui, a tabela ficaria
+        // vazia por design em toda a suíte. `created_at` propositalmente
+        // 10 anos no passado (via forceFill, já que created_at não é
+        // fillable): garante que `linhasBase->first()`/`latest()` NUNCA
+        // escolha esta LinhaBase padrão em vez de uma criada pelo próprio
+        // teste (evita empate de segundo — mesma classe de cuidado já
+        // documentada no projeto para timestamps de teste). Testes que
+        // precisam do cenário "sem LinhaBase ativa" removem/soft-deletam
+        // esta explicitamente.
+        $importacaoPadrao = CronogramaImportacao::create([
+            'tenant_id' => $tenant->id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now()->subYears(10),
+        ]);
+        $linhaBasePadrao = LinhaBase::create([
+            'obra_id' => $this->obra->id,
+            'nome' => 'Linha de Base (setup padrão do teste)',
+            'cronograma_importacao_id' => $importacaoPadrao->id,
+            'criado_por' => $this->user->id,
+        ]);
+        $linhaBasePadrao->forceFill(['created_at' => now()->subYears(10)])->save();
     }
 
     private function componente()
@@ -1515,30 +1550,40 @@ class LookaheadTest extends TestCase
             ->assertSee('Nenhuma importação de avanço/tendência disponível para esta obra');
     }
 
-    public function test_atividade_sem_baseline_mostra_mensagem_amigavel_mas_realizado_aparece_se_houver_avanco(): void
+    // Correção pós-QA (Ciclo 17) — este teste testava a REGRA ANTIGA ("sem
+    // LinhaBase salva, mas com uma importação de Avanço, Realizado ainda
+    // aparece") — exatamente o comportamento incorreto relatado em QA e
+    // corrigido nesta fase (Lookahead exige LinhaBase ativa pra qualquer
+    // dado operacional aparecer, mesmo Realizado). Reescrito pra provar a
+    // regra nova: sem NENHUMA LinhaBase ativa na obra (a LinhaBase padrão
+    // do setUp() é removida explicitamente), mesmo havendo importação de
+    // Avanço com Realizado real gravado, nada aparece.
+    public function test_atividade_sem_nenhuma_linha_base_ativa_nao_mostra_realizado_mesmo_com_avanco_real(): void
     {
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
         $atividade = Atividade::factory()->create([
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
         ]);
 
-        // Nenhuma LinhaBase criada — só uma importação de avanço (via helper
-        // que também cria/emite um Report, mas o Report deixou de governar
-        // esta curva no Ciclo 17 A.4 — o que importa aqui é a importação).
+        // Importação de Avanço com Realizado real gravado (via helper que
+        // também emite um Report) — existe no banco, mas não deve tornar o
+        // Lookahead operacional sozinha.
         $this->criarReportEmitidoComRealizado($atividade, [30]);
 
-        $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
+        $this->assertFalse($this->componente()->instance()->temLinhaBaseAtiva);
+        $this->assertTrue($this->componente()->instance()->atividades->isEmpty());
 
-        $this->assertFalse($curva['tem_baseline']);
-        $this->assertEmpty($curva['previsto']);
-        $this->assertNull($curva['percentual_previsto']);
-        $this->assertTrue($curva['tem_tendencia_selecionada'], 'Realizado deve continuar disponível mesmo sem Baseline, se houver importação de avanço');
-        $this->assertTrue($curva['tem_realizado']);
-        $this->assertNotEmpty($curva['realizado']);
+        $componente = $this->componente();
+        $componente->call('verAtividade', $atividade->id);
+        $this->assertNull($componente->get('modalAtividadeId'), 'verAtividade() não deve abrir o popup sem LinhaBase ativa, mesmo chamado direto.');
+        $this->assertEmpty($componente->instance()->modalCurvaAtividade);
+        $this->assertNull($componente->instance()->modalPeso);
 
         $this->componente()
-            ->call('verAtividade', $atividade->id)
-            ->assertSee('Nenhuma Baseline disponível para esta atividade');
+            ->assertSee('Esta obra ainda não possui uma linha de base ativa.')
+            ->assertDontSee($atividade->nome);
     }
 
     public function test_datas_e_percentual_previsto_vem_da_mesma_baseline_selecionada_nao_do_campo_ao_vivo(): void
@@ -2577,5 +2622,1285 @@ class LookaheadTest extends TestCase
         $this->assertEqualsWithDelta(100.0, $curva['percentual_previsto'], 0.5); // 50HH previsto, único período, já passado
         $this->assertEqualsWithDelta(80.0, $curva['percentual_realizado'], 0.5); // 40HH rebaseado sobre 50HH de previsto = 80%
         $this->assertEqualsWithDelta(90.0, collect($curva['tendencia'])->last()['percentual'], 0.5); // 45HH rebaseado sobre 50HH = 90%
+    }
+
+    // =========================================================================
+    // Ciclo 17, A.6 — % Peso da atividade (HH Previsto ÷ HH Previsto do
+    // projeto, ambos na mesma Linha de Base, granularidade Mensal).
+    //
+    // criarLinhaBaseComPrevisto() (helper acima) só grava granularidade
+    // Semanal — não serve pros cenários de % Peso, que exige Mensal (evita
+    // contar o mesmo HH em dobro, já que a importação real grava as duas
+    // granularidades simultaneamente com o mesmo total). Os 2 helpers
+    // abaixo são dedicados, só pra esta seção, sem tocar o helper existente
+    // (usado por dezenas de outros testes já verdes).
+    // =========================================================================
+
+    private function criarLinhaBaseMensal(?string $nome = null): LinhaBase
+    {
+        $importacao = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now()->subDays(30),
+        ]);
+
+        return LinhaBase::create([
+            'obra_id' => $this->obra->id,
+            'nome' => $nome ?? 'BL01 - Peso',
+            'cronograma_importacao_id' => $importacao->id,
+        ]);
+    }
+
+    private function criarAvancoPeriodoPrevistoMensal(Atividade $atividade, CronogramaImportacao $importacao, array $horasPorMes): void
+    {
+        $mes = now()->subMonths(count($horasPorMes))->startOfMonth();
+        foreach ($horasPorMes as $horas) {
+            AvancoPeriodo::create([
+                'tenant_id' => $this->obra->tenant_id,
+                'cronograma_importacao_id' => $importacao->id,
+                'atividade_id' => $atividade->id,
+                'granularidade' => GranularidadePeriodo::Mensal->value,
+                'serie' => SerieAvanco::Previsto->value,
+                'periodo_inicio' => $mes->copy(),
+                'horas' => $horas,
+            ]);
+            $mes->addMonth();
+        }
+    }
+
+    public function test_a6_a_peso_da_atividade_na_tabela_e_hh_previsto_da_atividade_sobre_total_do_projeto(): void
+    {
+        $atividadeA = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeB = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacao = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeA, $importacao, [30, 20]); // 50HH
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeB, $importacao, [150]); // 150HH — total projeto = 200HH
+
+        $atividades = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('janelaDias', 0)
+            ->instance()
+            ->atividades;
+
+        $this->assertEqualsWithDelta(25.0, $atividades->firstWhere('atividade.id', $atividadeA->id)['peso'], 0.05);
+        $this->assertEqualsWithDelta(75.0, $atividades->firstWhere('atividade.id', $atividadeB->id)['peso'], 0.05);
+    }
+
+    public function test_a6_b_sem_selecao_explicita_de_baseline_peso_usa_a_baseline_mais_recente(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lbAntiga = $this->criarLinhaBaseMensal('BL Antiga');
+        $lbAntiga->forceFill(['created_at' => now()->subDays(10)])->save();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lbAntiga->cronograma_importacao_id), [10]);
+
+        $lbRecente = $this->criarLinhaBaseMensal('BL Recente');
+        $lbRecente->forceFill(['created_at' => now()])->save();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lbRecente->cronograma_importacao_id), [40]);
+
+        // Sem set('linhaBaseId', ...) — mesmo fallback já usado pelo popup
+        // desde o Ciclo 17 A.4 (linhasBase->first(), a mais recente).
+        $total = $this->componente()->set('janelaDias', 0)->instance()->totalHhPrevistoProjeto;
+
+        $this->assertEqualsWithDelta(40.0, $total, 0.05);
+    }
+
+    public function test_a6_c_atividade_sem_hh_previsto_mostra_peso_nulo_no_lugar_de_zero(): void
+    {
+        $atividadeSemHh = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeComHh = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeComHh, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+        // $atividadeSemHh nunca recebe nenhum AvancoPeriodo.
+
+        $rows = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0)->instance()->atividades;
+
+        $this->assertNull($rows->firstWhere('atividade.id', $atividadeSemHh->id)['peso']);
+        $this->assertEqualsWithDelta(100.0, $rows->firstWhere('atividade.id', $atividadeComHh->id)['peso'], 0.05);
+    }
+
+    public function test_a6_d_atividade_com_hh_previsto_somando_zero_mostra_zero_virgula_zero_por_cento_nao_traco(): void
+    {
+        $atividadeZero = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeComHh = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacao = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeZero, $importacao, [0]); // registro EXISTE, soma 0
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeComHh, $importacao, [100]);
+
+        $rows = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0)->instance()->atividades;
+        $pesoZero = $rows->firstWhere('atividade.id', $atividadeZero->id)['peso'];
+
+        $this->assertNotNull($pesoZero);
+        $this->assertEqualsWithDelta(0.0, $pesoZero, 0.001);
+    }
+
+    public function test_a6_e_trocar_tendencia_no_popup_nao_altera_o_peso(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [50]);
+
+        $avanco1 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10]], now()->subDays(5));
+        $avanco2 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [20]], now());
+
+        $componente = $this->componente()->call('verAtividade', $atividade->id)->set('modalBaselineId', $lb->id);
+        $pesoAntes = $componente->instance()->modalPeso;
+
+        $componente->set('modalTendenciaImportacaoId', $avanco1->id);
+        $pesoDepois1 = $componente->instance()->modalPeso;
+
+        $componente->set('modalTendenciaImportacaoId', $avanco2->id);
+        $pesoDepois2 = $componente->instance()->modalPeso;
+
+        $this->assertEqualsWithDelta(100.0, $pesoAntes, 0.05); // única atividade na baseline
+        $this->assertSame($pesoAntes, $pesoDepois1);
+        $this->assertSame($pesoDepois1, $pesoDepois2);
+    }
+
+    public function test_a6_f_peso_do_popup_bate_com_peso_da_tabela_para_mesma_atividade_e_baseline(): void
+    {
+        $atividadeA = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeB = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacao = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeA, $importacao, [30]);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeB, $importacao, [70]);
+
+        $componente = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0);
+        $pesoTabela = $componente->instance()->atividades->firstWhere('atividade.id', $atividadeA->id)['peso'];
+
+        // verAtividade() herda modalBaselineId = linhaBaseId da página (Ciclo
+        // 17 A.4.CORREÇÃO) — mesma baseline, sem seleção adicional.
+        $pesoPopup = $componente->call('verAtividade', $atividadeA->id)->instance()->modalPeso;
+
+        $this->assertEqualsWithDelta($pesoTabela, $pesoPopup, 0.001);
+        $this->assertEqualsWithDelta(30.0, $pesoPopup, 0.05);
+    }
+
+    public function test_a6_g_trocar_baseline_na_tabela_recalcula_peso(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $outraAtividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb1 = $this->criarLinhaBaseMensal('BL1');
+        $imp1 = CronogramaImportacao::find($lb1->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, $imp1, [50]);
+        $this->criarAvancoPeriodoPrevistoMensal($outraAtividade, $imp1, [50]); // total 100HH -> atividade = 50%
+
+        $lb2 = $this->criarLinhaBaseMensal('BL2');
+        $imp2 = CronogramaImportacao::find($lb2->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, $imp2, [10]);
+        $this->criarAvancoPeriodoPrevistoMensal($outraAtividade, $imp2, [90]); // total 100HH -> atividade = 10%
+
+        $componente = $this->componente()->set('janelaDias', 0)->set('linhaBaseId', $lb1->id);
+        $pesoBL1 = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id)['peso'];
+
+        $componente->set('linhaBaseId', $lb2->id);
+        $pesoBL2 = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id)['peso'];
+
+        $this->assertEqualsWithDelta(50.0, $pesoBL1, 0.05);
+        $this->assertEqualsWithDelta(10.0, $pesoBL2, 0.05);
+    }
+
+    public function test_a6_h_trocar_baseline_no_popup_recalcula_peso_sem_afetar_a_tabela(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $outraAtividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lbPagina = $this->criarLinhaBaseMensal('BL Pagina');
+        $impPagina = CronogramaImportacao::find($lbPagina->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, $impPagina, [20]);
+        $this->criarAvancoPeriodoPrevistoMensal($outraAtividade, $impPagina, [80]); // atividade = 20%
+
+        $lbPopup = $this->criarLinhaBaseMensal('BL Popup');
+        $impPopup = CronogramaImportacao::find($lbPopup->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, $impPopup, [60]);
+        $this->criarAvancoPeriodoPrevistoMensal($outraAtividade, $impPopup, [40]); // atividade = 60%
+
+        $componente = $this->componente()
+            ->set('janelaDias', 0)
+            ->set('linhaBaseId', $lbPagina->id)
+            ->call('verAtividade', $atividade->id);
+
+        $pesoTabelaAntes = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id)['peso'];
+        $modalPesoAntes = $componente->instance()->modalPeso; // herdou $lbPagina ao abrir
+
+        $componente->set('modalBaselineId', $lbPopup->id);
+
+        $modalPesoDepois = $componente->instance()->modalPeso;
+        $pesoTabelaDepois = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id)['peso'];
+
+        $this->assertEqualsWithDelta(20.0, $pesoTabelaAntes, 0.05);
+        $this->assertEqualsWithDelta(20.0, $modalPesoAntes, 0.05);
+        $this->assertEqualsWithDelta(60.0, $modalPesoDepois, 0.05);
+        $this->assertEqualsWithDelta(20.0, $pesoTabelaDepois, 0.05); // tabela intocada — independência confirmada
+    }
+
+    public function test_a6_i_total_do_projeto_zero_nunca_causa_divisao_por_zero(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        // Nenhum AvancoPeriodo criado pra nenhuma atividade nesta baseline —
+        // total do projeto fica 0.
+
+        $rows = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0)->instance()->atividades;
+
+        $this->assertNull($rows->firstWhere('atividade.id', $atividade->id)['peso']);
+    }
+
+    public function test_a6_j_peso_arredonda_para_uma_casa_decimal_e_formata_com_virgula(): void
+    {
+        $atividadeA = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeB = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacao = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeA, $importacao, [1]);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeB, $importacao, [2]); // total 3HH -> 33,33.../66,66...
+
+        $componente = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0);
+        $rows = $componente->instance()->atividades;
+
+        $this->assertEqualsWithDelta(33.3, $rows->firstWhere('atividade.id', $atividadeA->id)['peso'], 0.001);
+        $this->assertEqualsWithDelta(66.7, $rows->firstWhere('atividade.id', $atividadeB->id)['peso'], 0.001);
+        $componente->assertSee('33,3%')->assertSee('66,7%');
+    }
+
+    public function test_a6_k_registros_apenas_semanais_nao_alimentam_o_peso_sem_registro_mensal(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        // criarLinhaBaseComPrevisto() só grava granularidade Semanal — %
+        // Peso exige Mensal (evita contar o mesmo HH em dobro, já que a
+        // importação real grava as duas granularidades simultaneamente com
+        // o mesmo total) — sem nenhum registro Mensal, peso fica null.
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+
+        $rows = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0)->instance()->atividades;
+
+        $this->assertNull($rows->firstWhere('atividade.id', $atividade->id)['peso']);
+    }
+
+    public function test_a6_l_denominador_e_o_projeto_inteiro_incluindo_atividade_sem_pacote(): void
+    {
+        $pacote = PacoteTrabalho::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $atividadeComPacote = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'pacote_trabalho_id' => $pacote->id,
+        ]);
+        $atividadeOrfa = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'pacote_trabalho_id' => null,
+        ]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacao = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeComPacote, $importacao, [80]);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeOrfa, $importacao, [20]); // total 100HH, órfã inclusa
+
+        $rows = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0)->instance()->atividades;
+
+        $this->assertEqualsWithDelta(80.0, $rows->firstWhere('atividade.id', $atividadeComPacote->id)['peso'], 0.05);
+        $this->assertEqualsWithDelta(20.0, $rows->firstWhere('atividade.id', $atividadeOrfa->id)['peso'], 0.05);
+    }
+
+    public function test_a6_m_coluna_peso_aparece_na_tabela_e_no_popup(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $componente = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0);
+        $componente->assertSee('% Peso')->assertSee('100,0%');
+
+        $componente->call('verAtividade', $atividade->id)->assertSee('100,0%');
+    }
+
+    // =========================================================================
+    // Ciclo 17, A.7.2 — UI de anexos PDF no Lookahead
+    // =========================================================================
+
+    private function conteudoPdfValidoA72(int $tamanhoBytes = 2048): string
+    {
+        $cabecalho = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n";
+        $rodape = "\ntrailer<</Size 4/Root 1 0 R>>\n%%EOF";
+        $recheio = str_repeat('A', max(0, $tamanhoBytes - strlen($cabecalho) - strlen($rodape)));
+
+        return $cabecalho . $recheio . $rodape;
+    }
+
+    private function arquivoPdfFakeA72(string $nome = 'documento.pdf', int $tamanhoBytes = 2048): UploadedFile
+    {
+        return UploadedFile::fake()->createWithContent($nome, $this->conteudoPdfValidoA72($tamanhoBytes));
+    }
+
+    // A — zero anexos: sem badge de contador na tabela.
+    public function test_a72_a_atividade_sem_anexo_nao_mostra_badge_de_contador(): void
+    {
+        Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        $this->componente()
+            ->set('janelaDias', 0)
+            ->assertDontSee('anexo(s)');
+    }
+
+    // B — múltiplos anexos: contador mostra a quantidade correta.
+    public function test_a72_b_contador_de_anexos_aparece_na_lista_com_quantidade_correta(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('a.pdf'), $this->user);
+        app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('b.pdf'), $this->user);
+        app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('c.pdf'), $this->user);
+
+        $this->componente()
+            ->set('janelaDias', 0)
+            ->assertSee('3 anexo(s)');
+    }
+
+    // C — popup lista os anexos da atividade.
+    public function test_a72_c_popup_lista_anexos_da_atividade(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('planta-baixa.pdf'), $this->user);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee('planta-baixa.pdf');
+    }
+
+    // D — metadata completa: nome, tamanho formatado, data, autor; fallback "Usuário removido".
+    public function test_a72_d_popup_mostra_metadata_completa_do_anexo(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('doc.pdf', 254 * 1024), $this->user);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee('doc.pdf')
+            ->assertSee('254 KB')
+            ->assertSee($this->user->first_name)
+            ->assertSee($anexo->created_at->format('d/m/Y'));
+    }
+
+    public function test_a72_d2_popup_mostra_usuario_removido_quando_enviado_por_e_nulo(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('sem-autor.pdf'), $this->user);
+        $anexo->update(['enviado_por' => null]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee('Usuário removido');
+    }
+
+    // E — upload autorizado via método real do Livewire cria o anexo.
+    public function test_a72_e_upload_autorizado_via_metodo_real_cria_anexo(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->set('novoAnexo', $this->arquivoPdfFakeA72('upload-real.pdf'))
+            ->call('anexarArquivoAtividade', $atividade->id);
+
+        $this->assertDatabaseHas('atividade_anexos', [
+            'atividade_id' => $atividade->id,
+            'nome_original' => 'upload-real.pdf',
+        ]);
+    }
+
+    // F — upload sem permissão é bloqueado NO MÉTODO (não só pela ausência do botão).
+    public function test_a72_f_upload_nao_autorizado_e_bloqueado_no_metodo(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        $leitor = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $leitor, Papel::ClienteLeitura->value);
+        $this->actingAs($leitor);
+
+        Livewire::test('pages::radar.lookahead', ['obra' => $this->obra])
+            ->call('verAtividade', $atividade->id)
+            ->set('novoAnexo', $this->arquivoPdfFakeA72('tentativa.pdf'))
+            ->call('anexarArquivoAtividade', $atividade->id)
+            ->assertForbidden();
+
+        $this->assertEquals(0, AtividadeAnexo::where('atividade_id', $atividade->id)->count());
+    }
+
+    // G — arquivo não-PDF é rejeitado na validação da UI.
+    public function test_a72_g_upload_de_arquivo_nao_pdf_e_rejeitado_com_erro_no_input(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->set('novoAnexo', UploadedFile::fake()->create('malware.exe', 100))
+            ->call('anexarArquivoAtividade', $atividade->id)
+            ->assertHasErrors(['novoAnexo']);
+
+        $this->assertEquals(0, AtividadeAnexo::where('atividade_id', $atividade->id)->count());
+    }
+
+    // H — acima de 10MB é rejeitado, reaproveitando AtividadeAnexo::TAMANHO_MAXIMO_KB.
+    public function test_a72_h_upload_acima_do_limite_e_rejeitado(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        $tamanhoAcimaDoLimite = (AtividadeAnexo::TAMANHO_MAXIMO_KB + 1) * 1024;
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->set('novoAnexo', $this->arquivoPdfFakeA72('grande.pdf', $tamanhoAcimaDoLimite))
+            ->call('anexarArquivoAtividade', $atividade->id)
+            ->assertHasErrors(['novoAnexo']);
+
+        $this->assertEquals(0, AtividadeAnexo::where('atividade_id', $atividade->id)->count());
+    }
+
+    // I — upload atualiza lista e contador, sem fechar o popup.
+    public function test_a72_i_upload_atualiza_lista_e_contador_sem_fechar_popup(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+
+        $componente = $this->componente()
+            ->set('janelaDias', 0)
+            ->call('verAtividade', $atividade->id);
+
+        $componente->assertDontSee('anexo(s)');
+
+        $componente->set('novoAnexo', $this->arquivoPdfFakeA72('novo.pdf'))
+            ->call('anexarArquivoAtividade', $atividade->id);
+
+        $componente->assertSet('modalAtividadeId', $atividade->id);
+        $componente->assertSee('novo.pdf')->assertSee('1 anexo(s)');
+    }
+
+    // J — upload preserva Baseline/Tendência selecionadas no popup.
+    public function test_a72_j_upload_preserva_baseline_e_tendencia_selecionadas(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $this->criarLinhaBaseComPrevisto($atividade, [40, 60], 'BL01');
+        $lb2 = $this->criarLinhaBaseComPrevisto($atividade, [20, 30], 'BL02');
+        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10, 20]]);
+        $avanco2 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [5, 15]]);
+
+        $componente = $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->set('modalBaselineId', $lb2->id)
+            ->set('modalTendenciaImportacaoId', $avanco2->id);
+
+        $baselineAntes = $componente->instance()->modalBaselineId;
+        $tendenciaAntes = $componente->instance()->modalTendenciaImportacaoId;
+
+        $componente->set('novoAnexo', $this->arquivoPdfFakeA72('preserva-baseline.pdf'))
+            ->call('anexarArquivoAtividade', $atividade->id);
+
+        $this->assertEquals($baselineAntes, $componente->instance()->modalBaselineId);
+        $this->assertEquals($tendenciaAntes, $componente->instance()->modalTendenciaImportacaoId);
+        $this->assertEquals($lb2->id, $componente->instance()->modalBaselineId);
+        $this->assertEquals($avanco2->id, $componente->instance()->modalTendenciaImportacaoId);
+    }
+
+    // K — upload nunca dispara redesenho do gráfico (ação Tipo A).
+    public function test_a72_k_upload_nao_dispara_atualizacao_do_grafico(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->set('novoAnexo', $this->arquivoPdfFakeA72('sem-grafico.pdf'))
+            ->call('anexarArquivoAtividade', $atividade->id)
+            ->assertNotDispatched('curva-atividade-atualizada');
+    }
+
+    // L — exclusão autorizada remove registro E arquivo físico.
+    public function test_a72_l_exclusao_autorizada_remove_registro_e_arquivo_fisico(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $usuarioComExcluir = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $usuarioComExcluir, Papel::GerentePlanejamento->value);
+
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('remover.pdf'), $usuarioComExcluir);
+        $caminho = $anexo->caminho_arquivo;
+
+        $this->actingAs($usuarioComExcluir);
+
+        Livewire::test('pages::radar.lookahead', ['obra' => $this->obra])
+            ->call('verAtividade', $atividade->id)
+            ->call('removerAnexoAtividade', $anexo->id);
+
+        $this->assertDatabaseMissing('atividade_anexos', ['id' => $anexo->id]);
+        Storage::disk(AtividadeAnexo::DISCO)->assertMissing($caminho);
+    }
+
+    // M — exclusão sem permissão é bloqueada NO MÉTODO.
+    public function test_a72_m_exclusao_nao_autorizada_e_bloqueada_no_metodo(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('protegido.pdf'), $this->user);
+
+        // $this->user (Engenheiro) tem 'editar' mas NÃO 'excluir' em restricoes.lookahead.
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->call('removerAnexoAtividade', $anexo->id)
+            ->assertForbidden();
+
+        $this->assertDatabaseHas('atividade_anexos', ['id' => $anexo->id]);
+    }
+
+    // N — exclusão atualiza lista e contador.
+    public function test_a72_n_exclusao_atualiza_lista_e_contador(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+        ]);
+        $usuarioComExcluir = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $usuarioComExcluir, Papel::GerentePlanejamento->value);
+
+        $anexo1 = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('fica.pdf'), $usuarioComExcluir);
+        $anexo2 = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('sai.pdf'), $usuarioComExcluir);
+
+        $this->actingAs($usuarioComExcluir);
+
+        $componente = Livewire::test('pages::radar.lookahead', ['obra' => $this->obra])
+            ->set('janelaDias', 0)
+            ->call('verAtividade', $atividade->id);
+
+        $componente->assertSee('2 anexo(s)')->assertSee('fica.pdf')->assertSee('sai.pdf');
+
+        $componente->call('removerAnexoAtividade', $anexo2->id);
+
+        $componente->assertSee('1 anexo(s)')->assertSee('fica.pdf')->assertDontSee('sai.pdf');
+    }
+
+    // O — exclusão preserva Baseline/Tendência selecionadas no popup.
+    public function test_a72_o_exclusao_preserva_baseline_e_tendencia_selecionadas(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $this->criarLinhaBaseComPrevisto($atividade, [40, 60], 'BL01');
+        $lb2 = $this->criarLinhaBaseComPrevisto($atividade, [20, 30], 'BL02');
+        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10, 20]]);
+        $avanco2 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [5, 15]]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('a-remover.pdf'), $this->user);
+
+        // 'excluir' em restricoes.lookahead exige GerentePlanejamento+ — $this->user
+        // (Engenheiro) só tem 'editar', não basta pra remover anexo aqui.
+        $usuarioComExcluir = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $usuarioComExcluir, Papel::GerentePlanejamento->value);
+        $this->actingAs($usuarioComExcluir);
+
+        $componente = Livewire::test('pages::radar.lookahead', ['obra' => $this->obra])
+            ->call('verAtividade', $atividade->id)
+            ->set('modalBaselineId', $lb2->id)
+            ->set('modalTendenciaImportacaoId', $avanco2->id);
+
+        $baselineAntes = $componente->instance()->modalBaselineId;
+        $tendenciaAntes = $componente->instance()->modalTendenciaImportacaoId;
+
+        $componente->call('removerAnexoAtividade', $anexo->id);
+
+        $this->assertEquals($baselineAntes, $componente->instance()->modalBaselineId);
+        $this->assertEquals($tendenciaAntes, $componente->instance()->modalTendenciaImportacaoId);
+        $this->assertEquals($lb2->id, $componente->instance()->modalBaselineId);
+        $this->assertEquals($avanco2->id, $componente->instance()->modalTendenciaImportacaoId);
+    }
+
+    // P — exclusão nunca dispara redesenho do gráfico (ação Tipo A).
+    public function test_a72_p_exclusao_nao_dispara_atualizacao_do_grafico(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('sem-grafico-2.pdf'), $this->user);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->call('removerAnexoAtividade', $anexo->id)
+            ->assertNotDispatched('curva-atividade-atualizada');
+    }
+
+    // Q — usuário só com 'ver' enxerga lista/download, mas não upload/exclusão.
+    public function test_a72_q_usuario_apenas_com_ver_nao_ve_upload_nem_exclusao(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('somente-leitura.pdf'), $this->user);
+
+        $leitor = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $leitor, Papel::ClienteLeitura->value);
+        $this->actingAs($leitor);
+
+        $componente = Livewire::test('pages::radar.lookahead', ['obra' => $this->obra])
+            ->call('verAtividade', $atividade->id);
+
+        $componente->assertSee('somente-leitura.pdf');
+        $componente->assertSee(route('atividade-anexos.download', $anexo), false);
+        $componente->assertDontSee("anexarArquivoAtividade('{$atividade->id}')", false);
+        $componente->assertDontSee('removerAnexoAtividade', false);
+    }
+
+    // R — usuário com 'editar' enxerga o input de upload.
+    public function test_a72_r_usuario_com_editar_ve_input_de_upload(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        // $this->user já tem Papel::Engenheiro -> 'editar'.
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertSee("anexarArquivoAtividade('{$atividade->id}')", false);
+    }
+
+    // S — dois anexos com o mesmo nome original coexistem como entradas distintas.
+    public function test_a72_s_dois_anexos_com_mesmo_nome_aparecem_como_entradas_separadas(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $anexo1 = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('procedimento.pdf'), $this->user);
+        $anexo1->forceFill(['created_at' => now()->subHour()])->save();
+        $anexo2 = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('procedimento.pdf'), $this->user);
+
+        $this->assertNotEquals($anexo1->id, $anexo2->id);
+        $this->assertEquals(2, AtividadeAnexo::where('atividade_id', $atividade->id)->count());
+
+        $componente = $this->componente()->call('verAtividade', $atividade->id);
+
+        $this->assertEquals(2, $componente->instance()->modalAnexos->count());
+        $this->assertEquals(2, substr_count($componente->html(), 'procedimento.pdf'));
+    }
+
+    // T — contador da tabela e listagem do popup não escalam em query count.
+    /**
+     * Ciclo 17, A.7.2.CORREÇÃO — escopo de função dedicado (não o escopo do
+     * método de teste), mesmo padrão já usado em
+     * PlanoAcaoPainelTest::contarQueriesDaListagem(): DB::listen() empilha
+     * listeners globalmente sem removê-los entre chamadas; se duas medições
+     * reaproveitassem a MESMA variável do método de teste, o listener da 1ª
+     * medição continuaria ativo (e somando na mesma variável) durante a 2ª,
+     * inflando o "teto" de comparação e mascarando um N+1 real. Escopos de
+     * função distintos isolam cada `$queryCount`, e o listener "morto" da
+     * medição anterior passa a incrementar uma variável que ninguém mais lê.
+     */
+    private function contarQueriesTabelaLookahead(): int
+    {
+        $queryCount = 0;
+        DB::listen(function () use (&$queryCount) {
+            $queryCount++;
+        });
+
+        $this->componente()->set('fonteData', 'tendencia')->set('janelaDias', 0);
+
+        return $queryCount;
+    }
+
+    private function contarQueriesPopupLookahead(string $atividadeId): int
+    {
+        $queryCount = 0;
+        DB::listen(function () use (&$queryCount) {
+            $queryCount++;
+        });
+
+        $this->componente()->call('verAtividade', $atividadeId);
+
+        return $queryCount;
+    }
+
+    public function test_a72_t_contador_e_listagem_de_anexos_nao_geram_n_mais_1(): void
+    {
+        foreach (range(1, 5) as $i) {
+            $at = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+            app(AnexarArquivoAtividade::class)->execute($at, $this->arquivoPdfFakeA72("a{$i}.pdf"), $this->user);
+        }
+        $queriesCom5 = $this->contarQueriesTabelaLookahead();
+
+        foreach (range(6, 20) as $i) {
+            $at = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+            app(AnexarArquivoAtividade::class)->execute($at, $this->arquivoPdfFakeA72("a{$i}.pdf"), $this->user);
+        }
+        $queriesCom20 = $this->contarQueriesTabelaLookahead();
+
+        $this->assertLessThan($queriesCom5 + 5, $queriesCom20);
+
+        // Popup: mais anexos na MESMA atividade não deve aumentar a
+        // quantidade de queries (modalAnexos() é sempre 2 queries: anexos +
+        // enviadoPor eager-loaded, nunca 1 por anexo).
+        $atividadePopup = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        foreach (range(1, 3) as $i) {
+            app(AnexarArquivoAtividade::class)->execute($atividadePopup, $this->arquivoPdfFakeA72("popup{$i}.pdf"), $this->user);
+        }
+        $queriesPopup3 = $this->contarQueriesPopupLookahead($atividadePopup->id);
+
+        foreach (range(4, 10) as $i) {
+            app(AnexarArquivoAtividade::class)->execute($atividadePopup, $this->arquivoPdfFakeA72("popup{$i}.pdf"), $this->user);
+        }
+        $queriesPopup10 = $this->contarQueriesPopupLookahead($atividadePopup->id);
+
+        $this->assertLessThan($queriesPopup3 + 3, $queriesPopup10);
+    }
+
+    // =========================================================================
+    // Ciclo 17, A.7.2.CORREÇÃO — isolamento contextual (popup/upload/exclusão
+    // só operam na Obra do componente, nunca em outra obra do mesmo tenant)
+    // =========================================================================
+
+    /** @return array{0: Work, 1: Atividade} obra B + atividade dela, mesmo tenant do $this->obra */
+    private function criarObraBComAtividade(): array
+    {
+        $obraB = Work::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $atividadeB = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $obraB->id,
+            'nome' => 'Atividade Sigilosa da Obra B',
+        ]);
+
+        return [$obraB, $atividadeB];
+    }
+
+    public function test_a72_u_ver_atividade_rejeita_atividade_de_outra_obra_do_mesmo_tenant(): void
+    {
+        [, $atividadeB] = $this->criarObraBComAtividade();
+
+        $this->expectException(\Illuminate\Database\Eloquent\ModelNotFoundException::class);
+
+        $this->componente()->call('verAtividade', $atividadeB->id);
+    }
+
+    public function test_a72_v_ver_atividade_rejeita_mesmo_com_usuario_tendo_acesso_as_duas_obras(): void
+    {
+        [$obraB, $atividadeB] = $this->criarObraBComAtividade();
+        // $this->user já tem Papel::Engenheiro na Obra A (setUp); vincula o
+        // MESMO usuário também na Obra B, com o MESMO nível de acesso —
+        // prova que a rejeição é por CONTEXTO da obra, não por autorização.
+        $this->vincularObra($obraB, $this->user, Papel::Engenheiro->value);
+
+        $this->assertTrue($this->user->temPermissaoNaObra($obraB->id, 'restricoes.lookahead', 'editar'));
+
+        $this->expectException(\Illuminate\Database\Eloquent\ModelNotFoundException::class);
+
+        $this->componente()->call('verAtividade', $atividadeB->id);
+    }
+
+    public function test_a72_w_upload_cross_obra_e_bloqueado_mesmo_com_editar_na_outra_obra(): void
+    {
+        [$obraB, $atividadeB] = $this->criarObraBComAtividade();
+        $this->vincularObra($obraB, $this->user, Papel::Engenheiro->value);
+
+        try {
+            $this->componente()
+                ->set('novoAnexo', $this->arquivoPdfFakeA72('cross-obra.pdf'))
+                ->call('anexarArquivoAtividade', $atividadeB->id);
+            $this->fail('Esperava ModelNotFoundException ao anexar em atividade de outra obra.');
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            // esperado
+        }
+
+        $this->assertEquals(0, AtividadeAnexo::where('atividade_id', $atividadeB->id)->count());
+        $this->assertEmpty(Storage::disk(AtividadeAnexo::DISCO)->allFiles());
+    }
+
+    public function test_a72_x_exclusao_cross_obra_e_bloqueada_mesmo_com_excluir_na_outra_obra(): void
+    {
+        [$obraB, $atividadeB] = $this->criarObraBComAtividade();
+        $usuarioComExcluirNasDuas = User::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $this->vincularObra($this->obra, $usuarioComExcluirNasDuas, Papel::GerentePlanejamento->value);
+        $this->vincularObra($obraB, $usuarioComExcluirNasDuas, Papel::GerentePlanejamento->value);
+
+        $anexoB = app(AnexarArquivoAtividade::class)->execute($atividadeB, $this->arquivoPdfFakeA72('protegido-b.pdf'), $usuarioComExcluirNasDuas);
+
+        $this->actingAs($usuarioComExcluirNasDuas);
+
+        try {
+            Livewire::test('pages::radar.lookahead', ['obra' => $this->obra])
+                ->call('removerAnexoAtividade', $anexoB->id);
+            $this->fail('Esperava ModelNotFoundException ao remover anexo de atividade de outra obra.');
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            // esperado
+        }
+
+        $this->assertDatabaseHas('atividade_anexos', ['id' => $anexoB->id]);
+        Storage::disk(AtividadeAnexo::DISCO)->assertExists($anexoB->caminho_arquivo);
+    }
+
+    public function test_a72_y_metadata_de_anexo_de_outra_obra_nunca_aparece_mesmo_manipulando_modalatividadeid(): void
+    {
+        [, $atividadeB] = $this->criarObraBComAtividade();
+        app(AnexarArquivoAtividade::class)->execute($atividadeB, $this->arquivoPdfFakeA72('nao-deve-vazar.pdf'), $this->user);
+
+        // Simula manipulação direta da propriedade pública (bypass de
+        // verAtividade()) — modalAnexos()/atividadeDetalhe() precisam ter
+        // defesa própria, não podem confiar só na guarda de verAtividade().
+        $componente = $this->componente()->set('modalAtividadeId', $atividadeB->id);
+
+        $this->assertTrue($componente->instance()->modalAnexos->isEmpty());
+        $this->assertNull($componente->instance()->atividadeDetalhe);
+        $componente->assertDontSee('nao-deve-vazar.pdf');
+    }
+
+    // =========================================================================
+    // Ciclo 17, correção pós-QA — Lookahead exige LinhaBase ativa
+    // (temLinhaBaseAtiva()). setUp() já cria uma LinhaBase padrão (10 anos no
+    // passado, pra nunca virar "a mais recente" em nenhum teste que crie a
+    // sua própria) — os testes abaixo removem essa padrão explicitamente
+    // pra exercitar o cenário "sem nenhuma LinhaBase ativa".
+    // =========================================================================
+
+    public function test_sem_linha_base_com_importacao_baseline_lookahead_fica_bloqueado(): void
+    {
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
+        CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value,
+            'importado_em' => now(),
+        ]);
+        Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Bloqueada Baseline XYZ',
+        ]);
+
+        $componente = $this->componente();
+        $this->assertFalse($componente->instance()->temLinhaBaseAtiva);
+        $this->assertTrue($componente->instance()->atividades->isEmpty());
+        $componente
+            ->assertSee('Esta obra ainda não possui uma linha de base ativa.')
+            ->assertDontSee('Atividade Bloqueada Baseline XYZ');
+    }
+
+    public function test_sem_linha_base_com_importacao_ambos_lookahead_fica_bloqueado(): void
+    {
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Bloqueada Ambos XYZ',
+        ]);
+        $importacaoAmbos = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Ambos->value,
+            'importado_em' => now(),
+        ]);
+        // Importação Ambos tem Previsto/Realizado/Tendência reais — mesmo
+        // assim não deve virar LinhaBase operacional sozinha (o usuário
+        // precisa ter uma LinhaBase FORMAL salva apontando pra ela).
+        foreach ([SerieAvanco::Previsto, SerieAvanco::Realizado, SerieAvanco::Tendencia] as $serie) {
+            AvancoPeriodo::create([
+                'tenant_id' => $this->obra->tenant_id,
+                'cronograma_importacao_id' => $importacaoAmbos->id,
+                'atividade_id' => $atividade->id,
+                'granularidade' => GranularidadePeriodo::Semanal->value,
+                'serie' => $serie->value,
+                'periodo_inicio' => now()->subWeek()->startOfWeek(),
+                'horas' => 40,
+            ]);
+        }
+
+        $componente = $this->componente();
+        $this->assertFalse($componente->instance()->temLinhaBaseAtiva);
+        $this->assertTrue($componente->instance()->atividades->isEmpty());
+        $componente
+            ->assertSee('Esta obra ainda não possui uma linha de base ativa.')
+            ->assertDontSee('Atividade Bloqueada Ambos XYZ');
+    }
+
+    public function test_linha_base_apenas_soft_deleted_conta_como_sem_linha_base_ativa(): void
+    {
+        // A LinhaBase padrão do setUp() já está ativa — soft-delete ela
+        // (em vez de forceDelete) pra provar que uma LinhaBase em lixeira
+        // NUNCA conta como ativa, mesmo continuando no banco.
+        $padrao = LinhaBase::where('obra_id', $this->obra->id)->firstOrFail();
+        $padrao->delete();
+
+        $this->assertEquals(1, LinhaBase::onlyTrashed()->where('obra_id', $this->obra->id)->count());
+        $this->assertEquals(0, LinhaBase::where('obra_id', $this->obra->id)->count());
+
+        $componente = $this->componente();
+        $this->assertFalse($componente->instance()->temLinhaBaseAtiva);
+        $componente->assertSee('Esta obra ainda não possui uma linha de base ativa.');
+    }
+
+    public function test_com_uma_linha_base_ativa_tabela_aparece_normalmente(): void
+    {
+        // Regressão positiva — LinhaBase padrão do setUp() continua ativa,
+        // nenhum avanço criado: tabela aparece, Previsto funciona
+        // (indiretamente, via popup), Tendência fica N/A.
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Com Baseline Ativa XYZ',
+            'baseline_inicio' => now()->addDays(5),
+        ]);
+
+        $componente = $this->componente();
+        $this->assertTrue($componente->instance()->temLinhaBaseAtiva);
+        $componente
+            ->assertSee('Atividade Com Baseline Ativa XYZ')
+            ->assertDontSee('Esta obra ainda não possui uma linha de base ativa.');
+    }
+
+    public function test_restaurar_linha_base_traz_de_volta_tabela_peso_e_anexo_sem_terem_sido_apagados(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Com Historico Preservado XYZ',
+            'baseline_inicio' => now()->addDays(5),
+        ]);
+        $linhaBaseNova = $this->criarLinhaBaseComPrevisto($atividade, [50]); // cria uma 2ª LinhaBase real, com Previsto de verdade
+        // % Peso lê especificamente granularidade Mensal (Ciclo 17 A.6) —
+        // criarLinhaBaseComPrevisto() só grava Semanal, então precisa de um
+        // registro Mensal próprio pra este teste poder provar que o Peso
+        // volta a aparecer.
+        AvancoPeriodo::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $linhaBaseNova->cronograma_importacao_id,
+            'atividade_id' => $atividade->id,
+            'granularidade' => GranularidadePeriodo::Mensal->value,
+            'serie' => SerieAvanco::Previsto->value,
+            'periodo_inicio' => now()->startOfMonth(),
+            'horas' => 50,
+        ]);
+
+        $anexo = app(AnexarArquivoAtividade::class)->execute($atividade, $this->arquivoPdfFakeA72('historico.pdf'), $this->user);
+
+        // Confirma estado operacional ANTES de remover nada.
+        $antes = $this->componente();
+        $this->assertTrue($antes->instance()->temLinhaBaseAtiva);
+        $antes->assertSee('Atividade Com Historico Preservado XYZ');
+
+        // Remove TODAS as LinhasBase da obra (padrão do setUp() + a criada
+        // acima) — simula exatamente o cenário relatado em QA: excluir
+        // todas as linhas de base salvas.
+        $linhasBaseIds = LinhaBase::where('obra_id', $this->obra->id)->pluck('id');
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
+        $bloqueado = $this->componente();
+        $this->assertFalse($bloqueado->instance()->temLinhaBaseAtiva);
+        $bloqueado->assertSee('Esta obra ainda não possui uma linha de base ativa.');
+
+        // CRÍTICO: nada foi apagado — Atividade, AvancoPeriodo (Previsto),
+        // AtividadeAnexo e as próprias LinhaBase (só soft-deleted) continuam
+        // intactos no banco.
+        $this->assertDatabaseHas('atividades', ['id' => $atividade->id]);
+        $this->assertDatabaseHas('atividade_anexos', ['id' => $anexo->id]);
+        Storage::disk(AtividadeAnexo::DISCO)->assertExists($anexo->caminho_arquivo);
+        $this->assertGreaterThan(0, AvancoPeriodo::where('atividade_id', $atividade->id)->count());
+        $this->assertEquals($linhasBaseIds->count(), LinhaBase::onlyTrashed()->where('obra_id', $this->obra->id)->count());
+
+        // Restaura a LinhaBase criada pelo teste (não a padrão do setUp(),
+        // que existe só pro resto da suíte) — Lookahead volta a operar,
+        // %Peso volta a aparecer, anexo continua acessível pelo popup.
+        $linhaBaseRestaurada = LinhaBase::onlyTrashed()
+            ->where('obra_id', $this->obra->id)
+            ->where('nome', 'BL01')
+            ->firstOrFail();
+        $linhaBaseRestaurada->restore();
+
+        $depois = $this->componente();
+        $this->assertTrue($depois->instance()->temLinhaBaseAtiva);
+        $depois->assertSee('Atividade Com Historico Preservado XYZ');
+
+        $depois->call('verAtividade', $atividade->id);
+        $this->assertNotNull($depois->get('modalAtividadeId'));
+        $this->assertTrue($depois->instance()->modalCurvaAtividade['tem_baseline']);
+        $this->assertNotNull($depois->instance()->modalPeso);
+        $this->assertEquals(1, $depois->instance()->modalAnexos->count());
+        $this->assertEquals('historico.pdf', $depois->instance()->modalAnexos->first()->nome_original);
+    }
+
+    // =========================================================================
+    // Ciclo 17 — correção das ressalvas da auditoria: atividadeDetalhe()/
+    // modalAnexos() precisam de guarda PRÓPRIA (não podem depender só de
+    // verAtividade() já ter bloqueado), e a mensagem de "Nova Atividade"
+    // sem LinhaBase precisa explicar a causa real, não falar de filtros.
+    // =========================================================================
+
+    public function test_teste_a_atividade_detalhe_bloqueado_via_manipulacao_direta_de_modalatividadeid(): void
+    {
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Bloqueio Direto ADQ',
+        ]);
+        Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'descricao' => 'Restricao Sigilosa Bloqueio Direto ADQ',
+        ]);
+        AtividadeComentario::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'comentario' => 'Comentario Sigiloso Bloqueio Direto ADQ',
+        ]);
+        $item = \App\Models\ItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Item Checklist Sigiloso Bloqueio Direto ADQ',
+            'ordem' => 1,
+        ]);
+        \App\Models\AtividadeItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => true,
+        ]);
+
+        $componente = $this->componente();
+
+        // Prova, ANTES da ação, que não existe LinhaBase ativa.
+        $this->assertFalse($componente->instance()->temLinhaBaseAtiva);
+        $this->assertEquals(0, LinhaBase::where('obra_id', $this->obra->id)->count());
+
+        // Manipulação direta da propriedade pública — nunca chama verAtividade().
+        $componente->set('modalAtividadeId', $atividade->id);
+
+        $this->assertNull($componente->instance()->atividadeDetalhe);
+        $componente
+            ->assertDontSee('Restricao Sigilosa Bloqueio Direto ADQ')
+            ->assertDontSee('Comentario Sigiloso Bloqueio Direto ADQ')
+            ->assertDontSee('Item Checklist Sigiloso Bloqueio Direto ADQ');
+    }
+
+    public function test_teste_b_modalanexos_bloqueado_via_manipulacao_direta_de_modalatividadeid(): void
+    {
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Com Anexo Bloqueio Direto ADQ',
+        ]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute(
+            $atividade,
+            $this->arquivoPdfFakeA72('sigiloso-bloqueio-direto-adq.pdf'),
+            $this->user
+        );
+
+        $componente = $this->componente();
+
+        // Prova, ANTES da ação, que não existe LinhaBase ativa.
+        $this->assertFalse($componente->instance()->temLinhaBaseAtiva);
+
+        // Manipulação direta da propriedade pública — nunca chama verAtividade().
+        $componente->set('modalAtividadeId', $atividade->id);
+
+        $this->assertTrue($componente->instance()->modalAnexos->isEmpty());
+        $componente->assertDontSee('sigiloso-bloqueio-direto-adq.pdf');
+
+        // O anexo continua existindo de verdade — só a EXPOSIÇÃO dentro do
+        // Lookahead foi bloqueada, nunca o registro/arquivo em si.
+        $this->assertDatabaseHas('atividade_anexos', ['id' => $anexo->id]);
+        Storage::disk(AtividadeAnexo::DISCO)->assertExists($anexo->caminho_arquivo);
+    }
+
+    public function test_teste_c_restaurar_linha_base_traz_de_volta_atividadedetalhe_e_modalanexos_sem_duplicar_nada(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Atividade Ciclo Completo ADQ',
+            'baseline_inicio' => now()->addDays(5),
+        ]);
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'descricao' => 'Restricao Ciclo Completo ADQ',
+        ]);
+        $comentario = AtividadeComentario::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'comentario' => 'Comentario Ciclo Completo ADQ',
+        ]);
+        $item = \App\Models\ItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'nome' => 'Item Ciclo Completo ADQ',
+            'ordem' => 1,
+        ]);
+        \App\Models\AtividadeItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => true,
+        ]);
+        $anexo = app(AnexarArquivoAtividade::class)->execute(
+            $atividade,
+            $this->arquivoPdfFakeA72('ciclo-completo-adq.pdf'),
+            $this->user
+        );
+
+        // LinhaBase padrão do setUp() já está ativa — confirma estado
+        // operacional ANTES de remover nada.
+        $antes = $this->componente();
+        $this->assertTrue($antes->instance()->temLinhaBaseAtiva);
+        $antes->call('verAtividade', $atividade->id);
+        $this->assertNotNull($antes->instance()->atividadeDetalhe);
+        $this->assertEquals(1, $antes->instance()->modalAnexos->count());
+
+        // Remove (soft-delete) a LinhaBase da obra.
+        $linhaBaseId = LinhaBase::where('obra_id', $this->obra->id)->firstOrFail()->id;
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
+        $bloqueado = $this->componente();
+        $this->assertFalse($bloqueado->instance()->temLinhaBaseAtiva);
+        $bloqueado->set('modalAtividadeId', $atividade->id);
+        $this->assertNull($bloqueado->instance()->atividadeDetalhe);
+        $this->assertTrue($bloqueado->instance()->modalAnexos->isEmpty());
+
+        // Restaura legitimamente a MESMA LinhaBase (não recria nada nova).
+        LinhaBase::onlyTrashed()->where('id', $linhaBaseId)->firstOrFail()->restore();
+
+        // Nova instância do componente, abre normalmente via verAtividade().
+        $depois = $this->componente();
+        $this->assertTrue($depois->instance()->temLinhaBaseAtiva);
+        $depois->call('verAtividade', $atividade->id);
+
+        $detalhe = $depois->instance()->atividadeDetalhe;
+        $this->assertNotNull($detalhe);
+        $this->assertEquals($atividade->id, $detalhe['atividade']->id);
+        $this->assertCount(1, $detalhe['atividade']->restricoes);
+        $this->assertEquals($restricao->id, $detalhe['atividade']->restricoes->first()->id);
+        $this->assertCount(1, $detalhe['atividade']->comentarios);
+        $this->assertEquals($comentario->id, $detalhe['atividade']->comentarios->first()->id);
+        $checklistItem = collect($detalhe['checklist'])->firstWhere('id', $item->id);
+        $this->assertNotNull($checklistItem);
+        $this->assertTrue($checklistItem['concluido']);
+
+        $anexos = $depois->instance()->modalAnexos;
+        $this->assertEquals(1, $anexos->count());
+        $this->assertEquals($anexo->id, $anexos->first()->id);
+        $this->assertEquals('ciclo-completo-adq.pdf', $anexos->first()->nome_original);
+
+        // Nada foi recriado/duplicado — mesmos IDs, mesma contagem de sempre.
+        $this->assertEquals(1, Atividade::where('id', $atividade->id)->count());
+        $this->assertEquals(1, Restricao::where('atividade_id', $atividade->id)->count());
+        $this->assertEquals(1, AtividadeComentario::where('atividade_id', $atividade->id)->count());
+        $this->assertEquals(1, \App\Models\AtividadeItemProntidao::where('atividade_id', $atividade->id)->count());
+        $this->assertEquals(1, AtividadeAnexo::where('atividade_id', $atividade->id)->count());
+    }
+
+    public function test_teste_d_criar_atividade_manual_sem_linha_base_ativa_mostra_mensagem_didatica(): void
+    {
+        LinhaBase::where('obra_id', $this->obra->id)->delete();
+
+        $componente = $this->componente();
+
+        // Prova, ANTES da ação, que não existe LinhaBase ativa.
+        $this->assertFalse($componente->instance()->temLinhaBaseAtiva);
+
+        $componente
+            ->call('abrirModalNovaAtividade')
+            ->set('nomeNovaAtividade', 'Atividade Manual Sem Baseline ADQ')
+            ->set('inicioNovaAtividade', now()->addDays(3)->toDateString())
+            ->set('terminoNovaAtividade', now()->addDays(6)->toDateString())
+            ->call('salvarAtividade');
+
+        // A atividade foi criada normalmente — criação nunca é bloqueada.
+        $atividade = Atividade::where('nome', 'Atividade Manual Sem Baseline ADQ')->first();
+        $this->assertNotNull($atividade);
+        $this->assertEquals(OrigemAtividade::Manual, $atividade->origem);
+
+        // Não aparece na tabela operacional — sem LinhaBase, é sempre vazia.
+        $this->assertTrue($componente->instance()->atividades->isEmpty());
+        $componente->assertDontSee('Atividade Manual Sem Baseline ADQ');
+
+        $componente->assertDispatched('show-toast', function (string $name, array $params) {
+            $mensagem = $params['message'] ?? '';
+
+            $this->assertStringNotContainsStringIgnoringCase('janela', $mensagem);
+            $this->assertStringNotContainsStringIgnoringCase('etapa', $mensagem);
+            $this->assertStringNotContainsStringIgnoringCase('frente', $mensagem);
+            $this->assertStringNotContainsStringIgnoringCase('ajuste', $mensagem);
+            $this->assertStringContainsStringIgnoringCase('linha de base', $mensagem);
+
+            return ($params['type'] ?? null) === 'warning';
+        });
+    }
+
+    public function test_teste_e_criar_atividade_manual_com_linha_base_ativa_preserva_logica_antiga_visivel_e_fora_do_filtro(): void
+    {
+        // LinhaBase padrão do setUp() continua ativa — cenário operacional normal.
+        $this->assertTrue($this->componente()->instance()->temLinhaBaseAtiva);
+
+        // Caso 1 (regressão): atividade dentro do filtro atual → mensagem de
+        // sucesso simples, sem menção a filtro nenhum — igual sempre foi.
+        $componenteVisivel = $this->componente()
+            ->set('fonteData', 'tendencia')
+            ->call('abrirModalNovaAtividade')
+            ->set('nomeNovaAtividade', 'Atividade Manual Visivel Com Baseline ADQ')
+            ->set('inicioNovaAtividade', now()->addDays(3)->toDateString())
+            ->set('terminoNovaAtividade', now()->addDays(6)->toDateString())
+            ->call('salvarAtividade');
+
+        $componenteVisivel->assertDispatched('show-toast', function (string $name, array $params) {
+            return ($params['message'] ?? null) === 'Atividade criada.';
+        });
+
+        // Caso 2 (regressão): atividade fora da janela atual → aviso antigo
+        // sobre janela/etapa/frente — igual sempre foi.
+        $componenteForaFiltro = $this->componente()
+            ->set('fonteData', 'tendencia')
+            ->set('janelaDias', 30)
+            ->call('abrirModalNovaAtividade')
+            ->set('nomeNovaAtividade', 'Atividade Manual Fora Filtro Com Baseline ADQ')
+            ->set('inicioNovaAtividade', now()->addDays(90)->toDateString())
+            ->set('terminoNovaAtividade', now()->addDays(95)->toDateString())
+            ->call('salvarAtividade');
+
+        $componenteForaFiltro->assertDispatched('show-toast', function (string $name, array $params) {
+            $mensagem = $params['message'] ?? '';
+
+            return ($params['type'] ?? null) === 'warning'
+                && str_contains($mensagem, 'fora do filtro atual')
+                && str_contains($mensagem, 'janela de dias, etapa ou frente de trabalho');
+        });
+
+        $this->assertDatabaseHas('atividades', ['nome' => 'Atividade Manual Visivel Com Baseline ADQ']);
+        $this->assertDatabaseHas('atividades', ['nome' => 'Atividade Manual Fora Filtro Com Baseline ADQ']);
     }
 }
