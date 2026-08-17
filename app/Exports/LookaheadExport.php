@@ -31,7 +31,7 @@ class LookaheadExport implements FromCollection, WithHeadings, WithMapping
     }
 
     /**
-     * @param  array{atividade: \App\Models\Atividade, inicioTendencia: ?\Carbon\Carbon, terminoTendencia: ?\Carbon\Carbon, inicioBaseline: ?\Carbon\Carbon, terminoBaseline: ?\Carbon\Carbon, restricoesBloq: int, restricoesNaoBloq: int, itensOk: int, totalItens: int, pronta: bool}  $linha
+     * @param  array{atividade: \App\Models\Atividade, inicioTendencia: ?\Carbon\Carbon, terminoTendencia: ?\Carbon\Carbon, inicioBaseline: ?\Carbon\Carbon, terminoBaseline: ?\Carbon\Carbon, restricoesBloq: int, restricoesNaoBloq: int, itensOk: int, totalItens: int, pronta: bool, peso: ?float, percentualRealizado: ?float}  $linha
      */
     public function map($linha): array
     {
@@ -45,7 +45,10 @@ class LookaheadExport implements FromCollection, WithHeadings, WithMapping
             $linha['terminoBaseline']?->format('d/m/Y') ?? '—',
             $this->temImportacaoAvanco ? ($linha['inicioTendencia']?->format('d/m/Y') ?? '—') : 'N/A',
             $this->temImportacaoAvanco ? ($linha['terminoTendencia']?->format('d/m/Y') ?? '—') : 'N/A',
-            $at->percentual_concluido !== null ? number_format((float) $at->percentual_concluido, 0) . '%' : '—',
+            // Correção pós-QA (Ciclo 17) — NUNCA $at->percentual_concluido (ver
+            // mesma correção em ⚡lookahead.blade.php); fonte única é o valor já
+            // resolvido pela fotografia de avanço efetiva em atividades().
+            $linha['percentualRealizado'] !== null ? number_format($linha['percentualRealizado'], 0) . '%' : '—',
             $linha['restricoesBloq'],
             $linha['restricoesNaoBloq'],
             $linha['totalItens'] > 0 ? "{$linha['itensOk']}/{$linha['totalItens']}" : '—',

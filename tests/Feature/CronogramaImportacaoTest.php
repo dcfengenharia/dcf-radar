@@ -16,10 +16,14 @@ use App\Models\FrenteTrabalho;
 use App\Models\ItemProntidao;
 use App\Models\PacoteTrabalho;
 use App\Models\Restricao;
+use App\Models\AtividadeAnexo;
+use App\Models\AtividadeComentario;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class CronogramaImportacaoTest extends TestCase
@@ -492,10 +496,15 @@ class CronogramaImportacaoTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // Auto-conclusão de pendências quando a atividade atinge 100%
+    // Ciclo 17, A.9.1 — o cronograma importado é a verdade factual; a
+    // plataforma preserva o histórico operacional. ConclusaoAutomaticaAtividades
+    // não é mais chamada automaticamente pela importação — mesmo com a
+    // atividade chegando a 100%, Restrição/AtividadeItemProntidao/
+    // comentário/anexo permanecem exatamente como estavam.
     // -------------------------------------------------------------------------
 
-    public function test_reimportacao_com_atividade_100_resolve_restricoes_e_itens_de_prontidao(): void
+    /** Teste A/C/F/N — 100% preserva Restrição BLOQUEANTE aberta e item de prontidão pendente; conclusão factual (percentual_concluido/real_inicio) continua correta; zero RestricaoAcao automática. */
+    public function test_reimportacao_com_atividade_100_preserva_restricao_bloqueante_e_prontidao_pendente(): void
     {
         // v1: Atividade 1 (UID=2) importada com 40% (fixture padrão)
         $planoV1 = $this->importer->analisar($this->fixture('cronograma_sample.xml'), $this->obra);
@@ -507,6 +516,7 @@ class CronogramaImportacaoTest extends TestCase
             'tenant_id' => $this->user->tenant_id,
             'atividade_id' => $at1->id,
             'status' => StatusRestricao::Aberta->value,
+            'bloqueante' => true,
         ]);
         $item = ItemProntidao::create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $this->obra->id, 'nome' => 'Projeto aprovado', 'ordem' => 0]);
         AtividadeItemProntidao::create([
@@ -516,26 +526,203 @@ class CronogramaImportacaoTest extends TestCase
             'concluido' => false,
         ]);
 
-        // v2: mesmo external_uid, agora com PercentWorkComplete=100
+        // v2: mesmo external_uid, agora com PercentWorkComplete=100 e ActualStart preenchido.
         $planoV2 = $this->importer->analisar($this->fixture('cronograma_100pct.xml'), $this->obra);
         $this->importer->aplicar($planoV2, $this->obra, $this->user->id, '100pct.xml');
 
+        // Conclusão factual: aceita normalmente, nunca rebaixada/bloqueada.
         $at1->refresh();
         $this->assertEquals(100.0, (float) $at1->percentual_concluido);
+        $this->assertEquals('2024-01-01', $at1->real_inicio->toDateString());
 
+        // Pendência operacional: permanece exatamente como estava.
         $restricao->refresh();
-        $this->assertEquals(StatusRestricao::Resolvida, $restricao->status);
-        $this->assertNotNull($restricao->resolvida_em);
-        $this->assertDatabaseHas('restricao_acoes', [
+        $this->assertEquals(StatusRestricao::Aberta, $restricao->status);
+        $this->assertNull($restricao->resolvida_em);
+        $this->assertDatabaseMissing('restricao_acoes', [
             'restricao_id' => $restricao->id,
-            'descricao' => 'Restrição concluída automaticamente: atividade atingiu 100% no cronograma.',
         ]);
 
         $registro = AtividadeItemProntidao::where('atividade_id', $at1->id)
             ->where('item_prontidao_id', $item->id)
             ->first();
+        $this->assertFalse((bool) $registro->concluido);
+        $this->assertNull($registro->concluido_em);
+        $this->assertNull($registro->concluido_por);
+    }
+
+    /** Teste B — mesmo cenário, Restrição NÃO bloqueante também permanece intocada (nenhuma regra especial por tipo nesta etapa). */
+    public function test_reimportacao_com_atividade_100_preserva_restricao_nao_bloqueante_aberta(): void
+    {
+        $planoV1 = $this->importer->analisar($this->fixture('cronograma_sample.xml'), $this->obra);
+        $this->importer->aplicar($planoV1, $this->obra, $this->user->id, 'v1.xml');
+        $at1 = Atividade::where('obra_id', $this->obra->id)->where('external_uid', '2')->first();
+
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'status' => StatusRestricao::Aberta->value,
+            'bloqueante' => false,
+        ]);
+
+        $planoV2 = $this->importer->analisar($this->fixture('cronograma_100pct.xml'), $this->obra);
+        $this->importer->aplicar($planoV2, $this->obra, $this->user->id, '100pct.xml');
+
+        $this->assertEquals(100.0, (float) $at1->fresh()->percentual_concluido);
+        $this->assertEquals(StatusRestricao::Aberta, $restricao->fresh()->status);
+        $this->assertNull($restricao->fresh()->resolvida_em);
+    }
+
+    /** Teste D — item de prontidão JÁ concluído permanece concluído, com concluido_por/concluido_em intocados. */
+    public function test_reimportacao_com_atividade_100_preserva_item_prontidao_ja_concluido(): void
+    {
+        $planoV1 = $this->importer->analisar($this->fixture('cronograma_sample.xml'), $this->obra);
+        $this->importer->aplicar($planoV1, $this->obra, $this->user->id, 'v1.xml');
+        $at1 = Atividade::where('obra_id', $this->obra->id)->where('external_uid', '2')->first();
+
+        $item = ItemProntidao::create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $this->obra->id, 'nome' => 'Projeto aprovado', 'ordem' => 0]);
+        $marcadoEm = now()->subDays(3);
+        AtividadeItemProntidao::create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => true,
+            'concluido_por' => $this->user->id,
+            'concluido_em' => $marcadoEm,
+        ]);
+
+        $planoV2 = $this->importer->analisar($this->fixture('cronograma_100pct.xml'), $this->obra);
+        $this->importer->aplicar($planoV2, $this->obra, $this->user->id, '100pct.xml');
+
+        $registro = AtividadeItemProntidao::where('atividade_id', $at1->id)
+            ->where('item_prontidao_id', $item->id)
+            ->first();
         $this->assertTrue((bool) $registro->concluido);
-        $this->assertNotNull($registro->concluido_em);
+        $this->assertEquals($this->user->id, $registro->concluido_por);
+        $this->assertTrue($registro->concluido_em->isSameSecond($marcadoEm));
+    }
+
+    /** Teste E — Restrição já resolvida antes da importação permanece resolvida, sem reabertura nem sobrescrita de timestamp. */
+    public function test_reimportacao_com_atividade_100_preserva_restricao_ja_resolvida(): void
+    {
+        $planoV1 = $this->importer->analisar($this->fixture('cronograma_sample.xml'), $this->obra);
+        $this->importer->aplicar($planoV1, $this->obra, $this->user->id, 'v1.xml');
+        $at1 = Atividade::where('obra_id', $this->obra->id)->where('external_uid', '2')->first();
+
+        $resolvidaEm = now()->subDays(5);
+        $restricaoResolvida = Restricao::factory()->create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'status' => StatusRestricao::Resolvida->value,
+            'resolvida_em' => $resolvidaEm,
+        ]);
+        $restricaoAberta = Restricao::factory()->create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+
+        $planoV2 = $this->importer->analisar($this->fixture('cronograma_100pct.xml'), $this->obra);
+        $this->importer->aplicar($planoV2, $this->obra, $this->user->id, '100pct.xml');
+
+        $this->assertEquals(StatusRestricao::Resolvida, $restricaoResolvida->fresh()->status);
+        $this->assertTrue($restricaoResolvida->fresh()->resolvida_em->isSameSecond($resolvidaEm));
+        $this->assertEquals(StatusRestricao::Aberta, $restricaoAberta->fresh()->status);
+    }
+
+    /** Teste G — primeira importação de Avanço (nunca houve avanço anterior) já traz a atividade em 100%: pendência criada antes permanece aberta. */
+    public function test_primeira_importacao_de_avanco_ja_em_100_preserva_restricao_aberta(): void
+    {
+        $planoBaseline = $this->importer->analisar($this->fixture('cronograma_sample.xml'), $this->obra, TipoCronogramaImportacao::Baseline);
+        $this->importer->aplicar($planoBaseline, $this->obra, $this->user->id, 'baseline.xml', TipoCronogramaImportacao::Baseline);
+
+        $at1 = Atividade::where('obra_id', $this->obra->id)->where('external_uid', '2')->first();
+        $this->assertNotEquals(100.0, (float) $at1->percentual_concluido);
+
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+
+        // Primeira (e única) importação de Avanço da obra — traz UID=2 direto a 100%.
+        $planoAvanco = $this->importer->analisar($this->fixture('cronograma_avanco_com_nova_tarefa.xml'), $this->obra, TipoCronogramaImportacao::Avanco);
+        $this->importer->aplicar($planoAvanco, $this->obra, $this->user->id, 'avanco.xml', TipoCronogramaImportacao::Avanco);
+
+        $this->assertEquals(100.0, (float) $at1->fresh()->percentual_concluido);
+        $this->assertEquals(StatusRestricao::Aberta, $restricao->fresh()->status);
+    }
+
+    /** Teste H — reimportação 100%→100%: mesmo já vindo de 100% na importação anterior, nada é autocorrigido (prova que não é lógica de transição, é ausência total de automação). */
+    public function test_reimportacao_100_para_100_nao_autocorrige(): void
+    {
+        $planoV1 = $this->importer->analisar($this->fixture('cronograma_100pct.xml'), $this->obra);
+        $this->importer->aplicar($planoV1, $this->obra, $this->user->id, 'v1.xml');
+        $at1 = Atividade::where('obra_id', $this->obra->id)->where('external_uid', '2')->first();
+        $this->assertEquals(100.0, (float) $at1->percentual_concluido);
+
+        // Restrição criada DEPOIS da primeira importação, com a atividade já 100%.
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+
+        // Reimporta o MESMO XML — continua 100%.
+        $planoV2 = $this->importer->analisar($this->fixture('cronograma_100pct.xml'), $this->obra);
+        $this->importer->aplicar($planoV2, $this->obra, $this->user->id, 'v2.xml');
+
+        $this->assertEquals(100.0, (float) $at1->fresh()->percentual_concluido);
+        $this->assertEquals(StatusRestricao::Aberta, $restricao->fresh()->status);
+        $this->assertDatabaseMissing('restricao_acoes', ['restricao_id' => $restricao->id]);
+    }
+
+    /** Teste J — smoke test de identidade: comentário/anexo/Restrição/item de prontidão permanecem vinculados à MESMA Atividade (mesma PK) após importar avanço com 100%. */
+    public function test_historico_operacional_permanece_vinculado_apos_importacao_de_avanco(): void
+    {
+        Storage::fake(AtividadeAnexo::DISCO);
+
+        $planoV1 = $this->importer->analisar($this->fixture('cronograma_sample.xml'), $this->obra);
+        $this->importer->aplicar($planoV1, $this->obra, $this->user->id, 'v1.xml');
+        $at1 = Atividade::where('obra_id', $this->obra->id)->where('external_uid', '2')->first();
+        $atividadeIdAntes = $at1->id;
+
+        $comentario = AtividadeComentario::create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'autor_id' => $this->user->id,
+            'comentario' => 'Comentário de teste antes da importação de avanço.',
+        ]);
+        $anexo = app(\App\Actions\Atividade\AnexarArquivoAtividade::class)->execute(
+            $at1,
+            UploadedFile::fake()->create('documento.pdf', 100, 'application/pdf'),
+            $this->user,
+        );
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+        $item = ItemProntidao::create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $this->obra->id, 'nome' => 'Projeto aprovado', 'ordem' => 0]);
+        $itemProntidao = AtividadeItemProntidao::create([
+            'tenant_id' => $this->user->tenant_id,
+            'atividade_id' => $at1->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => false,
+        ]);
+
+        $planoV2 = $this->importer->analisar($this->fixture('cronograma_100pct.xml'), $this->obra);
+        $this->importer->aplicar($planoV2, $this->obra, $this->user->id, '100pct.xml');
+
+        $at1->refresh();
+        $this->assertEquals($atividadeIdAntes, $at1->id, 'PK da Atividade precisa continuar estável entre importações');
+        $this->assertEquals(100.0, (float) $at1->percentual_concluido);
+
+        $this->assertDatabaseHas('atividade_comentarios', ['id' => $comentario->id, 'atividade_id' => $atividadeIdAntes]);
+        $this->assertDatabaseHas('atividade_anexos', ['id' => $anexo->id, 'atividade_id' => $atividadeIdAntes]);
+        Storage::disk(AtividadeAnexo::DISCO)->assertExists($anexo->caminho_arquivo);
+        $this->assertDatabaseHas('restricoes', ['id' => $restricao->id, 'atividade_id' => $atividadeIdAntes, 'status' => StatusRestricao::Aberta->value]);
+        $this->assertDatabaseHas('atividade_itens_prontidao', ['id' => $itemProntidao->id, 'atividade_id' => $atividadeIdAntes, 'concluido' => false]);
     }
 
     public function test_reimportacao_com_atividade_abaixo_de_100_nao_resolve_restricoes(): void

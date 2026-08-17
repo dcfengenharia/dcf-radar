@@ -17,6 +17,7 @@ use App\Models\AtividadeComentario;
 use App\Models\AtividadeSnapshot;
 use App\Models\AvancoPeriodo;
 use App\Models\CronogramaImportacao;
+use App\Models\CurvaAjuste;
 use App\Models\Etapa;
 use App\Models\FrenteTrabalho;
 use App\Models\LinhaBase;
@@ -26,6 +27,7 @@ use App\Models\Restricao;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
+use App\Support\TenantContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -718,6 +720,20 @@ class LookaheadTest extends TestCase
         });
     }
 
+    /**
+     * Correção pós-QA (Ciclo 17) — expectativa antiga estava ERRADA: este
+     * teste criava uma Atividade com `percentual_concluido = 40` (campo AO
+     * VIVO) e SEM NENHUMA importação de Avanço/Ambos na obra, e ainda assim
+     * esperava ver "40%" na tabela — exatamente o mecanismo do bug relatado
+     * pelo usuário em produção (85% aparecendo sem nenhum Avanço importado).
+     * `percentual_concluido` é gravado pelo MsProjectImporter em QUALQUER
+     * tipo de importação, inclusive Baseline-only (ver aplicar(), branch
+     * updateOrCreate compartilhada) — nunca pode alimentar a coluna
+     * operacional "%" da tabela. Reescrito para provar o comportamento
+     * CORRETO: sem Avanço/Ambos, a coluna nunca mostra o valor do campo ao
+     * vivo — mostra "—". O cenário "com Avanço real, mostra o % correto" é
+     * coberto pelos testes test_G_* (bateria desta correção, abaixo).
+     */
     public function test_percentual_de_avanco_e_exibido_na_lista(): void
     {
         $atividade = Atividade::factory()->create([
@@ -728,10 +744,13 @@ class LookaheadTest extends TestCase
             'percentual_concluido' => 40,
         ]);
 
-        $this->componente()
+        $row = $this->componente()
             ->set('fonteData', 'tendencia')
-            ->assertSee($atividade->nome)
-            ->assertSee('40%');
+            ->instance()
+            ->atividades
+            ->firstWhere('atividade.id', $atividade->id);
+
+        $this->assertNull($row['percentualRealizado']);
     }
 
     public function test_tabela_principal_mostra_datas_com_ano_de_dois_digitos(): void
@@ -1405,6 +1424,46 @@ class LookaheadTest extends TestCase
         ]);
     }
 
+    /**
+     * Ciclo 17, A.8 — helpers dedicados (mesmo espírito de
+     * criarLinhaBaseMensal()/criarAvancoPeriodoPrevistoMensal(), já usados
+     * pela seção de % Peso) pra "espelhar" em Mensal o TOTAL já semeado em
+     * Semanal por criarLinhaBaseComPrevisto()/criarReportEmitidoComRealizado()
+     * — nunca alterando esses dois helpers compartilhados diretamente (ver
+     * comentário em test_a6_k: aquele teste depende DELIBERADAMENTE de
+     * criarLinhaBaseComPrevisto() só gravar Semanal). Espelha o MESMO total
+     * (nunca um valor diferente) — exatamente a invariante real do
+     * importador (mesmo HH gravado em paralelo nas duas granularidades) —
+     * porque a partir desta correção o indicador resumido (percentual_realizado,
+     * tabela e popup) é sempre Mensal (App\Services\AvancoAtividade), nunca
+     * mais a granularidade escolhida no seletor do gráfico.
+     */
+    private function espelharPrevistoMensal(LinhaBase $lb, Atividade $atividade, array $horasPorSemana): void
+    {
+        AvancoPeriodo::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $lb->cronograma_importacao_id,
+            'atividade_id' => $atividade->id,
+            'granularidade' => GranularidadePeriodo::Mensal->value,
+            'serie' => SerieAvanco::Previsto->value,
+            'periodo_inicio' => now()->subMonth()->startOfMonth(),
+            'horas' => array_sum($horasPorSemana),
+        ]);
+    }
+
+    private function espelharRealizadoMensal(Report $report, Atividade $atividade, array $horasPorSemana): void
+    {
+        AvancoPeriodo::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'cronograma_importacao_id' => $report->cronograma_importacao_id,
+            'atividade_id' => $atividade->id,
+            'granularidade' => GranularidadePeriodo::Mensal->value,
+            'serie' => SerieAvanco::Realizado->value,
+            'periodo_inicio' => now()->subMonth()->startOfMonth(),
+            'horas' => array_sum($horasPorSemana),
+        ]);
+    }
+
     public function test_curva_atividade_com_baseline_e_report_emitido_calcula_previsto_e_realizado(): void
     {
         $atividade = Atividade::factory()->create([
@@ -1412,8 +1471,11 @@ class LookaheadTest extends TestCase
             'obra_id' => $this->obra->id,
         ]);
 
-        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]); // total 100HH, ambas semanas já passadas
-        $this->criarReportEmitidoComRealizado($atividade, [30]); // 30HH realizado — cria também a importação Avanço subjacente
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]); // total 100HH, ambas semanas já passadas
+        $report = $this->criarReportEmitidoComRealizado($atividade, [30]); // 30HH realizado — cria também a importação Avanço subjacente
+        // Ciclo 17, A.8 — percentual_realizado agora é sempre Mensal (canônico).
+        $this->espelharPrevistoMensal($lb, $atividade, [40, 60]);
+        $this->espelharRealizadoMensal($report, $atividade, [30]);
 
         $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
 
@@ -1927,7 +1989,7 @@ class LookaheadTest extends TestCase
             // comentários — confirma a exigência da A.3 de não inflar o
             // evento com dado que o JS não usa.
             $this->assertEqualsCanonicalizing(
-                ['baseline_id', 'baseline_inicio', 'baseline_termino', 'tem_baseline', 'tendencia_id', 'tem_tendencia_selecionada', 'tem_realizado', 'tem_tendencia', 'previsto', 'realizado', 'tendencia', 'labels', 'percentual_previsto', 'percentual_realizado', 'indicador'],
+                ['baseline_id', 'baseline_inicio', 'baseline_termino', 'tem_baseline', 'tendencia_id', 'tem_tendencia_selecionada', 'tem_realizado', 'tem_tendencia', 'previsto', 'realizado', 'tendencia', 'labels', 'percentual_previsto', 'percentual_realizado', 'curva_diverge_do_indicador', 'indicador'],
                 array_keys($dados)
             );
             $this->assertArrayNotHasKey('atividade', $dados);
@@ -2056,7 +2118,17 @@ class LookaheadTest extends TestCase
      * formato que MsProjectImporter grava de verdade. Prova, por
      * construção, que o gráfico do popup nunca depende de Report existir.
      */
-    private function criarImportacaoAvancoComSeries(Atividade $atividade, array $seriesComHoras, ?\Illuminate\Support\Carbon $importadoEm = null): CronogramaImportacao
+    /**
+     * $espelharMensal (Ciclo 17, A.8, default false — nunca muda o
+     * comportamento dos callers já existentes): quando true, grava também,
+     * pra cada série, UM registro Mensal com o MESMO total já semeado em
+     * Semanal — mesma invariante real do importador (mesmo HH em paralelo
+     * nas duas granularidades) — necessário pros testes cujo cenário
+     * depende de percentual_realizado, que a partir desta correção é
+     * sempre Mensal (App\Services\AvancoAtividade), nunca a granularidade
+     * do gráfico.
+     */
+    private function criarImportacaoAvancoComSeries(Atividade $atividade, array $seriesComHoras, ?\Illuminate\Support\Carbon $importadoEm = null, bool $espelharMensal = false): CronogramaImportacao
     {
         $importacao = CronogramaImportacao::create([
             'tenant_id' => $this->obra->tenant_id,
@@ -2079,6 +2151,18 @@ class LookaheadTest extends TestCase
                     'horas' => $horas,
                 ]);
                 $semana->addWeek();
+            }
+
+            if ($espelharMensal) {
+                AvancoPeriodo::create([
+                    'tenant_id' => $this->obra->tenant_id,
+                    'cronograma_importacao_id' => $importacao->id,
+                    'atividade_id' => $atividade->id,
+                    'granularidade' => GranularidadePeriodo::Mensal->value,
+                    'serie' => $serie,
+                    'periodo_inicio' => now()->subMonth()->startOfMonth(),
+                    'horas' => array_sum($horasPorSemana),
+                ]);
             }
         }
 
@@ -2106,8 +2190,9 @@ class LookaheadTest extends TestCase
     public function test_A4_B_baseline_mais_avanco_com_realizado(): void
     {
         $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
-        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]); // 100HH
-        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [30]]);
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]); // 100HH
+        $this->espelharPrevistoMensal($lb, $atividade, [40, 60]);
+        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [30]], espelharMensal: true);
 
         $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
 
@@ -2157,14 +2242,15 @@ class LookaheadTest extends TestCase
     public function test_A4_E_trocar_entre_multiplos_avancos_muda_datasets_e_header(): void
     {
         $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
-        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+        $this->espelharPrevistoMensal($lb, $atividade, [40, 60]);
 
-        $avanco1 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10]], now()->subDays(10));
+        $avanco1 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10]], now()->subDays(10), espelharMensal: true);
         AtividadeSnapshot::create([
             'tenant_id' => $this->obra->tenant_id, 'cronograma_importacao_id' => $avanco1->id, 'atividade_id' => $atividade->id,
             'inicio_planejado' => \Illuminate\Support\Carbon::parse('2026-03-01'), 'data_termino' => \Illuminate\Support\Carbon::parse('2026-03-10'),
         ]);
-        $avanco2 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [70]], now());
+        $avanco2 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [70]], now(), espelharMensal: true);
         AtividadeSnapshot::create([
             'tenant_id' => $this->obra->tenant_id, 'cronograma_importacao_id' => $avanco2->id, 'atividade_id' => $atividade->id,
             'inicio_planejado' => \Illuminate\Support\Carbon::parse('2026-09-01'), 'data_termino' => \Illuminate\Support\Carbon::parse('2026-09-10'),
@@ -2225,12 +2311,13 @@ class LookaheadTest extends TestCase
     public function test_A4_H_popup_herda_tendencia_explicita_da_pagina_ao_abrir(): void
     {
         $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
-        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
-        $avancoAntigo = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10]], now()->subDays(10));
-        $avancoEscolhido = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [50]], now()->subDays(5));
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+        $this->espelharPrevistoMensal($lb, $atividade, [40, 60]);
+        $avancoAntigo = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10]], now()->subDays(10), espelharMensal: true);
+        $avancoEscolhido = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [50]], now()->subDays(5), espelharMensal: true);
         // Um avanço mais recente que $avancoEscolhido existe também — a
         // página escolhe explicitamente o do meio, não o mais recente.
-        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [90]], now());
+        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [90]], now(), espelharMensal: true);
 
         $componente = $this->componente()
             ->set('tendenciaImportacaoId', $avancoEscolhido->id)
@@ -2244,9 +2331,10 @@ class LookaheadTest extends TestCase
     public function test_A4_I_sem_selecao_explicita_popup_usa_mesma_importacao_efetiva_da_pagina(): void
     {
         $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
-        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
-        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10]], now()->subDays(10));
-        $maisRecente = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [80]], now());
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+        $this->espelharPrevistoMensal($lb, $atividade, [40, 60]);
+        $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [10]], now()->subDays(10), espelharMensal: true);
+        $maisRecente = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [80]], now(), espelharMensal: true);
 
         $componente = $this->componente()->call('verAtividade', $atividade->id);
 
@@ -2342,14 +2430,16 @@ class LookaheadTest extends TestCase
     public function test_A4_payload_nao_usa_cronograma_do_ultimo_report_emitido(): void
     {
         $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
-        $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]);
+        $this->espelharPrevistoMensal($lb, $atividade, [40, 60]);
 
         // Report emitido referenciando uma importação com 99HH de Realizado
         // — se o bug antigo (ler do último Report) reaparecesse, o teste
         // pegaria 99%, não os 15% da importação de avanço de verdade mais
         // recente (sem Report nenhum).
-        $this->criarReportEmitidoComRealizado($atividade, [99]);
-        $avancoSemReport = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [15]], now());
+        $reportComNoventaENove = $this->criarReportEmitidoComRealizado($atividade, [99]);
+        $this->espelharRealizadoMensal($reportComNoventaENove, $atividade, [99]);
+        $avancoSemReport = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [15]], now(), espelharMensal: true);
 
         $curva = $this->componente()->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
 
@@ -2362,7 +2452,8 @@ class LookaheadTest extends TestCase
     {
         $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
         $lb3 = $this->criarLinhaBaseComPrevisto($atividade, [40, 60], 'Baseline 03');
-        $avanco7 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [33]]);
+        $this->espelharPrevistoMensal($lb3, $atividade, [40, 60]);
+        $avanco7 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [33]], espelharMensal: true);
 
         $curva = $this->componente()
             ->call('verAtividade', $atividade->id)
@@ -2396,15 +2487,17 @@ class LookaheadTest extends TestCase
 
         // Baseline 02: criada primeiro (mais antiga), 100HH.
         $baseline02 = $this->criarLinhaBaseComPrevisto($atividade, [40, 60], 'Baseline 02', now()->subDays(20));
+        $this->espelharPrevistoMensal($baseline02, $atividade, [40, 60]);
         // Baseline 05: criada depois (mais recente/default), 20HH — valor
         // bem diferente de B02, pra detectar se o popup pegou a errada.
         $baseline05 = $this->criarLinhaBaseComPrevisto($atividade, [10, 10], 'Baseline 05', now());
+        $this->espelharPrevistoMensal($baseline05, $atividade, [10, 10]);
         $this->assertEquals($baseline05->id, $this->componente()->instance()->linhasBase->first()->id, 'pré-condição: B05 precisa ser a default/mais recente');
 
         $avanco07 = $this->criarImportacaoAvancoComSeries($atividade, [
             SerieAvanco::Realizado->value => [25],
             SerieAvanco::Tendencia->value => [35],
-        ]);
+        ], espelharMensal: true);
 
         $componente = $this->componente()
             ->set('linhaBaseId', $baseline02->id)
@@ -2453,6 +2546,7 @@ class LookaheadTest extends TestCase
     {
         $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
         $baseline02 = $this->criarLinhaBaseComPrevisto($atividade, [40, 60], 'B02', now()->subDays(20)); // 100HH, já passado => 100% previsto
+        $this->espelharPrevistoMensal($baseline02, $atividade, [40, 60]);
         // B05: MESMO total de 100HH (pra não alterar o denominador do rebase
         // do Realizado — CurvaAvanco::rebasearPercentual() usa o total de
         // Previsto da baseline ATIVA), mas com a semana só daqui a 2 semanas
@@ -2460,10 +2554,11 @@ class LookaheadTest extends TestCase
         // técnica já usada em test_trocar_baseline_atualiza_previsto_mas_nao_o_realizado,
         // garante % de Previsto genuinamente diferente de B02, sem afetar %Realizado.
         $baseline05 = $this->criarLinhaBaseComPrevisto($atividade, [100], 'B05', now(), now()->addWeeks(2));
+        $this->espelharPrevistoMensal($baseline05, $atividade, [100]);
         $avanco07 = $this->criarImportacaoAvancoComSeries($atividade, [
             SerieAvanco::Realizado->value => [25],
             SerieAvanco::Tendencia->value => [35],
-        ]);
+        ], espelharMensal: true);
 
         $componente = $this->componente()
             ->set('linhaBaseId', $baseline02->id)
@@ -2500,8 +2595,9 @@ class LookaheadTest extends TestCase
         // deixa "horas do Realizado" e "% do Realizado" numericamente
         // iguais, evitando erro de conta na asserção abaixo.
         $baseline05 = $this->criarLinhaBaseComPrevisto($atividade, [50, 50], 'B05', now());
-        $avanco07 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [25]], now()->subDays(5));
-        $avanco10 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [60], SerieAvanco::Tendencia->value => [70]], now()->subDays(1));
+        $this->espelharPrevistoMensal($baseline05, $atividade, [50, 50]);
+        $avanco07 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [25]], now()->subDays(5), espelharMensal: true);
+        $avanco10 = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [60], SerieAvanco::Tendencia->value => [70]], now()->subDays(1), espelharMensal: true);
 
         $componente = $this->componente()
             ->set('linhaBaseId', $baseline05->id)
@@ -2606,6 +2702,21 @@ class LookaheadTest extends TestCase
                 'granularidade' => GranularidadePeriodo::Semanal->value,
                 'serie' => $serie,
                 'periodo_inicio' => $semana->copy(),
+                'horas' => $horas,
+            ]);
+        }
+        // Ciclo 17, A.8 — percentual_realizado agora é sempre Mensal
+        // (canônico); espelha Previsto/Realizado (Tendência não entra no
+        // indicador resumido, só na curva) com o mesmo total já semeado em
+        // Semanal acima.
+        foreach ([SerieAvanco::Previsto->value => 50.0, SerieAvanco::Realizado->value => 40.0] as $serie => $horas) {
+            AvancoPeriodo::create([
+                'tenant_id' => $this->obra->tenant_id,
+                'cronograma_importacao_id' => $importacaoAmbos->id,
+                'atividade_id' => $atividade->id,
+                'granularidade' => GranularidadePeriodo::Mensal->value,
+                'serie' => $serie,
+                'periodo_inicio' => now()->subMonth()->startOfMonth(),
                 'horas' => $horas,
             ]);
         }
@@ -3902,5 +4013,977 @@ class LookaheadTest extends TestCase
 
         $this->assertDatabaseHas('atividades', ['nome' => 'Atividade Manual Visivel Com Baseline ADQ']);
         $this->assertDatabaseHas('atividades', ['nome' => 'Atividade Manual Fora Filtro Com Baseline ADQ']);
+    }
+
+    // =========================================================================
+    // Correção pós-QA (Ciclo 17) — coluna operacional "%" da tabela NUNCA
+    // pode vir de Atividade.percentual_concluido (campo ao vivo, gravado
+    // pelo importador em QUALQUER tipo de importação, inclusive Baseline).
+    // Fonte única: $row['percentualRealizado'], calculada em atividades()
+    // a partir de AvancoPeriodo (série Realizado, granularidade Mensal —
+    // mesma convenção já usada pelo % Peso) na importação de Avanço/Ambos
+    // EFETIVA da página, rebaseada contra o HH Previsto da PRÓPRIA
+    // atividade na baseline efetiva (mesma semântica de
+    // CurvaAvanco::rebasearPercentual(), sem invocar CurvaAvanco aqui —
+    // curva completa por período é desnecessária pro número corrente da
+    // tabela). Helpers dedicados desta seção (Mensal, nunca Semanal — ver
+    // já documentado acima sobre criarLinhaBaseComPrevisto()/% Peso).
+    // =========================================================================
+
+    private function criarImportacaoAvancoMensal(?\Illuminate\Support\Carbon $importadoEm = null, ?string $tipo = null): CronogramaImportacao
+    {
+        return CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => $tipo ?? TipoCronogramaImportacao::Avanco->value,
+            'importado_em' => $importadoEm ?? now(),
+        ]);
+    }
+
+    private function criarAvancoPeriodoRealizadoMensal(Atividade $atividade, CronogramaImportacao $importacao, array $horasPorMes): void
+    {
+        $mes = now()->subMonths(count($horasPorMes))->startOfMonth();
+        foreach ($horasPorMes as $horas) {
+            AvancoPeriodo::create([
+                'tenant_id' => $this->obra->tenant_id,
+                'cronograma_importacao_id' => $importacao->id,
+                'atividade_id' => $atividade->id,
+                'granularidade' => GranularidadePeriodo::Mensal->value,
+                'serie' => SerieAvanco::Realizado->value,
+                'periodo_inicio' => $mes->copy(),
+                'horas' => $horas,
+            ]);
+            $mes->addMonth();
+        }
+    }
+
+    /**
+     * Teste A — REPRODUÇÃO DO BUG ORIGINAL, agora como regressão automatizada:
+     * LinhaBase ativa + SOMENTE importação Baseline (nenhuma Avanço/Ambos) +
+     * Atividade.percentual_concluido = 85 (exatamente o que o
+     * MsProjectImporter grava numa importação Baseline-only, ver
+     * aplicar()). A coluna % NUNCA pode mostrar 85%, 0% ou qualquer valor —
+     * deve ser null/"—", igual às datas de Tendência (que já são N/A neste
+     * cenário).
+     */
+    public function test_A_somente_baseline_sem_avanco_percentual_e_nulo_nunca_o_campo_ao_vivo(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'baseline_inicio' => now()->subDays(10),
+            'baseline_termino' => now()->addDays(10),
+            'percentual_concluido' => 85,
+        ]);
+
+        $componente = $this->componente()->set('janelaDias', 0);
+
+        $this->assertFalse($componente->instance()->temImportacaoAvanco);
+
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertNull($row['percentualRealizado']);
+
+        $html = $componente->html();
+        $this->assertStringNotContainsString('>85%<', $html);
+    }
+
+    /**
+     * Teste B — existe importação de Avanço/Ambos na obra, mas a ATIVIDADE
+     * específica não tem nenhum HH Previsto registrado na baseline efetiva
+     * (sem denominador pra rebasear) — percentual continua null, mesmo
+     * regra já aplicada ao % Peso (test_a6_c).
+     */
+    public function test_B_avanco_existe_mas_atividade_sem_hh_previsto_percentual_e_nulo(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        // Nenhum AvancoPeriodo Previsto pra esta atividade nesta baseline.
+
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [50]);
+
+        $row = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0)
+            ->instance()
+            ->atividades
+            ->firstWhere('atividade.id', $atividade->id);
+
+        $this->assertNull($row['percentualRealizado']);
+    }
+
+    /**
+     * Teste C — O MAIS IMPORTANTE desta correção: prova que Baseline NUNCA
+     * é fonte do avanço, mesmo quando o campo ao vivo (percentual_concluido
+     * = 85, herdado da importação Baseline) e o Avanço real divergem.
+     * Baseline: atividade com 100HH Previsto. Avanço real: 20HH Realizado
+     * (= 20%). A tabela DEVE mostrar 20%, NUNCA 85%.
+     */
+    public function test_C_baseline_com_85_porcento_no_campo_ao_vivo_mas_avanco_real_e_20_tabela_mostra_20(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'percentual_concluido' => 85, // valor "herdado" da importação Baseline — nunca deve vazar pra tabela
+        ]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [20]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0);
+
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+
+        $this->assertEqualsWithDelta(20.0, $row['percentualRealizado'], 0.05);
+        $this->assertNotEquals(85.0, $row['percentualRealizado']);
+
+        $html = $componente->html();
+        $this->assertStringContainsString('>20%<', $html);
+        $this->assertStringNotContainsString('>85%<', $html);
+    }
+
+    /**
+     * Teste D — importação tipo "Ambos" também é fonte válida (mesma regra
+     * já aplicada às datas de Tendência/importacoesDisponiveis()): 50HH
+     * Previsto / 30HH Realizado na MESMA importação Ambos = 60%.
+     */
+    public function test_D_importacao_tipo_ambos_tambem_alimenta_o_percentual_realizado(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $ambos = $this->criarImportacaoAvancoMensal(tipo: TipoCronogramaImportacao::Ambos->value);
+        $lb = LinhaBase::create([
+            'obra_id' => $this->obra->id,
+            'nome' => 'LB via Ambos',
+            'cronograma_importacao_id' => $ambos->id,
+        ]);
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, $ambos, [50]);
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $ambos, [30]);
+
+        $row = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $ambos->id)
+            ->set('janelaDias', 0)
+            ->instance()
+            ->atividades
+            ->firstWhere('atividade.id', $atividade->id);
+
+        $this->assertEqualsWithDelta(60.0, $row['percentualRealizado'], 0.05);
+    }
+
+    /**
+     * Teste E — distingue "sem dado" (atividade nunca tocada pelo Avanço —
+     * nenhum AvancoPeriodo Realizado pra ela) de "zero real" (Realizado
+     * explicitamente registrado somando 0HH). Mesma distinção já aplicada
+     * ao % Peso (test_a6_c vs test_a6_d), agora replicada pro Realizado.
+     */
+    public function test_E_distingue_sem_dado_de_avanco_de_avanco_real_somando_zero(): void
+    {
+        $atividadeSemDado = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeZeroReal = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacaoBaseline = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeSemDado, $importacaoBaseline, [100]);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeZeroReal, $importacaoBaseline, [100]);
+
+        $avanco = $this->criarImportacaoAvancoMensal();
+        // $atividadeSemDado nunca recebe nenhum AvancoPeriodo Realizado.
+        $this->criarAvancoPeriodoRealizadoMensal($atividadeZeroReal, $avanco, [0]);
+
+        $rows = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0)
+            ->instance()
+            ->atividades;
+
+        $this->assertNull($rows->firstWhere('atividade.id', $atividadeSemDado->id)['percentualRealizado']);
+        $this->assertEqualsWithDelta(0.0, $rows->firstWhere('atividade.id', $atividadeZeroReal->id)['percentualRealizado'], 0.001);
+    }
+
+    /**
+     * Teste F — % Peso permanece 100% independente e correto mesmo com a
+     * correção de % Realizado no mesmo map() da tabela (as duas colunas
+     * usam queries em lote separadas, sem interferência entre si).
+     */
+    public function test_F_peso_permanece_correto_e_independente_apos_a_correcao_do_percentual_realizado(): void
+    {
+        $atividadeA = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeB = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacaoBaseline = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeA, $importacaoBaseline, [30]); // 30HH
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeB, $importacaoBaseline, [70]); // 70HH — total 100HH
+
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividadeA, $avanco, [15]); // 50% de 30HH
+
+        $rows = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0)
+            ->instance()
+            ->atividades;
+
+        $rowA = $rows->firstWhere('atividade.id', $atividadeA->id);
+        $rowB = $rows->firstWhere('atividade.id', $atividadeB->id);
+
+        $this->assertEqualsWithDelta(30.0, $rowA['peso'], 0.05);
+        $this->assertEqualsWithDelta(70.0, $rowB['peso'], 0.05);
+        $this->assertEqualsWithDelta(50.0, $rowA['percentualRealizado'], 0.05);
+        $this->assertNull($rowB['percentualRealizado']); // sem nenhum Realizado pra B
+    }
+
+    /**
+     * Teste G — trocar a importação de tendência selecionada
+     * ($tendenciaImportacaoId) atualiza o % Realizado pra refletir a nova
+     * fotografia de avanço (nunca fica preso na primeira importação lida).
+     */
+    public function test_G_trocar_a_importacao_de_tendencia_atualiza_o_percentual_realizado(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $avancoAntigo = $this->criarImportacaoAvancoMensal(now()->subDays(10));
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avancoAntigo, [30]);
+
+        $avancoNovo = $this->criarImportacaoAvancoMensal(now());
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avancoNovo, [70]);
+
+        $componente = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0);
+
+        $componente->set('tendenciaImportacaoId', $avancoAntigo->id);
+        $pctAntigo = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id)['percentualRealizado'];
+
+        $componente->set('tendenciaImportacaoId', $avancoNovo->id);
+        $pctNovo = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id)['percentualRealizado'];
+
+        $this->assertEqualsWithDelta(30.0, $pctAntigo, 0.05);
+        $this->assertEqualsWithDelta(70.0, $pctNovo, 0.05);
+        $this->assertNotEquals($pctAntigo, $pctNovo);
+    }
+
+    /**
+     * Teste H — exportações (Excel/PDF flat/PDF árvore) usam a MESMA fonte
+     * corrigida ($row['percentualRealizado']), nunca $at->percentual_concluido.
+     * LookaheadExport::map() é chamado diretamente (mesma técnica já usada
+     * por outros testes de export no projeto), evitando depender de
+     * geração real de arquivo binário só pra verificar a coluna certa.
+     */
+    public function test_H_exports_excel_e_pdf_usam_o_percentual_corrigido_nunca_o_campo_ao_vivo(): void
+    {
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'percentual_concluido' => 85,
+        ]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [20]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0);
+
+        $linhas = $componente->instance()->atividades;
+        $linha = $linhas->firstWhere('atividade.id', $atividade->id);
+
+        $export = new \App\Exports\LookaheadExport($linhas, true);
+        $mapeada = $export->map($linha);
+
+        // Índice 7 = coluna "Avanço" (ver headings()).
+        $this->assertSame('20%', $mapeada[7]);
+        $this->assertNotSame('85%', $mapeada[7]);
+
+        // PDFs (flat e árvore) leem $linha['percentualRealizado'] direto —
+        // confirmado por leitura de código nesta correção; a view em si
+        // (dompdf) não é exercitada aqui (mesma convenção já usada pelos
+        // demais testes desta suíte pra exports, que chamam o download
+        // sem inspecionar o binário renderizado).
+        $this->assertEqualsWithDelta(20.0, $linha['percentualRealizado'], 0.05);
+    }
+
+    /**
+     * Teste I — a nova query em lote de % Realizado nunca vira N+1: com 6
+     * atividades na tabela, exatamente 1 (UMA) query bate em `avanco_periodos`
+     * filtrando `serie = 'realizado'` — nunca 1 por atividade.
+     *
+     * Comparar CONTAGEM TOTAL bruta de queries entre 2 instanciações
+     * separadas de Livewire::test() (como o padrão estabelecido em
+     * test_a72_t_contador_e_listagem_de_anexos_nao_geram_n_mais_1) provou
+     * ser não-determinístico aqui: um cache em memória de request
+     * (permissões/itens de prontidão) pode ser "aquecido" de forma
+     * diferente entre a 1ª e a 2ª instanciação dentro do MESMO método de
+     * teste, produzindo uma diferença de contagem sem relação nenhuma com
+     * N+1 real (diagnosticado via dump de SQL antes de escrever este
+     * teste: a 2ª instanciação pulou 3 queries de permissão/prontidão já
+     * resolvidas pela 1ª). A asserção abaixo é mais precisa: inspeciona o
+     * SQL de cada query já dentro de uma ÚNICA instanciação/render e conta
+     * só as que batem no padrão da nova query — robusta a qualquer
+     * variação de cache de outras partes da página.
+     */
+    public function test_I_percentual_realizado_nao_gera_n_mais_1_na_tabela(): void
+    {
+        $lb = $this->criarLinhaBaseMensal();
+        $importacaoBaseline = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $avanco = $this->criarImportacaoAvancoMensal();
+
+        foreach (range(1, 6) as $i) {
+            $at = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+            $this->criarAvancoPeriodoPrevistoMensal($at, $importacaoBaseline, [100]);
+            $this->criarAvancoPeriodoRealizadoMensal($at, $avanco, [$i * 10]);
+        }
+
+        // Setup do estado (linhaBaseId/tendenciaImportacaoId) ANTES de
+        // registrar o listener — cada ->set() do Livewire::test() dispara
+        // um ciclo de render completo próprio (mount + N sets = N+1
+        // renders, cada um reavaliando atividades() por trás do Blade);
+        // medir com o listener já ativo durante essas trocas infla a
+        // contagem em múltiplos inteiros do número de sets, mascarando o
+        // que de fato importa aqui — quantas vezes a query em lote nova
+        // dispara POR RENDER. Isolando o listener só ao redor do ÚLTIMO
+        // ->set() mede exatamente 1 render.
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id);
+
+        $queriesRealizado = 0;
+        $queriesPrevisto = 0;
+        DB::listen(function ($query) use (&$queriesRealizado, &$queriesPrevisto) {
+            if (str_contains($query->sql, 'avanco_periodos') && str_contains($query->sql, 'group by')) {
+                if (in_array('realizado', $query->bindings, true)) {
+                    $queriesRealizado++;
+                } elseif (in_array('previsto', $query->bindings, true)) {
+                    $queriesPrevisto++;
+                }
+            }
+        });
+
+        $componente->set('janelaDias', 0);
+
+        // Exatamente 1 query em lote por série (Previsto pro %Peso já
+        // existente, Realizado pro %Realizado desta correção) — nunca 6
+        // (1 por atividade), nunca 0 (a query precisa ter disparado).
+        $this->assertEquals(1, $queriesRealizado);
+        $this->assertEquals(1, $queriesPrevisto);
+    }
+
+    /**
+     * Teste J — isolamento entre atividades: cada linha da tabela mostra o
+     * percentual da PRÓPRIA atividade, sem vazamento entre atividades
+     * diferentes no mesmo lote (prova a correção da query em lote —
+     * agrupamento por atividade_id nunca mistura valores).
+     */
+    public function test_J_percentual_realizado_e_isolado_por_atividade_no_mesmo_lote(): void
+    {
+        $atividadeA = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeB = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividadeC = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $importacaoBaseline = CronogramaImportacao::find($lb->cronograma_importacao_id);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeA, $importacaoBaseline, [100]);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeB, $importacaoBaseline, [100]);
+        $this->criarAvancoPeriodoPrevistoMensal($atividadeC, $importacaoBaseline, [100]);
+
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividadeA, $avanco, [10]);
+        $this->criarAvancoPeriodoRealizadoMensal($atividadeB, $avanco, [50]);
+        $this->criarAvancoPeriodoRealizadoMensal($atividadeC, $avanco, [90]);
+
+        $rows = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0)
+            ->instance()
+            ->atividades;
+
+        $this->assertEqualsWithDelta(10.0, $rows->firstWhere('atividade.id', $atividadeA->id)['percentualRealizado'], 0.05);
+        $this->assertEqualsWithDelta(50.0, $rows->firstWhere('atividade.id', $atividadeB->id)['percentualRealizado'], 0.05);
+        $this->assertEqualsWithDelta(90.0, $rows->firstWhere('atividade.id', $atividadeC->id)['percentualRealizado'], 0.05);
+    }
+
+    /**
+     * Teste K — o popup de detalhe (Curva S da atividade, já corrigido em
+     * fase anterior do Ciclo 17) continua 100% intocado e correto: a tabela
+     * e o popup, escopados pela MESMA baseline/tendência, concordam no
+     * mesmo percentual de Realizado pra mesma atividade — regressão contra
+     * qualquer divergência introduzida por esta correção.
+     */
+    public function test_K_tabela_e_popup_concordam_no_percentual_realizado_para_a_mesma_atividade(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [35]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0);
+
+        $pctTabela = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id)['percentualRealizado'];
+
+        // Ciclo 17, A.8 — o indicador resumido do popup (percentual_realizado)
+        // é canônico (App\Services\AvancoAtividade, sempre Mensal) desde esta
+        // correção: NÃO precisa mais alinhar modalGranularidade ao dado
+        // seedado — concorda com a tabela independentemente da escala
+        // escolhida pelo usuário no seletor do gráfico (prova formal disso
+        // em test_L, abaixo).
+        $componente->call('verAtividade', $atividade->id);
+        $pctPopup = $componente->instance()->modalCurvaAtividade['percentual_realizado'];
+
+        $this->assertEqualsWithDelta(35.0, $pctTabela, 0.05);
+        $this->assertEqualsWithDelta(35.0, $pctPopup, 0.05);
+        $this->assertEqualsWithDelta($pctTabela, $pctPopup, 0.05);
+    }
+
+    // =========================================================================
+    // CICLO 17, A.8 — PARIDADE TABELA × POPUP (auditoria adversarial)
+    // =========================================================================
+
+    /**
+     * Teste L — CRÍTICO: alternar a granularidade do gráfico do popup
+     * (Semanal ↔ Mensal) NÃO pode mudar o indicador resumido
+     * percentual_realizado — só os pontos/labels da curva mudam. Prova
+     * exatamente o achado C da auditoria (tabela sempre Mensal fixo, popup
+     * variava com o seletor, causando X% ≠ Y% pra mesma atividade/Baseline/
+     * Avanço).
+     */
+    public function test_L_alternar_granularidade_do_grafico_nao_muda_o_percentual_realizado(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseComPrevisto($atividade, [40, 60]); // 100HH Semanal
+        $this->espelharPrevistoMensal($lb, $atividade, [40, 60]); // 100HH Mensal (mesmo total)
+        $avanco = $this->criarImportacaoAvancoComSeries($atividade, [SerieAvanco::Realizado->value => [30]], espelharMensal: true); // 30HH nas duas
+
+        $componente = $this->componente()->call('verAtividade', $atividade->id);
+
+        $componente->set('modalGranularidade', 'semanal');
+        $pctSemanal = $componente->instance()->modalCurvaAtividade['percentual_realizado'];
+        $labelsSemanal = $componente->instance()->modalCurvaAtividade['labels'];
+
+        $componente->set('modalGranularidade', 'mensal');
+        $pctMensal = $componente->instance()->modalCurvaAtividade['percentual_realizado'];
+        $labelsMensal = $componente->instance()->modalCurvaAtividade['labels'];
+
+        $this->assertEqualsWithDelta(30.0, $pctSemanal, 0.05);
+        $this->assertEqualsWithDelta(30.0, $pctMensal, 0.05);
+        $this->assertEquals($pctSemanal, $pctMensal, 'percentual_realizado precisa ser EXATAMENTE igual, não só próximo');
+        // As séries/labels da curva, ao contrário, mudam com a granularidade
+        // — prova que só o indicador ficou canônico, o gráfico continua vivo.
+        $this->assertNotEquals($labelsSemanal, $labelsMensal);
+    }
+
+    /**
+     * Teste M — CRÍTICO: um CurvaAjuste GLOBAL (curva geral do
+     * empreendimento, nenhum filtro de pacote/etapa/disciplina/frente/etc.)
+     * NÃO pode contaminar o indicador resumido de uma atividade individual.
+     * Prova o achado da investigação: CurvaAvanco::calcular() aplica esse
+     * ajuste à curva VISUAL de qualquer atividade (bug pré-existente, fora
+     * do escopo desta correção — ver docblock de AvancoAtividade), mas o
+     * indicador (tabela E popup) usa a fonte canônica, que nunca consulta
+     * curva_ajustes — prova que a proteção funciona e que a divergência
+     * fica sinalizada explicitamente via curva_diverge_do_indicador.
+     */
+    public function test_M_curva_ajuste_global_nao_contamina_o_indicador_individual(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $periodo = now()->subMonth()->startOfMonth();
+
+        $importacaoBaseline = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Baseline->value, 'importado_em' => now()->subDays(30),
+        ]);
+        $lb = LinhaBase::create(['obra_id' => $this->obra->id, 'nome' => 'LB Ajuste', 'cronograma_importacao_id' => $importacaoBaseline->id]);
+        AvancoPeriodo::create([
+            'tenant_id' => $this->obra->tenant_id, 'cronograma_importacao_id' => $importacaoBaseline->id,
+            'atividade_id' => $atividade->id, 'granularidade' => GranularidadePeriodo::Mensal->value,
+            'serie' => SerieAvanco::Previsto->value, 'periodo_inicio' => $periodo, 'horas' => 100,
+        ]);
+
+        $importacaoAvanco = CronogramaImportacao::create([
+            'tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => TipoCronogramaImportacao::Avanco->value, 'importado_em' => now(),
+        ]);
+        AvancoPeriodo::create([
+            'tenant_id' => $this->obra->tenant_id, 'cronograma_importacao_id' => $importacaoAvanco->id,
+            'atividade_id' => $atividade->id, 'granularidade' => GranularidadePeriodo::Mensal->value,
+            'serie' => SerieAvanco::Realizado->value, 'periodo_inicio' => $periodo, 'horas' => 30, // 30% real
+        ]);
+
+        // Ajuste GLOBAL: obra inteira, nenhum pacote/etapa/disciplina/frente/
+        // etc. selecionado — exatamente o "bucket" que CurvaAvanco::calcular()
+        // usa quando chamado só com atividadeId (nenhum outro filtro).
+        CurvaAjuste::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'serie' => SerieAvanco::Realizado->value,
+            'granularidade' => GranularidadePeriodo::Mensal->value,
+            'periodo_inicio' => $periodo,
+            'valor_ajustado' => 90, // valor manipulado, bem diferente de 30
+            'valor_calculado_no_ajuste' => 30,
+        ]);
+
+        // --- TABELA: nunca consulta CurvaAjuste — precisa continuar 30%.
+        $rowTabela = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $importacaoAvanco->id)
+            ->set('janelaDias', 0)
+            ->instance()
+            ->atividades
+            ->firstWhere('atividade.id', $atividade->id);
+        $this->assertEqualsWithDelta(30.0, $rowTabela['percentualRealizado'], 0.05, 'tabela contaminada por ajuste global');
+
+        // --- POPUP: a CURVA visual (CurvaAvanco::calcular()) É contaminada
+        // pelo ajuste (achado documentado da investigação) — confirma que o
+        // cenário de teste realmente reproduz o bug de origem.
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $importacaoAvanco->id)
+            ->call('verAtividade', $atividade->id)
+            ->set('modalGranularidade', 'mensal');
+        $curva = $componente->instance()->modalCurvaAtividade;
+        $ultimoPontoCurva = collect($curva['realizado'])->last();
+        $this->assertTrue($ultimoPontoCurva['ajustado'], 'pré-condição: a curva precisa mesmo estar sob efeito do ajuste global');
+        $this->assertEqualsWithDelta(90.0, $ultimoPontoCurva['percentual'], 0.5, 'pré-condição: curva contaminada com o valor ajustado');
+
+        // --- POPUP: o INDICADOR resumido (fonte canônica) precisa continuar
+        // 30%, mesmo com a curva mostrando 90% ao lado.
+        $this->assertEqualsWithDelta(30.0, $curva['percentual_realizado'], 0.05, 'indicador do popup contaminado por ajuste global');
+        $this->assertNotEquals(90.0, $curva['percentual_realizado']);
+
+        // --- A divergência entre curva (90%) e indicador (30%) precisa
+        // ficar sinalizada explicitamente pro Blade poder deixar isso claro
+        // ao usuário — nunca uma divergência silenciosa.
+        $this->assertTrue($curva['curva_diverge_do_indicador']);
+
+        // --- UX: o ícone/tooltip de esclarecimento precisa aparecer no HTML
+        // renderizado quando essa divergência existe.
+        $html = $componente->html();
+        $this->assertStringContainsString('bx-info-circle', $html);
+    }
+
+    /**
+     * Teste N — tabela e popup continuam concordando quando SÓ a Baseline
+     * muda (denominador diferente, numerador igual) — mesmo cenário já
+     * provado só pra tabela em testes anteriores, agora com paridade
+     * explícita popup incluída.
+     */
+    public function test_N_tabela_e_popup_concordam_ao_trocar_somente_a_baseline(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lbA = $this->criarLinhaBaseMensal('LB-A');
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lbA->cronograma_importacao_id), [100]);
+        $lbB = $this->criarLinhaBaseMensal('LB-B');
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lbB->cronograma_importacao_id), [50]);
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [25]);
+
+        $componente = $this->componente()->set('tendenciaImportacaoId', $avanco->id)->set('janelaDias', 0);
+
+        $componente->set('linhaBaseId', $lbA->id);
+        $rowA = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $curvaA = $componente->call('verAtividade', $atividade->id)->set('modalBaselineId', $lbA->id)->instance()->modalCurvaAtividade;
+
+        $componente->set('linhaBaseId', $lbB->id);
+        $rowB = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $curvaB = $componente->call('verAtividade', $atividade->id)->set('modalBaselineId', $lbB->id)->instance()->modalCurvaAtividade;
+
+        $this->assertEqualsWithDelta(25.0, $rowA['percentualRealizado'], 0.05); // 25/100
+        $this->assertEqualsWithDelta(25.0, $curvaA['percentual_realizado'], 0.05);
+        $this->assertEqualsWithDelta(50.0, $rowB['percentualRealizado'], 0.05); // 25/50
+        $this->assertEqualsWithDelta(50.0, $curvaB['percentual_realizado'], 0.05);
+        $this->assertNotEquals($rowA['percentualRealizado'], $rowB['percentualRealizado']);
+    }
+
+    /**
+     * Teste O — tabela e popup continuam concordando quando SÓ o Avanço
+     * muda (numerador diferente, denominador igual).
+     */
+    public function test_O_tabela_e_popup_concordam_ao_trocar_somente_o_avanco(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+        $avancoX = $this->criarImportacaoAvancoMensal(now()->subDays(10));
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avancoX, [20]);
+        $avancoY = $this->criarImportacaoAvancoMensal(now());
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avancoY, [60]);
+
+        $componente = $this->componente()->set('linhaBaseId', $lb->id)->set('janelaDias', 0);
+
+        $componente->set('tendenciaImportacaoId', $avancoX->id);
+        $rowX = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $curvaX = $componente->call('verAtividade', $atividade->id)->set('modalTendenciaImportacaoId', $avancoX->id)->instance()->modalCurvaAtividade;
+
+        $componente->set('tendenciaImportacaoId', $avancoY->id);
+        $rowY = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $curvaY = $componente->call('verAtividade', $atividade->id)->set('modalTendenciaImportacaoId', $avancoY->id)->instance()->modalCurvaAtividade;
+
+        $this->assertEqualsWithDelta(20.0, $rowX['percentualRealizado'], 0.05);
+        $this->assertEqualsWithDelta(20.0, $curvaX['percentual_realizado'], 0.05);
+        $this->assertEqualsWithDelta(60.0, $rowY['percentualRealizado'], 0.05);
+        $this->assertEqualsWithDelta(60.0, $curvaY['percentual_realizado'], 0.05);
+    }
+
+    /**
+     * Teste P — Realizado genuinamente zero (registro existe, soma 0):
+     * tabela e popup concordam em 0,0%, nunca "—"/null.
+     */
+    public function test_P_tabela_e_popup_concordam_em_zero_real(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [0]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0);
+
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $curva = $componente->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
+
+        $this->assertNotNull($row['percentualRealizado']);
+        $this->assertEqualsWithDelta(0.0, $row['percentualRealizado'], 0.001);
+        $this->assertNotNull($curva['percentual_realizado']);
+        $this->assertEqualsWithDelta(0.0, $curva['percentual_realizado'], 0.001);
+    }
+
+    // =========================================================================
+    // Ciclo 17, A.8.HARDENING — tendenciaImportacaoId/modalTendenciaImportacaoId
+    // são propriedades Livewire públicas (client-controlled); a partir desta
+    // etapa, um ID só vira referência temporal depois de provado pertencer a
+    // importacoesDisponiveis() (obra atual + tipo Avanco/Ambos). Mesmo
+    // princípio já usado pra LinhaBase: ID inválido/manipulado NEUTRALIZA
+    // (nunca cai silenciosamente pro fallback nem usa a importação alheia).
+    // =========================================================================
+
+    private function criarImportacaoParaObra(Work $obra, TipoCronogramaImportacao $tipo, ?\Illuminate\Support\Carbon $importadoEm = null): CronogramaImportacao
+    {
+        return CronogramaImportacao::create([
+            'tenant_id' => $obra->tenant_id,
+            'obra_id' => $obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'tipo' => $tipo->value,
+            'importado_em' => $importadoEm ?? now(),
+        ]);
+    }
+
+    /**
+     * Teste A — página: manipular tendenciaImportacaoId pra apontar uma
+     * importação de Avanço de OUTRA obra do mesmo tenant neutraliza (nunca
+     * usa a importação alheia, nunca cai silenciosamente pro fallback).
+     */
+    public function test_hardening_a_pagina_neutraliza_tendencia_de_outra_obra_do_mesmo_tenant(): void
+    {
+        [$obraB] = $this->criarObraBComAtividade();
+        $avancoB = $this->criarImportacaoParaObra($obraB, TipoCronogramaImportacao::Avanco);
+
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avancoB->id)
+            ->set('janelaDias', 0);
+
+        $this->assertNull($componente->instance()->importacaoTendenciaAtual);
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertNull($row['percentualRealizado']);
+        $this->assertNull($row['inicioTendencia']);
+        $this->assertNull($row['terminoTendencia']);
+    }
+
+    /**
+     * Teste B — mesmo cenário do A, mas o usuário tem acesso REAL às DUAS
+     * obras (mesmo perfil/permissão nas duas) — prova que a rejeição é por
+     * CONTEXTO da obra ativa, nunca por falta de autorização.
+     */
+    public function test_hardening_b_neutraliza_mesmo_com_usuario_tendo_acesso_real_as_duas_obras(): void
+    {
+        [$obraB] = $this->criarObraBComAtividade();
+        $this->vincularObra($obraB, $this->user, Papel::Engenheiro->value);
+        $avancoB = $this->criarImportacaoParaObra($obraB, TipoCronogramaImportacao::Avanco);
+
+        $this->assertTrue($this->user->temPermissaoNaObra($obraB->id, 'restricoes.lookahead', 'editar'));
+
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avancoB->id)
+            ->set('janelaDias', 0);
+
+        $this->assertNull($componente->instance()->importacaoTendenciaAtual);
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertNull($row['percentualRealizado']);
+    }
+
+    /**
+     * Teste C — popup: manipular modalTendenciaImportacaoId pra outra obra
+     * do mesmo tenant neutraliza — nunca produz Realizado/Tendência daquela
+     * obra dentro do popup.
+     */
+    public function test_hardening_c_popup_neutraliza_tendencia_de_outra_obra_do_mesmo_tenant(): void
+    {
+        [$obraB] = $this->criarObraBComAtividade();
+        $avancoB = $this->criarImportacaoParaObra($obraB, TipoCronogramaImportacao::Avanco);
+
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $curva = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->call('verAtividade', $atividade->id)
+            ->set('modalBaselineId', $lb->id)
+            ->set('modalTendenciaImportacaoId', $avancoB->id)
+            ->instance()
+            ->modalCurvaAtividade;
+
+        $this->assertFalse($curva['tem_tendencia_selecionada']);
+        $this->assertFalse($curva['tem_realizado']);
+        $this->assertNull($curva['percentual_realizado']);
+    }
+
+    /**
+     * Teste D — página: importação de Avanço de OUTRO TENANT nunca é
+     * aceita, mesmo com o ID correto (global scope de BelongsToTenant já
+     * protege a query, mas a validação central também precisa neutralizar).
+     */
+    public function test_hardening_d_pagina_nunca_aceita_tendencia_de_outro_tenant(): void
+    {
+        $tenantC = Tenant::factory()->create();
+        $avancoC = TenantContext::actingAs($tenantC, function () use ($tenantC) {
+            $obraC = Work::factory()->create(['tenant_id' => $tenantC->id]);
+            return $this->criarImportacaoParaObra($obraC, TipoCronogramaImportacao::Avanco);
+        });
+
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avancoC->id)
+            ->set('janelaDias', 0);
+
+        $this->assertNull($componente->instance()->importacaoTendenciaAtual);
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertNull($row['percentualRealizado']);
+    }
+
+    /** Teste E — mesmo cenário do D, mas no popup. */
+    public function test_hardening_e_popup_nunca_aceita_tendencia_de_outro_tenant(): void
+    {
+        $tenantC = Tenant::factory()->create();
+        $avancoC = TenantContext::actingAs($tenantC, function () use ($tenantC) {
+            $obraC = Work::factory()->create(['tenant_id' => $tenantC->id]);
+            return $this->criarImportacaoParaObra($obraC, TipoCronogramaImportacao::Avanco);
+        });
+
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $curva = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->call('verAtividade', $atividade->id)
+            ->set('modalBaselineId', $lb->id)
+            ->set('modalTendenciaImportacaoId', $avancoC->id)
+            ->instance()
+            ->modalCurvaAtividade;
+
+        $this->assertFalse($curva['tem_tendencia_selecionada']);
+        $this->assertNull($curva['percentual_realizado']);
+    }
+
+    /**
+     * Teste F — uma importação Baseline PURA (mesma obra) nunca é aceita
+     * como Tendência, mesmo selecionada explicitamente — importacoesDisponiveis()
+     * já filtra por tipo Avanco/Ambos, então o ID de uma Baseline pura
+     * simplesmente não está no conjunto válido.
+     */
+    public function test_hardening_f_baseline_pura_nunca_e_aceita_como_tendencia(): void
+    {
+        $baselinePura = $this->criarImportacaoParaObra($this->obra, TipoCronogramaImportacao::Baseline);
+
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $baselinePura->id)
+            ->set('janelaDias', 0);
+
+        $this->assertNull($componente->instance()->importacaoTendenciaAtual);
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertNull($row['percentualRealizado']);
+    }
+
+    /** Teste G — ID inexistente não causa exception nem vazamento, só neutraliza. */
+    public function test_hardening_g_id_inexistente_nao_causa_excecao(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', '01JZZZZZZZZZZZZZZZZZZZZZZZ')
+            ->set('janelaDias', 0);
+
+        $this->assertNull($componente->instance()->importacaoTendenciaAtual);
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertNull($row['percentualRealizado']);
+    }
+
+    /** Teste H — seleção explícita VÁLIDA (mesma obra, tipo Avanço) continua funcionando normalmente. */
+    public function test_hardening_h_selecao_valida_explicita_continua_funcionando(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [40]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0);
+
+        $this->assertEquals($avanco->id, $componente->instance()->importacaoTendenciaAtual->id);
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertEqualsWithDelta(40.0, $row['percentualRealizado'], 0.05);
+    }
+
+    /** Teste I — sem seleção explícita, fallback continua escolhendo a importação Avanço/Ambos mais recente da obra. */
+    public function test_hardening_i_fallback_sem_selecao_continua_escolhendo_mais_recente(): void
+    {
+        $antigo = $this->criarImportacaoAvancoMensal(now()->subDays(10));
+        $recente = $this->criarImportacaoAvancoMensal(now());
+
+        $componente = $this->componente()->set('janelaDias', 0);
+
+        $this->assertEquals($recente->id, $componente->instance()->importacaoTendenciaAtual->id);
+    }
+
+    /**
+     * Teste J — herança página→popup continua correta: popup herda a
+     * tendência efetiva da página ao abrir; trocar dentro do popup nunca
+     * escreve de volta na página; reabrir noutra atividade volta a herdar
+     * a página (nunca a escolha feita no popup anterior).
+     */
+    public function test_hardening_j_heranca_pagina_popup_continua_correta(): void
+    {
+        $atividade1 = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $atividade2 = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $avancoX = $this->criarImportacaoAvancoMensal(now()->subDays(10));
+        $avancoY = $this->criarImportacaoAvancoMensal(now());
+
+        $componente = $this->componente()
+            ->set('tendenciaImportacaoId', $avancoX->id)
+            ->set('janelaDias', 0);
+
+        // Página = Avanço X → abre popup → modal herda X.
+        $componente->call('verAtividade', $atividade1->id);
+        $this->assertEquals($avancoX->id, $componente->instance()->modalCurvaAtividade['tendencia_id']);
+
+        // Popup muda pra Avanço Y → página continua X.
+        $componente->set('modalTendenciaImportacaoId', $avancoY->id);
+        $this->assertEquals($avancoY->id, $componente->instance()->modalCurvaAtividade['tendencia_id']);
+        $this->assertEquals($avancoX->id, $componente->instance()->tendenciaImportacaoId);
+
+        // Fecha/reabre noutra atividade → volta a herdar X da página.
+        $componente->call('verAtividade', $atividade2->id);
+        $this->assertEquals($avancoX->id, $componente->instance()->modalCurvaAtividade['tendencia_id']);
+    }
+
+    /**
+     * Teste K — regressão de paridade tabela×popup (A.8) preservada após o
+     * hardening: mesma atividade/Baseline/Avanço válidos → mesmo percentual.
+     */
+    public function test_hardening_k_tabela_e_popup_continuam_concordando_apos_o_hardening(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [35]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0);
+
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $curva = $componente->call('verAtividade', $atividade->id)->instance()->modalCurvaAtividade;
+
+        $this->assertEqualsWithDelta(35.0, $row['percentualRealizado'], 0.05);
+        $this->assertEqualsWithDelta($row['percentualRealizado'], $curva['percentual_realizado'], 0.05);
+    }
+
+    /**
+     * Teste L — CurvaAjuste global continua sem alterar o indicador
+     * factual após o hardening (AvancoAtividade/CurvaAjuste intocados
+     * nesta etapa — reconfirma que a correção A.8 continua íntegra).
+     */
+    public function test_hardening_l_curva_ajuste_global_continua_sem_alterar_indicador(): void
+    {
+        $atividade = Atividade::factory()->create(['tenant_id' => $this->obra->tenant_id, 'obra_id' => $this->obra->id]);
+        $periodo = now()->subMonth()->startOfMonth();
+
+        $lb = $this->criarLinhaBaseMensal();
+        $this->criarAvancoPeriodoPrevistoMensal($atividade, CronogramaImportacao::find($lb->cronograma_importacao_id), [100]);
+        $avanco = $this->criarImportacaoAvancoMensal();
+        $this->criarAvancoPeriodoRealizadoMensal($atividade, $avanco, [30]);
+
+        CurvaAjuste::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'serie' => SerieAvanco::Realizado->value,
+            'granularidade' => GranularidadePeriodo::Mensal->value,
+            'periodo_inicio' => $periodo,
+            'valor_ajustado' => 90,
+            'valor_calculado_no_ajuste' => 30,
+        ]);
+
+        $componente = $this->componente()
+            ->set('linhaBaseId', $lb->id)
+            ->set('tendenciaImportacaoId', $avanco->id)
+            ->set('janelaDias', 0);
+
+        $row = $componente->instance()->atividades->firstWhere('atividade.id', $atividade->id);
+        $this->assertEqualsWithDelta(30.0, $row['percentualRealizado'], 0.05);
+        $this->assertNotEquals(90.0, $row['percentualRealizado']);
     }
 }

@@ -34,6 +34,7 @@ use App\Models\Personalizado4;
 use App\Models\Personalizado5;
 use App\Models\Restricao;
 use App\Models\Work;
+use App\Services\AvancoAtividade;
 use App\Services\CurvaAvanco;
 use App\Support\Concerns\ExecutaComTransacaoSegura;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -360,27 +361,52 @@ new class extends Component {
     return $this->linhasBase->isNotEmpty();
   }
 
-  /** Importação sendo tratada como "tendência" — a selecionada, ou a mais recente (Avanço/Ambos). */
-  #[Computed]
-  public function importacaoTendenciaAtual(): ?CronogramaImportacao
+  /**
+   * Ciclo 17, A.8.HARDENING — resolução central e ÚNICA de "qual
+   * CronogramaImportacao um ID cru de tendência representa de verdade".
+   * $tendenciaImportacaoId/$modalTendenciaImportacaoId são propriedades
+   * Livewire PÚBLICAS (client-controlled) — nunca podem virar referência
+   * temporal sem antes provar pertencer a importacoesDisponiveis() (já
+   * obra-scoped E tipo Avanco/Ambos-scoped, 0 query nova — mesmo princípio
+   * já aplicado em cronogramaImportacaoIdDaBaseline() pra LinhaBase).
+   *
+   * ID vazio/null → fallback legítimo (mais recente elegível da obra).
+   * ID truthy mas inválido (importação de outra obra, de outro tenant,
+   * Baseline pura, ou inexistente) → NEUTRALIZA pra null — nunca cai
+   * silenciosamente pro fallback (isso esconderia a manipulação atrás de
+   * um resultado "normal") nem usa a importação alheia. Mesma decisão já
+   * tomada por cronogramaImportacaoIdDaBaseline(): um ID inválido nunca é
+   * tratado como "sem seleção".
+   */
+  private function resolverImportacaoTendencia(?string $idSelecionado): ?CronogramaImportacao
   {
-    if ($this->tendenciaImportacaoId) {
-      return $this->importacoesDisponiveis->firstWhere('id', $this->tendenciaImportacaoId);
+    if ($idSelecionado) {
+      return $this->importacoesDisponiveis->firstWhere('id', $idSelecionado);
     }
 
     return $this->importacoesDisponiveis->first();
   }
 
+  /** Importação sendo tratada como "tendência" DA PÁGINA — a selecionada (validada), ou a mais recente (Avanço/Ambos). */
+  #[Computed]
+  public function importacaoTendenciaAtual(): ?CronogramaImportacao
+  {
+    return $this->resolverImportacaoTendencia($this->tendenciaImportacaoId);
+  }
+
   /**
    * ID da importação efetivamente usada como "Tendência" DA PÁGINA — mesma
-   * semântica de sempre (seleção explícita > mais recente Avanço/Ambos >
-   * nenhuma), usada por atividades() (tabela principal) e, a partir do
-   * Ciclo 17 A.4, só como DEFAULT inicial do popup (verAtividade()) — nunca
-   * lida ao vivo pelo popup depois de aberto (ver modalTendenciaIdEfetiva()).
+   * semântica de sempre (seleção explícita válida > mais recente Avanço/
+   * Ambos > nenhuma), usada por atividades() (tabela principal) e, a partir
+   * do Ciclo 17 A.4, só como DEFAULT inicial do popup (verAtividade()) —
+   * nunca lida ao vivo pelo popup depois de aberto (ver
+   * modalTendenciaIdEfetiva()). Ciclo 17, A.8.HARDENING: nunca mais lê
+   * $this->tendenciaImportacaoId bruto — delega 100% pra
+   * importacaoTendenciaAtual(), que já valida contra importacoesDisponiveis().
    */
   private function tendenciaIdEfetiva(): ?string
   {
-    return $this->tendenciaImportacaoId ?: $this->importacaoTendenciaAtual?->id;
+    return $this->importacaoTendenciaAtual?->id;
   }
 
   /**
@@ -389,13 +415,15 @@ new class extends Component {
    * recente Avanço/Ambos da obra > nenhuma. Deliberadamente NÃO usa
    * $tendenciaImportacaoId/importacaoTendenciaAtual() (que são da página) —
    * trocar a tendência dentro do popup nunca deve depender, nem indiretamente,
-   * da seleção da tabela (independência exigida pelo produto). Reaproveita
-   * importacoesDisponiveis() (já computed, já usado por ambos os seletores),
-   * nunca uma query paralela.
+   * da seleção da tabela (independência exigida pelo produto) — por isso
+   * chama resolverImportacaoTendencia() de novo, com o ID do popup, em vez
+   * de reaproveitar o computed da página. Ciclo 17, A.8.HARDENING: agora
+   * passa pela MESMA validação central que a página usa (nunca mais aceita
+   * $modalTendenciaImportacaoId bruto).
    */
   private function modalTendenciaIdEfetiva(): ?string
   {
-    return $this->modalTendenciaImportacaoId ?: $this->importacoesDisponiveis->first()?->id;
+    return $this->resolverImportacaoTendencia($this->modalTendenciaImportacaoId)?->id;
   }
 
   /**
@@ -635,17 +663,21 @@ new class extends Component {
     // visível, cruzada com totalHhPrevistoProjeto() (já cacheado). Ausência
     // de chave no map = sem nenhum registro de HH Previsto pra essa
     // atividade (peso null/"—"); presença com soma 0 = 0,0% de verdade.
+    //
+    // Ciclo 17, A.8 — a partir desta correção, a mesma query em lote
+    // (Previsto) e a de Realizado passam por App\Services\AvancoAtividade,
+    // fonte canônica ÚNICA reaproveitada também por modalCurvaAtividade()
+    // — elimina a duas-implementações-da-mesma-regra que fazia tabela e
+    // popup poderem divergir pra mesma atividade/Baseline/Avanço (ver
+    // docblock do serviço: granularidade sempre Mensal — nunca a escolha
+    // de visualização do gráfico — e nunca aplica CurvaAjuste, que não tem
+    // nenhum conceito de escopo por atividade no modelo). Nenhuma mudança
+    // de comportamento pro % Peso: mesmo SQL, só relocado.
     $importacaoIdBaselineTabela = $this->cronogramaImportacaoIdDaBaseline($this->linhaBaseId);
     $totalHhProjeto = $this->totalHhPrevistoProjeto;
-    $hhPrevistoPorAtividade = $importacaoIdBaselineTabela
-      ? AvancoPeriodo::where('cronograma_importacao_id', $importacaoIdBaselineTabela)
-        ->where('serie', SerieAvanco::Previsto->value)
-        ->where('granularidade', GranularidadePeriodo::Mensal->value)
-        ->whereIn('atividade_id', $atividades->pluck('id'))
-        ->selectRaw('atividade_id, SUM(horas) as total_horas')
-        ->groupBy('atividade_id')
-        ->pluck('total_horas', 'atividade_id')
-      : collect();
+    $avancoAtividade = app(AvancoAtividade::class);
+    $hhPrevistoPorAtividade = $avancoAtividade->hhPrevistoEmLote($atividades->pluck('id'), $importacaoIdBaselineTabela);
+    $hhRealizadoPorAtividade = $avancoAtividade->hhRealizadoEmLote($atividades->pluck('id'), $tendenciaIdEfetivo);
 
     $hoje = now()->startOfDay();
     $fimJanela = now()
@@ -653,7 +685,7 @@ new class extends Component {
       ->addDays($this->janelaDias);
 
     return $atividades
-      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $tendenciaIdEfetivo, $hhPrevistoPorAtividade, $totalHhProjeto, $hoje, $fimJanela) {
+      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $tendenciaIdEfetivo, $hhPrevistoPorAtividade, $hhRealizadoPorAtividade, $totalHhProjeto, $avancoAtividade, $hoje, $fimJanela) {
         if ($tendenciaIdEfetivo) {
           $snap = $snapshotsTendencia->get($at->id);
           $inicioTend = $snap?->inicio_planejado;
@@ -700,6 +732,14 @@ new class extends Component {
           ? round((float) $hhPrevistoPorAtividade->get($at->id) / $totalHhProjeto * 100, 1)
           : null;
 
+        // Ciclo 17, A.8 — fonte canônica única (App\Services\AvancoAtividade),
+        // mesma usada pelo popup (modalCurvaAtividade()) — nunca mais uma
+        // fórmula própria da tabela. null quando: sem importação de
+        // Avanço/Ambos efetiva; sem HH Previsto > 0 na baseline efetiva
+        // (denominador); ou sem nenhum registro Realizado pra essa
+        // atividade nessa importação (sem dado, nunca 0% inventado).
+        $percentualRealizado = $avancoAtividade->percentualDoMapa($at->id, $hhPrevistoPorAtividade, $hhRealizadoPorAtividade);
+
         return [
           'atividade' => $at,
           'inicioTendencia' => $inicioTend,
@@ -712,6 +752,7 @@ new class extends Component {
           'totalItens' => $totalItens,
           'pronta' => $pronta,
           'peso' => $peso,
+          'percentualRealizado' => $percentualRealizado,
         ];
       })
       ->filter()
@@ -1553,7 +1594,47 @@ new class extends Component {
     $percentualPrevisto = collect($previsto)
       ->filter(fn($p) => $p['periodo_inicio'] <= $hoje)
       ->last()['percentual'] ?? null;
-    $percentualRealizado = collect($realizado)->last()['percentual'] ?? null;
+
+    // Ciclo 17, A.8 — % Realizado do resumo (indicador) usa a MESMA fonte
+    // canônica da tabela (App\Services\AvancoAtividade), nunca mais
+    // derivado do último ponto da curva Chart.js. Isso corrige a
+    // divergência encontrada em auditoria: a curva (`$realizado` acima)
+    // continua exatamente como estava — respeitando `$granularidade`
+    // (seletor Semanal/Mensal do popup) e aplicando CurvaAjuste via
+    // `CurvaAvanco::calcular()`, porque ela é uma REPRESENTAÇÃO VISUAL,
+    // não o indicador factual — mas o número resumido no card de %Realizado
+    // é sempre Mensal e nunca reflete ajuste manual, exatamente igual à
+    // tabela. `$avancoAtividadeModal` reaproveita a mesma classe, chamada
+    // aqui com um lote de 1 atividade (nenhuma query nova é necessária pro
+    // caso comum — mesmo custo de antes, 2 queries pequenas escopadas a
+    // esta única atividade).
+    // $baselineId é o id da LinhaBase (linhas_base.id) — o serviço precisa
+    // do cronograma_importacao_id que ela aponta, mesma resolução que
+    // cronogramaImportacaoIdDaBaseline() já faz pra tabela (aqui inline,
+    // porque $baselineId já veio com o fallback de linhasBase->first()
+    // aplicado acima, diferente do parâmetro dessa outra função).
+    $baselineImportacaoIdModal = $baselineId
+      ? $this->linhasBase->firstWhere('id', $baselineId)?->cronograma_importacao_id
+      : null;
+    $avancoAtividadeModal = app(\App\Services\AvancoAtividade::class);
+    $hhPrevistoModal = $avancoAtividadeModal->hhPrevistoEmLote([$atividade->id], $baselineImportacaoIdModal);
+    $hhRealizadoModal = $avancoAtividadeModal->hhRealizadoEmLote([$atividade->id], $tendenciaIdEfetivoModal);
+    $percentualRealizado = $avancoAtividadeModal->percentualDoMapa($atividade->id, $hhPrevistoModal, $hhRealizadoModal);
+
+    // Achado da investigação (Ciclo 17, A.8): CurvaAjuste não tem nenhum
+    // conceito de escopo por atividade — quando a curva acima é calculada
+    // com atividadeId (e nenhum outro filtro), CurvaAvanco::calcular()
+    // casa incorretamente com ajustes GLOBAIS/obra-inteira feitos na tela
+    // Curvas S, aplicando esse valor à curva de QUALQUER atividade
+    // individual (bug pré-existente, fora do escopo desta correção — ver
+    // docblock de AvancoAtividade). Isso pode fazer a CURVA visual mostrar
+    // um valor diferente do indicador factual acima. `$curvaDivergeDoIndicador`
+    // sinaliza esse cenário raro pro Blade poder deixar isso explícito ao
+    // usuário, em vez de uma divergência silenciosa.
+    $percentualRealizadoCurva = collect($realizado)->last()['percentual'] ?? null;
+    $curvaDivergeDoIndicador = $percentualRealizado !== null
+      && $percentualRealizadoCurva !== null
+      && abs($percentualRealizado - $percentualRealizadoCurva) > 0.05;
 
     // Rótulos formatados por período (chave = periodo_inicio, mesma usada
     // pra casar as 3 séries no gráfico) — mesmo padrão "MÊS/AA" já usado em
@@ -1587,6 +1668,12 @@ new class extends Component {
       'labels' => $labels,
       'percentual_previsto' => $percentualPrevisto,
       'percentual_realizado' => $percentualRealizado,
+      // Ciclo 17, A.8 — true só no cenário raro documentado acima (ajuste
+      // GLOBAL da curva geral do empreendimento coincidindo com período/
+      // série/granularidade da curva desta atividade). O Blade usa isso
+      // pra deixar explícito que o número do card é o valor canônico
+      // (sem ajuste), podendo diferir do formato visual da curva.
+      'curva_diverge_do_indicador' => $curvaDivergeDoIndicador,
       'indicador' => is_null($percentualRealizado)
         ? 'neutro'
         : ($percentualRealizado >= ($percentualPrevisto ?? 0) ? 'favoravel' : 'desfavoravel'),
@@ -2032,7 +2119,12 @@ new class extends Component {
                 <td class="text-center"><small>{{ $this->temImportacaoAvanco ? ($row['terminoTendencia']?->format('d/m/y') ?? '—') : 'N/A' }}</small></td>
                 <td class="text-center">
                     @php
-                        $pctVal = $at->percentual_concluido !== null ? (int) $at->percentual_concluido : null;
+                        // Correção pós-QA (Ciclo 17) — NUNCA $at->percentual_concluido (campo
+                        // ao vivo, gravado pelo importador mesmo em importação Baseline-only,
+                        // sem nenhuma importação de Avanço/Ambos por trás). Fonte única:
+                        // $row['percentualRealizado'], calculada em atividades() a partir da
+                        // fotografia de avanço efetiva da página — null vira "—", nunca 0%/85%.
+                        $pctVal = $row['percentualRealizado'] !== null ? (int) round($row['percentualRealizado']) : null;
                     @endphp
                     @if($pctVal !== null)
                     @php
@@ -2413,8 +2505,13 @@ new class extends Component {
                     <div class="col-6 col-md-4 col-lg">
                         <div class="small text-muted">% Realizado</div>
                         <h4 class="fw-semibold"
-                            @if (! $curvaAtividade['tem_realizado']) title="{{ $curvaAtividade['tem_tendencia_selecionada'] ? 'A importação de avanço selecionada não possui dados de Realizado para esta atividade.' : 'Nenhuma importação de avanço/tendência selecionada.' }}" @endif>
+                            @if (! $curvaAtividade['tem_realizado']) title="{{ $curvaAtividade['tem_tendencia_selecionada'] ? 'A importação de avanço selecionada não possui dados de Realizado para esta atividade.' : 'Nenhuma importação de avanço/tendência selecionada.' }}"
+                            @elseif ($curvaAtividade['curva_diverge_do_indicador']) title="Valor exato (sem ajustes manuais da curva geral do empreendimento) — pode diferir do formato visual do gráfico abaixo, que reflete ajustes quando existentes."
+                            @endif>
                             {{ $curvaAtividade['percentual_realizado'] !== null ? number_format($curvaAtividade['percentual_realizado'], 0) . '%' : '—' }}
+                            @if ($curvaAtividade['tem_realizado'] && $curvaAtividade['curva_diverge_do_indicador'])
+                            <i class="bx bx-info-circle text-muted" style="font-size: .75rem" title="Valor exato (sem ajustes manuais da curva geral do empreendimento) — pode diferir do formato visual do gráfico abaixo, que reflete ajustes quando existentes."></i>
+                            @endif
                         </h4>
                     </div>
                     <div class="col-6 col-md-4 col-lg">

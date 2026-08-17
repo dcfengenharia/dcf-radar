@@ -2998,6 +2998,114 @@ ReportComentario (só em reports emitidos). Reaproveita
   novo for adicionado ao `composer.json` e o container não for recriado
   do zero.
 
+## Preservação de pendências operacionais na importação (Ciclo 17, A.9)
+
+- **Regra de produto definitiva**: o cronograma importado é a verdade
+  factual; a plataforma preserva o histórico/pendências operacionais; a
+  importação nunca corrige silenciosamente Restrição ou Prontidão.
+- **A.9.1 — remoção da autocorreção automática**: `App\Support\
+  ConclusaoAutomaticaAtividades` (resolve restrições abertas + marca itens
+  de prontidão concluídos, só porque `percentual_concluido >= 100`) deixou
+  de ser chamada automaticamente por `MsProjectImporter::aplicar()` e por
+  `BackfillLookaheadCommand`. A classe continua existindo, funcionando
+  normalmente e coberta por teste (`tests/Unit/
+  ConclusaoAutomaticaAtividadesTest.php`) — mas só para saneamento manual
+  explícito (`tinker`), nunca no fluxo automático. Docblock da classe
+  documenta isso e aponta pra detecção futura (nunca correção silenciosa).
+  Confirmado por auditoria adversarial dedicada (fresh code read + 10
+  suítes de regressão + reprodução empírica via fluxo real de importação):
+  Restrição aberta/resolvida e item de prontidão pendente/concluído
+  permanecem bit-a-bit intocados mesmo quando a atividade chega a 100%,
+  inclusive em reimportação 100%→100% e em primeira importação de Avanço
+  já nascendo em 100%; zero `RestricaoAcao` automática criada durante
+  import (único outro criador de `RestricaoAcao` no projeto,
+  `App\Support\SincronizarRestricaoSuprimento`, é mecanismo pré-existente
+  e ortogonal — reage a risco de prazo de item de suprimento, nunca a
+  `percentual_concluido`). `AtividadeObserver` só reage a `isDirty('status')`
+  — a importação nunca escreve `status`, então `percentual_concluido`
+  chegar a 100 nunca dispara `concluido_em`/mudança de `Atividade.status`
+  (isso já era assim antes da A.9.1, não é uma mudança de comportamento
+  desta fase; o único acoplamento removido foi `percentual_concluido`
+  → `Restricao`/`AtividadeItemProntidao`).
+- **A.9.2 — Fotografia F (preservação factual por importação)**:
+  `atividade_snapshots` ganhou 3 colunas aditivas —
+  `percentual_concluido` (`decimal(5,2)` nullable, mesmo tipo de
+  `atividades.percentual_concluido`), `real_inicio`/`real_termino`
+  (`date` nullable, mesmo tipo de `atividades.real_inicio`/
+  `real_termino`) — migration
+  `2026_08_17_000001_add_fotografia_factual_to_atividade_snapshots_table.php`.
+  Objetivo: responder no futuro "o que o cronograma declarou NESTA
+  importação" sem depender do estado ao vivo da `Atividade` (que só
+  guarda o valor mais recente). **Fonte dos 3 campos novos é
+  `TarefaImportada` (a DTO desta própria iteração do loop), nunca `$at`
+  relido após o upsert** — decisão deliberada, documentada em comentário
+  em `MsProjectImporter::aplicar()`: queremos a fotografia do que o
+  ARQUIVO declarou, não um efeito colateral acidental do model ao vivo
+  (mesmo quando os dois numericamente coincidem nesta versão do código).
+  `TarefaImportada::$percentualConcluido`/`$realInicio`/`$realTermino`
+  são populados pelo parser (`PercentWorkComplete`/`ActualStart`/
+  `ActualFinish`) de forma **uniforme, independente de `tipo`** — por
+  isso uma importação Baseline pura que traga esses campos no XML também
+  os registra na Fotografia F (é só um FATO preservado; **não** torna a
+  importação elegível como Tendência/Avanço na UI, que continua
+  exclusivamente controlada por `CronogramaImportacao.tipo IN (Avanco,
+  Ambos)` via `CurvaAvanco::resolverImportacaoId()`, não tocado nesta
+  fase). Importação `Ambos` grava normalmente no mesmo snapshot único —
+  nunca dois snapshots (Baseline + Avanço) para a mesma importação.
+- **Null vs zero preservado com precisão**: `PercentWorkComplete`
+  ausente do XML → `null` (informação desconhecida); `<PercentWorkComplete>
+  0</PercentWorkComplete>` explícito → `0.0` (fato: "declarado como 0%"),
+  nunca vira `null`. Mesma distinção para `ActualStart`/`ActualFinish`
+  ausentes → `null`, nunca uma data inventada.
+- **Histórico nunca é sobrescrito**: cada `CronogramaImportacao` grava seu
+  próprio snapshot por atividade (`unique(cronograma_importacao_id,
+  atividade_id)`, já existente desde a criação da tabela) — uma sequência
+  de importações 40%→70%→100% da MESMA atividade deixa TRÊS fotografias
+  distintas e consultáveis independentemente
+  (`AtividadeSnapshot::where('cronograma_importacao_id', $id)...`), nunca
+  só "a mais recente". A `Atividade` ao vivo reflete só o estado atual;
+  os snapshots são o único jeito de reconstruir "o que era verdade na
+  importação X".
+- **Backfill nunca inventa fato histórico**: `BackfillLookaheadCommand::
+  criarSnapshotDaUltimaImportacao()` continua criando snapshot retroativo
+  só com os 4 campos que já tinha (`inicio_planejado`/`data_termino`/
+  `baseline_inicio`/`baseline_termino`, lidos da Atividade viva) — **NÃO**
+  foi alterado para também copiar `percentual_concluido`/`real_inicio`/
+  `real_termino` do estado atual pra uma importação passada, porque isso
+  seria inventar um fato histórico que ninguém registrou de verdade
+  naquele momento. Snapshots criados pelo Backfill ficam com os 3 campos
+  novos em `NULL`, mesmo quando a Atividade viva já está 100% com datas
+  reais preenchidas — comportamento coberto por teste dedicado
+  (`test_backfill_nao_inventa_percentual_e_datas_reais_historicas_a_partir_da_atividade_viva`).
+  Regra geral: **Fotografia F só é confiável para importações processadas
+  DEPOIS da A.9.2; snapshots legados (criados antes desta migration, ou
+  criados pelo Backfill sem fonte confiável) permanecem `null` nos 3
+  campos novos** — nunca reconstruídos a partir do estado atual.
+- **Zero acoplamento com estado operacional**: Fotografia F nunca contém
+  Restrição, contagem de restrições, prontidão, comentário, anexo, causa,
+  `Atividade.status` ou `concluido_em` — só os 3 fatos brutos do
+  cronograma. Confirmado que salvar uma Fotografia F a 100% não
+  reintroduz nenhum comportamento da A.9.1 (mesmo teste de regressão:
+  Restrição/prontidão continuam intactas, zero `RestricaoAcao`
+  automática).
+- **Não implementado nesta fase** (fora de escopo, aguardando fase
+  futura): `InconsistenciaAvanco`/detector de inconsistências, Fotografia
+  O (estado operacional versionado), Job de análise, Notification,
+  Dashboard, UI — Fotografia F é só a camada de persistência histórica;
+  nada consome esses 3 campos novos ainda em nenhuma tela.
+- Testes: `tests/Feature/AtividadeSnapshotFotografiaFTest.php` (9 testes
+  — percentual parcial, 100% com as duas datas reais, três importações
+  sucessivas preservando três fotografias distintas, Baseline pura
+  registra o fato, importação Ambos, zero explícito permanece zero,
+  ausência de dado permanece null, Fotografia F não reintroduz
+  autocorreção da A.9.1, snapshot sem os campos novos aceita null) + 1
+  teste novo em `BackfillLookaheadCommandTest.php` (Backfill não inventa
+  histórico) + 1 teste novo em `TenantIsolationTest.php` (`AtividadeSnapshot`
+  escopado por tenant). Fixtures novas: `cronograma_fase_a92_70pct.xml`,
+  `cronograma_fase_a92_zero_e_termino.xml`. Suíte completa sem regressão:
+  297 passed / 922 assertions / 0 failures, incluindo `TenantIsolationTest`
+  e toda a suíte de A.9.1/Health Check/Plano de Ação/Suprimentos.
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:

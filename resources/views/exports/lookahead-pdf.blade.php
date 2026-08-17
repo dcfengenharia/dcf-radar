@@ -47,7 +47,7 @@
                 <td>{{ $linha['terminoBaseline']?->format('d/m/Y') ?? '—' }}</td>
                 <td>{{ $temImportacaoAvanco ? ($linha['inicioTendencia']?->format('d/m/Y') ?? '—') : 'N/A' }}</td>
                 <td>{{ $temImportacaoAvanco ? ($linha['terminoTendencia']?->format('d/m/Y') ?? '—') : 'N/A' }}</td>
-                <td>{{ $at->percentual_concluido !== null ? number_format((float) $at->percentual_concluido, 0) . '%' : '—' }}</td>
+                <td>{{ $linha['percentualRealizado'] !== null ? number_format($linha['percentualRealizado'], 0) . '%' : '—' }}</td>
                 <td>{{ $linha['restricoesBloq'] }}</td>
                 <td>{{ $linha['restricoesNaoBloq'] }}</td>
                 <td>{{ $linha['totalItens'] > 0 ? "{$linha['itensOk']}/{$linha['totalItens']}" : '—' }}</td>

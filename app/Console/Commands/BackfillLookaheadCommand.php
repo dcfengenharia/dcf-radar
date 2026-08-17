@@ -8,7 +8,6 @@ use App\Models\Disciplina;
 use App\Models\Etapa;
 use App\Models\FrenteTrabalho;
 use App\Models\Work;
-use App\Support\ConclusaoAutomaticaAtividades;
 use App\Support\TenantContext;
 use App\Support\TextoCustomizado;
 use Illuminate\Console\Command;
@@ -19,9 +18,10 @@ class BackfillLookaheadCommand extends Command
 {
     protected $signature = 'lookahead:backfill {obra? : ID de uma obra específica (opcional, roda em todas se omitido)}';
 
-    protected $description = 'Classifica retroativamente disciplina/frente de trabalho/etapa (a partir do textos já salvo), '
-        . 'cria o snapshot da importação mais recente e resolve restrições/itens de prontidão pendentes de atividades '
-        . 'já 100% concluídas — tudo para atividades importadas antes dessas features existirem.';
+    protected $description = 'Classifica retroativamente disciplina/frente de trabalho/etapa (a partir do textos já salvo) '
+        . 'e cria o snapshot da importação mais recente — tudo para atividades importadas antes dessas features existirem. '
+        . 'Ciclo 17, A.9.1: NÃO resolve mais restrições/itens de prontidão automaticamente — pendências operacionais '
+        . 'permanecem intocadas mesmo para atividades já 100% concluídas (ver App\Support\ConclusaoAutomaticaAtividades).';
 
     public function handle(): int
     {
@@ -33,7 +33,6 @@ class BackfillLookaheadCommand extends Command
             TenantContext::actingAs($obra->tenant, function () use ($obra) {
                 $this->classificarAtividades($obra);
                 $this->criarSnapshotDaUltimaImportacao($obra);
-                $this->concluirPendenciasDeAtividadesCompletas($obra);
             });
         }
 
@@ -134,20 +133,5 @@ class BackfillLookaheadCommand extends Command
         }
 
         $this->line("Obra {$obra->name}: {$atividadesSemSnapshot->count()} snapshot(s) criado(s) para a importação de " . $importacao->importado_em->format('d/m/Y H:i') . '.');
-    }
-
-    private function concluirPendenciasDeAtividadesCompletas(Work $obra): void
-    {
-        $ids = Atividade::where('obra_id', $obra->id)
-            ->where('percentual_concluido', '>=', 100)
-            ->pluck('id');
-
-        if ($ids->isEmpty()) {
-            return;
-        }
-
-        ConclusaoAutomaticaAtividades::aplicar($ids, $obra->id, null);
-
-        $this->line("Obra {$obra->name}: pendências de {$ids->count()} atividade(s) 100% concluída(s) resolvidas.");
     }
 }

@@ -104,7 +104,63 @@ class BackfillLookaheadCommandTest extends TestCase
         $this->assertTrue($snapshot->inicio_planejado->isSameDay($atividade->inicio_planejado));
     }
 
-    public function test_resolve_pendencias_de_atividades_ja_100_no_banco(): void
+    /**
+     * Ciclo 17, A.9.2 — Fotografia F: o Backfill cria snapshot retroativo
+     * pra importação ANTIGA (etapa 2, já existente) — mas NUNCA inventa
+     * percentual_concluido/real_inicio/real_termino históricos copiando o
+     * estado ATUAL (ao vivo) da Atividade. "É melhor snapshot histórico
+     * antigo com Fotografia F = null do que inventar fotografia histórica
+     * usando o estado atual" — mesmo se a Atividade viva já estiver 100%
+     * com datas reais preenchidas, o snapshot retroativo tem que ficar null
+     * nesses 3 campos (não existe fonte confiável do que o cronograma
+     * declarou NAQUELA importação específica).
+     */
+    public function test_backfill_nao_inventa_percentual_e_datas_reais_historicas_a_partir_da_atividade_viva(): void
+    {
+        $tenant = Tenant::factory()->create();
+        $user = User::factory()->create(['tenant_id' => $tenant->id]);
+        $this->actingAs($user);
+        $obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+
+        $importacao = CronogramaImportacao::create([
+            'tenant_id' => $tenant->id,
+            'obra_id' => $obra->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'importado_em' => now(),
+        ]);
+
+        // Atividade viva já 100%, com datas reais preenchidas — mas NENHUM
+        // snapshot existe pra essa importação antiga (cenário pré-A.9.2).
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $tenant->id,
+            'obra_id' => $obra->id,
+            'origem' => 'ms_project',
+            'percentual_concluido' => 100,
+            'real_inicio' => now()->subDays(10),
+            'real_termino' => now()->subDays(2),
+        ]);
+
+        $this->artisan('lookahead:backfill', ['obra' => $obra->id])->assertSuccessful();
+
+        $snapshot = AtividadeSnapshot::where('atividade_id', $atividade->id)
+            ->where('cronograma_importacao_id', $importacao->id)
+            ->first();
+
+        $this->assertNotNull($snapshot);
+        $this->assertNull($snapshot->percentual_concluido);
+        $this->assertNull($snapshot->real_inicio);
+        $this->assertNull($snapshot->real_termino);
+    }
+
+    /**
+     * Ciclo 17, A.9.1 — o Backfill padrão NÃO resolve mais restrições nem
+     * conclui itens de prontidão automaticamente (removido de
+     * concluirPendenciasDeAtividadesCompletas(), que deixou de ser chamada).
+     * Classificação e snapshot retroativos (etapas 1/2) continuam
+     * funcionando normalmente — só a autocorreção gerencial saiu do
+     * caminho padrão.
+     */
+    public function test_backfill_padrao_preserva_restricao_e_prontidao_de_atividades_ja_100_no_banco(): void
     {
         $tenant = Tenant::factory()->create();
         $user = User::factory()->create(['tenant_id' => $tenant->id]);
@@ -115,6 +171,7 @@ class BackfillLookaheadCommandTest extends TestCase
             'tenant_id' => $tenant->id,
             'obra_id' => $obra->id,
             'percentual_concluido' => 100,
+            'textos' => ['Texto21' => 'ESTRUTURA'],
         ]);
 
         $restricao = Restricao::factory()->create([
@@ -133,11 +190,18 @@ class BackfillLookaheadCommandTest extends TestCase
 
         $this->artisan('lookahead:backfill', ['obra' => $obra->id])->assertSuccessful();
 
-        $this->assertEquals(StatusRestricao::Resolvida, $restricao->fresh()->status);
+        // Classificação legítima (etapa 1) continua funcionando.
+        $this->assertEquals('ESTRUTURA', Disciplina::find($atividade->fresh()->disciplina_id)?->nome);
+
+        // Pendências operacionais: intocadas.
+        $this->assertEquals(StatusRestricao::Aberta, $restricao->fresh()->status);
+        $this->assertNull($restricao->fresh()->resolvida_em);
+        $this->assertDatabaseMissing('restricao_acoes', ['restricao_id' => $restricao->id]);
 
         $registro = AtividadeItemProntidao::where('atividade_id', $atividade->id)
             ->where('item_prontidao_id', $item->id)
             ->first();
-        $this->assertTrue((bool) $registro->concluido);
+        $this->assertFalse((bool) $registro->concluido);
+        $this->assertNull($registro->concluido_em);
     }
 }

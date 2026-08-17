@@ -27,7 +27,6 @@ use App\Models\Personalizado3;
 use App\Models\Personalizado4;
 use App\Models\Personalizado5;
 use App\Models\Work;
-use App\Support\ConclusaoAutomaticaAtividades;
 use App\Support\SincronizarRestricaoSuprimento;
 use App\Support\TextoCustomizado;
 use Carbon\Carbon;
@@ -189,7 +188,6 @@ class MsProjectImporter implements ImportadorCronograma
             $mapaPersonalizados4 = [];
             $mapaPersonalizados5 = [];
             $loteSnapshots    = [];
-            $idsCompletos100  = [];
             $agora = now();
 
             // Modo Avanço: casamento por external_uid já foi resolvido em
@@ -338,13 +336,23 @@ class MsProjectImporter implements ImportadorCronograma
 
                 $mapaAtividades[$tarefa->uid] = $at->id;
 
-                if ($tarefa->percentualConcluido !== null && $tarefa->percentualConcluido >= 100) {
-                    $idsCompletos100[] = $at->id;
-                }
-
                 // Snapshot histórico desta tarefa nesta importação — permite
                 // reconstruir "qual era a tendência/baseline na importação X"
                 // mais tarde, já que a linha de Atividade só guarda o valor atual.
+                //
+                // Ciclo 17, A.9.2 — Fotografia F: percentual_concluido/
+                // real_inicio/real_termino vêm direto de $tarefa (a
+                // TarefaImportada desta própria iteração), nunca de $at
+                // relido após o upsert — queremos o fato exatamente como o
+                // arquivo declarou nesta importação, não um efeito colateral
+                // acidental do model ao vivo. $tarefa->percentualConcluido/
+                // realInicio/realTermino são populados pelo parser de forma
+                // uniforme (ActualStart/ActualFinish/PercentWorkComplete),
+                // independente de $tipo — uma importação Baseline pura que
+                // traga esses campos no XML também os registra aqui; isso é
+                // só um FATO preservado, não torna a importação elegível
+                // como Avanço/Tendência na UI (isso continua controlado
+                // exclusivamente por CronogramaImportacao.tipo).
                 $loteSnapshots[] = [
                     'id'                       => (string) Str::ulid(),
                     'tenant_id'                => $obra->tenant_id,
@@ -354,6 +362,9 @@ class MsProjectImporter implements ImportadorCronograma
                     'data_termino'             => $at->data_termino?->toDateString(),
                     'baseline_inicio'          => $at->baseline_inicio?->toDateString(),
                     'baseline_termino'         => $at->baseline_termino?->toDateString(),
+                    'percentual_concluido'     => $tarefa->percentualConcluido,
+                    'real_inicio'              => $tarefa->realInicio?->toDateString(),
+                    'real_termino'             => $tarefa->realTermino?->toDateString(),
                     'created_at'               => $agora,
                     'updated_at'               => $agora,
                 ];
@@ -405,9 +416,15 @@ class MsProjectImporter implements ImportadorCronograma
                 DB::table('avanco_periodos')->insert($lote);
             }
 
-            // --- 6. Atividades que atingiram 100% não fazem sentido com
-            // restrições abertas ou itens de prontidão pendentes.
-            ConclusaoAutomaticaAtividades::aplicar($idsCompletos100, $obra->id, $userId);
+            // --- 6. Ciclo 17, A.9.1 — NÃO auto-resolve restrições nem marca
+            // itens de prontidão automaticamente. O cronograma importado é a
+            // verdade factual (percentual_concluido/real_inicio/real_termino
+            // já gravados acima); pendências operacionais (Restricao,
+            // AtividadeItemProntidao) são fonte da plataforma e permanecem
+            // exatamente como estavam, mesmo quando a atividade chega a
+            // 100%. Ver App\Support\ConclusaoAutomaticaAtividades (mantida
+            // como ferramenta de saneamento legado explícito, nunca chamada
+            // automaticamente daqui).
 
             // --- 7. inicio_planejado pode ter mudado (reimportação de
             // Linha de Base) — recalcula Tendência/status/restrição de

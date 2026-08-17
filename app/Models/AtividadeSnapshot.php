@@ -19,6 +19,9 @@ class AtividadeSnapshot extends Model
         'data_termino',
         'baseline_inicio',
         'baseline_termino',
+        'percentual_concluido',
+        'real_inicio',
+        'real_termino',
     ];
 
     protected $casts = [
@@ -26,6 +29,9 @@ class AtividadeSnapshot extends Model
         'data_termino' => 'date',
         'baseline_inicio' => 'date',
         'baseline_termino' => 'date',
+        'percentual_concluido' => 'decimal:2',
+        'real_inicio' => 'date',
+        'real_termino' => 'date',
     ];
 
     public function importacao(): BelongsTo

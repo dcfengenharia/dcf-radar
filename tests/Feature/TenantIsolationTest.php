@@ -7,6 +7,7 @@ use App\Models\AssinaturaFatura;
 use App\Models\Atividade;
 use App\Models\AtividadeAnexo;
 use App\Models\AtividadeItemProntidao;
+use App\Models\AtividadeSnapshot;
 use App\Models\Client;
 use App\Models\DocumentoEngenharia;
 use App\Models\DocumentoEngenhariaReprogramacao;
@@ -498,5 +499,35 @@ class TenantIsolationTest extends TestCase
         $this->assertNull(LinhaBase::find($linhaBaseB->id));
         $this->assertNull(LinhaBase::onlyTrashed()->find($linhaBaseB->id));
         $this->assertNull(LinhaBase::withTrashed()->find($linhaBaseB->id));
+    }
+
+    /** Ciclo 17, A.9.2 — Fotografia F: percentual_concluido/real_inicio/real_termino em atividade_snapshots seguem o mesmo scope automático das demais colunas. */
+    public function test_atividade_snapshot_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $importacaoB = CronogramaImportacao::create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+            'metodo_distribuicao' => 'ponto_medio_recurso_trabalho',
+            'importado_em' => now(),
+        ]);
+        $atividadeB = Atividade::factory()->create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+        ]);
+        $snapshotB = AtividadeSnapshot::create([
+            'tenant_id' => $tenantB->id,
+            'cronograma_importacao_id' => $importacaoB->id,
+            'atividade_id' => $atividadeB->id,
+            'percentual_concluido' => 55,
+            'real_inicio' => now()->subDays(3),
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(AtividadeSnapshot::find($snapshotB->id));
     }
 }

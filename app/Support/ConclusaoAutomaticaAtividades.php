@@ -8,13 +8,27 @@ use App\Models\ItemProntidao;
 use App\Models\Restricao;
 use Illuminate\Support\Collection;
 
+/**
+ * Ciclo 17, A.9.1 — LEGADO, uso explícito apenas.
+ *
+ * Executa autocorreção gerencial destrutiva de pendências: resolve
+ * restrições abertas e marca itens de prontidão como concluídos, só porque
+ * a atividade atingiu 100% no cronograma. Isso contraria a regra de produto
+ * definitiva do Ciclo 17 (o cronograma importado é a verdade factual; a
+ * plataforma preserva o histórico operacional — uma coisa nunca apaga
+ * silenciosamente a outra) — por isso NÃO é mais chamada automaticamente
+ * nem por `MsProjectImporter::aplicar()` nem por `BackfillLookaheadCommand`.
+ *
+ * Mantida apenas para saneamento legado explícito (ex.: via `tinker`, sob
+ * decisão consciente de quem está operando), nunca no fluxo automático de
+ * importação ou backfill padrão. Futuras inconsistências entre cronograma
+ * importado e estado operacional devem ser DETECTADAS e EVIDENCIADAS
+ * (Ciclo 17, A.9 — InconsistenciaAvanco), nunca corrigidas silenciosamente
+ * como esta classe faz.
+ */
 class ConclusaoAutomaticaAtividades
 {
     /**
-     * Atividade com "% trabalho concluído" = 100% não faz sentido continuar
-     * com restrições abertas ou itens de prontidão pendentes — resolve as
-     * restrições e marca os itens de prontidão automaticamente.
-     *
      * @param  iterable<string>  $atividadeIds
      * @param  string  $obraId
      * @param  string|null  $userId  usuário a registrar como autor da ação/conclusão — null em execuções de sistema (backfill)
