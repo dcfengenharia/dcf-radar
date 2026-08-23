@@ -6,6 +6,7 @@ use App\DTOs\HorasPeriodo;
 use App\DTOs\PlanoImportacao;
 use App\DTOs\PredecessoraLink;
 use App\DTOs\TarefaImportada;
+use App\Enums\EventoFotografiaProgramacao;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemAtividade;
 use App\Enums\SerieAvanco;
@@ -26,10 +27,17 @@ use App\Models\Personalizado2;
 use App\Models\Personalizado3;
 use App\Models\Personalizado4;
 use App\Models\Personalizado5;
+use App\Models\AtividadeItemProntidao;
+use App\Models\ItemProntidao;
+use App\Models\ProgramacaoSemanal;
+use App\Models\ProgramacaoSemanalItem;
+use App\Models\Restricao;
 use App\Models\Work;
+use App\Services\DetectorInconsistenciasAvanco;
 use App\Support\SincronizarRestricaoSuprimento;
 use App\Support\TextoCustomizado;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use SimpleXMLElement;
@@ -200,6 +208,101 @@ class MsProjectImporter implements ImportadorCronograma
                     ->pluck('id', 'external_uid')
                     ->all()
                 : [];
+
+            // Ciclo 17, A.9.3/A.9.4.HARDENING — Fotografia O: TUDO que a
+            // plataforma sabia sobre cada atividade ANTES desta importação
+            // tocá-la — status/fora_do_cronograma, pronta, restrições
+            // pendentes e itens de prontidão pendentes — é capturado num
+            // ÚNICO instante, em lote, ANTES do loop de upsert. Antes do
+            // hardening, status/fora_do_cronograma já eram lidos aqui, mas
+            // pronta/restrições/prontidão só eram calculados DEPOIS do
+            // upsert (dentro de gravarFotografiaOperacional()) — seguro só
+            // porque o loop de upsert nunca escreve em Restricao/
+            // ItemProntidao/AtividadeItemProntidao, mas uma suposição
+            // implícita, não uma invariante garantida. Agora toda a
+            // Fotografia O representa literalmente o mesmo instante,
+            // eliminando essa suposição. Só relevante pra Avanço/Ambos —
+            // Baseline pura não recebe Fotografia O (ver CLAUDE.md).
+            // Atividade ausente destes mapas (criada NESTA própria
+            // importação) fica sem "antes" — null/vazio, nunca um valor
+            // inventado (não existia pra ter pronta/pendência nenhuma).
+            $capturarFotografiaO = in_array($tipo, [TipoCronogramaImportacao::Avanco, TipoCronogramaImportacao::Ambos], true);
+            $estadoOperacionalAntes = collect();
+            $idsProntasAntes = [];
+            $restricoesPendentesAntesPorAtividade = collect();
+            $prontidaoPendenteAntesPorAtividade = [];
+
+            if ($capturarFotografiaO) {
+                $estadoOperacionalAntes = Atividade::where('obra_id', $obra->id)
+                    ->where('origem', OrigemAtividade::MsProject)
+                    ->get(['id', 'external_uid', 'status', 'fora_do_cronograma'])
+                    ->keyBy('external_uid');
+
+                $atividadeIdsExistentesAntes = $estadoOperacionalAntes->pluck('id')->all();
+
+                if (! empty($atividadeIdsExistentesAntes)) {
+                    // `pronta` reaproveita literalmente Atividade::scopeProntas()
+                    // (mesma fonte canônica de sempre) — só que agora resolvida
+                    // ANTES do upsert, sobre os IDs que já existiam.
+                    $idsProntasAntes = array_flip(
+                        Atividade::query()
+                            ->where('obra_id', $obra->id)
+                            ->whereIn('id', $atividadeIdsExistentesAntes)
+                            ->prontas()
+                            ->pluck('id')
+                            ->all()
+                    );
+
+                    // Mesmo conjunto canônico de status "aberta" usado por
+                    // Atividade::estaPronta()/scopeProntas() — nunca uma lista nova.
+                    $restricoesPendentesAntesPorAtividade = Restricao::whereIn('atividade_id', $atividadeIdsExistentesAntes)
+                        ->whereIn('status', ['aberta', 'em_tratamento', 'aguardando_terceiros'])
+                        ->get(['id', 'atividade_id', 'bloqueante', 'status'])
+                        ->groupBy('atividade_id');
+
+                    $itensObraAntes = ItemProntidao::where('obra_id', $obra->id)->get(['id']);
+
+                    if ($itensObraAntes->isNotEmpty()) {
+                        // Só rows com concluido=true contam como "feito" —
+                        // mesma regra canônica de estaPronta(): ausência de
+                        // row também é pendente.
+                        $concluidosAntesPorAtividade = AtividadeItemProntidao::whereIn('atividade_id', $atividadeIdsExistentesAntes)
+                            ->where('concluido', true)
+                            ->get(['atividade_id', 'item_prontidao_id'])
+                            ->groupBy('atividade_id');
+
+                        // Rows explicitamente concluido=false — só pra
+                        // preservar o ID da row real quando ela existir
+                        // (nunca inventado quando não existe).
+                        $pendentesExplicitosAntesPorAtividade = AtividadeItemProntidao::whereIn('atividade_id', $atividadeIdsExistentesAntes)
+                            ->where('concluido', false)
+                            ->get(['id', 'atividade_id', 'item_prontidao_id'])
+                            ->groupBy('atividade_id');
+
+                        foreach ($atividadeIdsExistentesAntes as $atividadeIdAntes) {
+                            $idsConcluidos = $concluidosAntesPorAtividade->get($atividadeIdAntes, collect())
+                                ->pluck('item_prontidao_id')->all();
+                            $pendentesExplicitosPorItem = $pendentesExplicitosAntesPorAtividade->get($atividadeIdAntes, collect())
+                                ->keyBy('item_prontidao_id');
+
+                            $pendentes = [];
+                            foreach ($itensObraAntes as $item) {
+                                if (in_array($item->id, $idsConcluidos, true)) {
+                                    continue;
+                                }
+                                $pendentes[] = [
+                                    'item_prontidao_id' => $item->id,
+                                    'atividade_item_prontidao_id' => $pendentesExplicitosPorItem->get($item->id)?->id,
+                                ];
+                            }
+
+                            if (! empty($pendentes)) {
+                                $prontidaoPendenteAntesPorAtividade[$atividadeIdAntes] = $pendentes;
+                            }
+                        }
+                    }
+                }
+            }
 
             foreach (array_merge($plano->criar, $plano->atualizar) as $tarefa) {
                 if ($tipo === TipoCronogramaImportacao::Avanco) {
@@ -376,6 +479,43 @@ class MsProjectImporter implements ImportadorCronograma
                 }
             }
 
+            // --- 3b. Ciclo 17, A.9.3 — Fotografia O: estado operacional da
+            // plataforma (Restrição/Prontidão/status) no instante desta
+            // importação. Leitura pura, em lote — nunca altera Restricao,
+            // AtividadeItemProntidao ou Atividade (zero autocorreção,
+            // mesmo princípio da A.9.1).
+            if ($capturarFotografiaO && ! empty($mapaAtividades)) {
+                $this->gravarFotografiaOperacional(
+                    $obra,
+                    $importacao,
+                    $mapaAtividades,
+                    $estadoOperacionalAntes,
+                    $idsProntasAntes,
+                    $restricoesPendentesAntesPorAtividade,
+                    $prontidaoPendenteAntesPorAtividade,
+                    $agora,
+                );
+
+                // --- 3c. Ciclo 17, A.9.5 — Fotografia P: se cada atividade
+                // que INICIOU/CONCLUIU (Fotografia F, `$loteSnapshots`
+                // acabou de ser gravada acima) fazia parte da Programação
+                // Semanal historicamente aplicável ao instante do evento.
+                // Nunca lê/altera Programação Semanal ao vivo — só a
+                // resolve historicamente e congela o resultado. Mesmo gate
+                // de tipo de Fotografia O (só Avanço/Ambos).
+                $this->capturarFotografiaProgramacao($obra, $importacao, $loteSnapshots, $agora);
+
+                // --- 3d. Ciclo 17, A.9.4/A.9.5 — Detector de Inconsistências
+                // de Avanço: compara F (recém-gravada acima) × O × P
+                // (ambas recém-gravadas acima) desta MESMA importação. Roda
+                // depois das três fotografias e ainda dentro desta
+                // transação — se falhar, toda a importação reverte junto
+                // (nunca existe importação sem suas inconsistências já
+                // detectadas). Serviço puro: nunca altera Atividade/
+                // Restricao/Prontidao/ProgramacaoSemanal/comentários.
+                (new DetectorInconsistenciasAvanco())->detectar($importacao);
+            }
+
             // --- 4. Arquivar removidas (nunca apagar) ---
             if ($plano->removerIds) {
                 Atividade::whereIn('id', $plano->removerIds)->update([
@@ -433,6 +573,232 @@ class MsProjectImporter implements ImportadorCronograma
 
             return $importacao;
         });
+    }
+
+    /**
+     * Ciclo 17, A.9.3/A.9.4.HARDENING — Fotografia O: só PERSISTE, em lote
+     * (zero N+1, zero query própria), o estado operacional que já foi
+     * capturado ANTES do loop de upsert (status/fora_do_cronograma/pronta/
+     * restrições pendentes/prontidão pendente — todos o MESMO instante
+     * pré-importação, ver bloco de captura em aplicar()). Antes do
+     * hardening, este método ainda fazia suas próprias queries de
+     * `pronta`/restrições/prontidão DEPOIS do upsert — seguro só porque o
+     * upsert nunca escrevia em Restricao/ItemProntidao/AtividadeItemProntidao,
+     * mas uma suposição implícita. Agora o método é puramente "gravar o que
+     * já foi capturado", sem reinterpretar nada. Nunca escreve em
+     * Restricao/AtividadeItemProntidao/Atividade (mesmo princípio de zero
+     * autocorreção da A.9.1).
+     *
+     * @param  array<string, string>  $mapaAtividades  uid => atividade_id
+     * @param  Collection<string, Atividade>  $estadoOperacionalAntes  external_uid => Atividade (status/fora_do_cronograma pré-importação, só parcialmente hidratada: id/external_uid/status/fora_do_cronograma)
+     * @param  array<string, true>  $idsProntasAntes  atividade_id => true, pra atividades que já existiam e já estavam prontas ANTES desta importação (Atividade::scopeProntas(), resolvida antes do upsert)
+     * @param  Collection<string, \Illuminate\Support\Collection>  $restricoesPendentesAntesPorAtividade  atividade_id => Restricao[] (id/atividade_id/bloqueante/status), só das que já existiam antes
+     * @param  array<string, array<int, array{item_prontidao_id: string, atividade_item_prontidao_id: ?string}>>  $prontidaoPendenteAntesPorAtividade  atividade_id => itens pendentes, só das que já existiam antes
+     */
+    private function gravarFotografiaOperacional(
+        Work $obra,
+        CronogramaImportacao $importacao,
+        array $mapaAtividades,
+        Collection $estadoOperacionalAntes,
+        array $idsProntasAntes,
+        Collection $restricoesPendentesAntesPorAtividade,
+        array $prontidaoPendenteAntesPorAtividade,
+        Carbon $agora,
+    ): void {
+        $tenantId = $obra->tenant_id;
+
+        $loteOperacional = [];
+        $loteRestricoes = [];
+        $loteProntidao = [];
+
+        foreach ($mapaAtividades as $uid => $atividadeId) {
+            $antes = $estadoOperacionalAntes->get($uid);
+
+            $loteOperacional[] = [
+                'id'                       => (string) Str::ulid(),
+                'tenant_id'                => $tenantId,
+                'cronograma_importacao_id' => $importacao->id,
+                'atividade_id'             => $atividadeId,
+                'status'                   => $antes?->status?->value,
+                'fora_do_cronograma'       => $antes?->fora_do_cronograma,
+                // Atividade nova nesta própria importação (sem "antes"
+                // genuíno) nunca aparece em $idsProntasAntes — pronta fica
+                // false aqui, mas isso é irrelevante pra ela: o Detector
+                // (A.9.4) já ignora qualquer atividade cujo status
+                // pré-importação seja null, antes mesmo de olhar pronta.
+                'pronta'                   => isset($idsProntasAntes[$atividadeId]),
+                'created_at'               => $agora,
+                'updated_at'               => $agora,
+            ];
+
+            foreach ($restricoesPendentesAntesPorAtividade->get($atividadeId, collect()) as $restricao) {
+                $loteRestricoes[] = [
+                    'id'                       => (string) Str::ulid(),
+                    'tenant_id'                => $tenantId,
+                    'cronograma_importacao_id' => $importacao->id,
+                    'atividade_id'             => $atividadeId,
+                    'restricao_id'             => $restricao->id,
+                    'bloqueante'               => $restricao->bloqueante,
+                    'status'                   => $restricao->status->value,
+                    'created_at'               => $agora,
+                    'updated_at'               => $agora,
+                ];
+            }
+
+            foreach ($prontidaoPendenteAntesPorAtividade[$atividadeId] ?? [] as $pendente) {
+                $loteProntidao[] = [
+                    'id'                           => (string) Str::ulid(),
+                    'tenant_id'                    => $tenantId,
+                    'cronograma_importacao_id'     => $importacao->id,
+                    'atividade_id'                 => $atividadeId,
+                    'item_prontidao_id'            => $pendente['item_prontidao_id'],
+                    'atividade_item_prontidao_id'  => $pendente['atividade_item_prontidao_id'],
+                    'created_at'                   => $agora,
+                    'updated_at'                   => $agora,
+                ];
+            }
+        }
+
+        foreach (array_chunk($loteOperacional, 1000) as $chunk) {
+            DB::table('atividade_snapshot_operacionais')->insert($chunk);
+        }
+        foreach (array_chunk($loteRestricoes, 1000) as $chunk) {
+            DB::table('atividade_snapshot_restricoes')->insert($chunk);
+        }
+        foreach (array_chunk($loteProntidao, 1000) as $chunk) {
+            DB::table('atividade_snapshot_prontidao')->insert($chunk);
+        }
+    }
+
+    /**
+     * Ciclo 17, A.9.5 — Fotografia P: grava, em lote (zero N+1), se cada
+     * atividade que declarou `real_inicio`/`real_termino` NESTA importação
+     * (Fotografia F, `$loteSnapshots`) fazia parte da Programação Semanal
+     * historicamente aplicável ao instante desse evento factual — NUNCA a
+     * data/hora da própria importação (`$agora`)/`importado_em`, porque
+     * avanço importado com atraso é um cenário real deste projeto e as duas
+     * datas podem divergir (decisão do usuário, Ciclo 17 A.9.5).
+     *
+     * `data_factual` exige a data REAL correspondente (`real_inicio` pro
+     * evento `inicio`, `real_termino` pro evento `conclusao`) — nunca cai
+     * pra outra data quando ausente (ex.: "iniciou" via só percentual>0,
+     * sem `real_inicio`, não gera linha de evento `inicio` aqui: sem data
+     * genuína, não há semana pra resolver — regra própria de P,
+     * deliberadamente MAIS estrita que o INICIOU/CONCLUIU do Detector de
+     * O, que não precisa de data nenhuma). Uma atividade pode gerar até 2
+     * linhas nesta importação (início E conclusão são fatos
+     * independentes, mesmo princípio já usado pelo Detector).
+     *
+     * Resolução 100% em lote: 2 queries (`ProgramacaoSemanal`/
+     * `ProgramacaoSemanalItem`, ambas escopadas pelo conjunto de semanas
+     * realmente necessárias) + inserts em chunk — nunca 1 query por
+     * atividade/evento. Vigência é resolvida em memória com a MESMA regra
+     * de `ProgramacaoSemanal::vigenteEm()` (reimplementada aqui só pra
+     * evitar N chamadas ao banco — nunca uma regra paralela diferente).
+     * Granularidade de DIA (fim do dia de `data_factual`), não de
+     * timestamp exato — `real_inicio`/`real_termino` nunca carregam hora.
+     *
+     * Nunca lê/altera `ProgramacaoSemanal`/`ProgramacaoSemanalItem`/
+     * `Atividade` fora desta leitura pura (mesmo princípio de zero
+     * autocorreção da A.9.1) — o resultado é só congelado.
+     *
+     * @param  array<int, array{atividade_id:string, percentual_concluido:mixed, real_inicio:?string, real_termino:?string}>  $loteSnapshots
+     */
+    private function capturarFotografiaProgramacao(
+        Work $obra,
+        CronogramaImportacao $importacao,
+        array $loteSnapshots,
+        Carbon $agora,
+    ): void {
+        $eventos = [];
+
+        foreach ($loteSnapshots as $snap) {
+            if ($snap['real_inicio'] !== null) {
+                $eventos[] = [
+                    'atividade_id' => $snap['atividade_id'],
+                    'evento' => EventoFotografiaProgramacao::Inicio,
+                    'data_factual' => $snap['real_inicio'],
+                ];
+            }
+
+            if ($snap['real_termino'] !== null) {
+                $eventos[] = [
+                    'atividade_id' => $snap['atividade_id'],
+                    'evento' => EventoFotografiaProgramacao::Conclusao,
+                    'data_factual' => $snap['real_termino'],
+                ];
+            }
+        }
+
+        if (empty($eventos)) {
+            return;
+        }
+
+        foreach ($eventos as &$evento) {
+            $evento['semana_inicio'] = Carbon::parse($evento['data_factual'])
+                ->startOfWeek(Carbon::MONDAY)->toDateString();
+            $evento['instante'] = Carbon::parse($evento['data_factual'])->endOfDay();
+        }
+        unset($evento);
+
+        $semanasNecessarias = array_values(array_unique(array_column($eventos, 'semana_inicio')));
+
+        // Todas as versões de ProgramacaoSemanal das semanas necessárias,
+        // numa única query — nunca 1 query por semana/atividade.
+        $todasVersoes = ProgramacaoSemanal::where('obra_id', $obra->id)
+            ->whereIn('semana_inicio', $semanasNecessarias)
+            ->get(['id', 'semana_inicio', 'versao', 'congelada_em', 'superseded_at']);
+
+        $versoesPorSemana = $todasVersoes->groupBy(fn ($v) => $v->semana_inicio->toDateString());
+
+        $todosItens = $todasVersoes->isNotEmpty()
+            ? ProgramacaoSemanalItem::whereIn('programacao_semanal_id', $todasVersoes->pluck('id'))
+                ->get(['id', 'programacao_semanal_id', 'atividade_id', 'created_at'])
+            : collect();
+
+        $itensPorProgramacao = $todosItens->groupBy('programacao_semanal_id');
+
+        $lote = [];
+
+        foreach ($eventos as $evento) {
+            $candidatas = $versoesPorSemana->get($evento['semana_inicio'], collect());
+
+            // Mesma regra de ProgramacaoSemanal::vigenteEm(), resolvida em
+            // memória: vigente = já existia (congelada_em <= instante) e
+            // ainda não tinha sido substituída (superseded_at nulo, ou só
+            // passou a valer depois do instante).
+            $headerVigente = $candidatas
+                ->filter(fn ($v) => $v->congelada_em->lte($evento['instante'])
+                    && ($v->superseded_at === null || $v->superseded_at->gt($evento['instante'])))
+                ->sortByDesc('versao')
+                ->first();
+
+            $itemEncontrado = $headerVigente
+                ? $itensPorProgramacao->get($headerVigente->id, collect())
+                    ->first(fn ($item) => $item->atividade_id === $evento['atividade_id']
+                        && $item->created_at->lte($evento['instante']))
+                : null;
+
+            $lote[] = [
+                'id' => (string) Str::ulid(),
+                'tenant_id' => $obra->tenant_id,
+                'cronograma_importacao_id' => $importacao->id,
+                'atividade_id' => $evento['atividade_id'],
+                'evento' => $evento['evento']->value,
+                'data_factual' => $evento['data_factual'],
+                'semana_inicio_resolvida' => $evento['semana_inicio'],
+                'programacao_semanal_id' => $headerVigente?->id,
+                'programacao_semanal_versao' => $headerVigente?->versao,
+                'atividade_estava_na_programacao' => $itemEncontrado !== null,
+                'programacao_semanal_item_id' => $itemEncontrado?->id,
+                'created_at' => $agora,
+                'updated_at' => $agora,
+            ];
+        }
+
+        foreach (array_chunk($lote, 1000) as $chunk) {
+            DB::table('atividade_snapshot_programacoes')->insert($chunk);
+        }
     }
 
     // =========================================================================

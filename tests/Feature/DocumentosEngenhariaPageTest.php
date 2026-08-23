@@ -428,8 +428,17 @@ class DocumentosEngenhariaPageTest extends TestCase
             ->assertHasErrors(['revisaoNovaStatusId']);
     }
 
+    /**
+     * Ciclo 18, Etapa 18.2 — mecanismo mudou (não a garantia funcional):
+     * antes o upload ia pro disco `public` (URL direta, sem autorização);
+     * agora vai pro disco `local` (privado, só acessível via
+     * DocumentoEngenhariaRevisaoController::download() autorizado).
+     * Prova explicitamente as duas pontas: existe no privado E nunca
+     * aparece no público — exatamente o requisito da Etapa 18.2.
+     */
     public function test_adicionar_revisao_com_anexo_pdf(): void
     {
+        Storage::fake('local');
         Storage::fake('public');
         $this->vincularObra($this->obra, $this->user, Papel::Admin->value);
         $this->actingAs($this->user);
@@ -452,7 +461,8 @@ class DocumentosEngenhariaPageTest extends TestCase
         $revisao = $documento->revisoes()->where('revisao', 'R1')->firstOrFail();
         $this->assertNotNull($revisao->anexo_path);
         $this->assertSame('projeto.pdf', $revisao->anexo_nome_original);
-        Storage::disk('public')->assertExists($revisao->anexo_path);
+        Storage::disk('local')->assertExists($revisao->anexo_path);
+        Storage::disk('public')->assertMissing($revisao->anexo_path);
     }
 
     public function test_revisao_duplicada_falha_validacao(): void

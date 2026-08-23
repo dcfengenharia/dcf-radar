@@ -117,6 +117,13 @@
       "funcionalidade": "restricoes.central_prontidao"
     },
     {
+      "url": "/app/radar/inconsistencias-avanco",
+      "name": "Inconsistências de Avanço",
+      "icon": "menu-icon tf-icons bx bx-error-alt",
+      "slug": "radar.inconsistencias-avanco",
+      "funcionalidade": "restricoes.lookahead"
+    },
+    {
       "menuHeader": "3. REPORT"
     },
     {
@@ -140,6 +147,13 @@
       "url": "/app/engenharia/pacotes",
       "name": "Lista de Documentos",
       "icon": "menu-icon tf-icons bx bx-compass",
+      "slug": "engenharia.pacotes",
+      "funcionalidade": "engenharia.pacotes"
+    },
+    {
+      "url": "/app/engenharia/grds",
+      "name": "GRDs",
+      "icon": "menu-icon tf-icons bx bx-send",
       "slug": "engenharia.pacotes",
       "funcionalidade": "engenharia.pacotes"
     },

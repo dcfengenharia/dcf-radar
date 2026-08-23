@@ -271,7 +271,61 @@
         @endif
     </div>
 
-    {{-- 7. Link para o Lookahead — somente navegação, rota já existente,
+    {{-- 7. Documentos de Engenharia — Liberação para Construção (Ciclo 18,
+         Etapa 18.4). Vínculo DIRETO (Ciclo 18.1), diferente da seção 6
+         acima (via Suprimento). IMPEDITIVO — mesmo peso de Restrição
+         bloqueante nesta Central (ver StatusOperacionalProntidao). Única
+         forma de remover o bloqueio é corrigir a fonte (emitir/liberar/
+         desvincular) — nunca "resolver" aqui, por isso sem ação de
+         escrita, só o link já autorizado pra Lista de Documentos. --}}
+    <div class="mb-3">
+        <h6 class="fw-semibold mb-2">
+            <i class="bx bx-file-blank me-1 {{ ! empty($view->documentosBloqueantes) ? 'text-danger' : 'text-muted' }}"></i>
+            Documentos de Engenharia — Liberação para Construção
+            @if (! empty($view->documentosBloqueantes))
+            <span class="badge bg-label-danger">{{ count($view->documentosBloqueantes) }}</span>
+            @endif
+        </h6>
+        @if (empty($view->documentosBloqueantes))
+        <p class="text-muted small mb-0">Nenhum documento vinculado pendente de liberação.</p>
+        @else
+        <div class="table-responsive">
+            <table class="table table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th>Código</th>
+                        <th>Descrição</th>
+                        <th>Revisão Vigente</th>
+                        <th>Situação</th>
+                        <th>Motivo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach ($view->documentosBloqueantes as $d)
+                    <tr wire:key="cp-doc-ged-{{ $view->atividadeId }}-{{ $d->documentoId }}" class="table-danger">
+                        <td>{{ $d->codigo ?? '—' }}</td>
+                        <td>{{ $d->descricao ?? '—' }}</td>
+                        <td>{{ $d->revisaoVigente ?? '—' }}</td>
+                        <td>{{ $d->statusDocumental ?? '—' }}</td>
+                        <td>
+                            @if ($d->motivo === 'sem_revisao')
+                            <span class="badge bg-label-secondary">Ainda não emitido</span>
+                            @else
+                            <span class="badge bg-label-danger">Revisão vigente não liberada para construção</span>
+                            @endif
+                        </td>
+                    </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
+        <a href="{{ route('engenharia.pacotes') }}" class="btn btn-sm btn-outline-primary mt-2" @click.stop>
+            Ver Lista de Documentos
+        </a>
+        @endif
+    </div>
+
+    {{-- 8. Link para o Lookahead — somente navegação, rota já existente,
          sem parâmetro de atividade (Lookahead não tem deep-link por uid
          hoje — achado do Ciclo 15/B.2, não alterado nesta etapa). --}}
     <a href="{{ route('radar.lookahead') }}" class="btn btn-sm btn-outline-primary" @click.stop>

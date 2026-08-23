@@ -3106,6 +3106,2027 @@ ReportComentario (só em reports emitidos). Reaproveita
   297 passed / 922 assertions / 0 failures, incluindo `TenantIsolationTest`
   e toda a suíte de A.9.1/Health Check/Plano de Ação/Suprimentos.
 
+## Fotografia O — estado operacional da plataforma na importação (Ciclo 17, A.9.3)
+
+- **Princípio-guia**: o arquivo diz o que aconteceu (Fotografia F, A.9.2);
+  a plataforma registra o que sabia (Fotografia O, A.9.3). Nenhum dos dois
+  apaga o outro — são duas fontes independentes que só fazem sentido
+  quando comparadas depois, em uma fase futura ainda não implementada
+  (detector de inconsistências).
+- **O que é**: 3 tabelas novas (`atividade_snapshot_operacionais`,
+  `atividade_snapshot_restricoes`, `atividade_snapshot_prontidao`)
+  gravadas dentro da MESMA transação de `MsProjectImporter::aplicar()`,
+  registrando — por atividade tocada — o `status`/`fora_do_cronograma`
+  ANTES da importação, se a atividade estava PRONTA
+  (`Atividade::scopeProntas()`, mesma regra canônica reaproveitada, nunca
+  reimplementada) e, quando não pronta, QUAIS Restrições bloqueantes
+  abertas e QUAIS itens de prontidão pendentes explicam isso — nunca só
+  uma contagem agregada (decisão deliberada: uma contagem sozinha não
+  permite responder "qual restrição estava aberta" meses depois).
+- **Só Avanço/Ambos gravam Fotografia O** (`TipoCronogramaImportacao::Avanco`/`Ambos`)
+  — Baseline pura nunca grava (mesmo raciocínio de sempre: Baseline é
+  estrutura do cronograma, não um retrato do estado operacional do
+  momento). Fotografia F, ao contrário, continua gravando pra qualquer
+  tipo (comportamento da A.9.2, intocado).
+- **Momento exato da captura**: um único lote de queries batch
+  (`whereIn`) roda ANTES do loop principal de upsert de atividades — lê
+  `status`/`fora_do_cronograma` ao vivo (o valor de ANTES desta
+  importação) e o conjunto de Restrições/itens pendentes via a mesma
+  lógica de `scopeProntas()`. Só depois desse instante o loop começa a
+  sobrescrever `fora_do_cronograma` (Baseline/Ambos sempre zera esse
+  campo) — capturar antes é o que garante "estado anterior à
+  importação", não um efeito colateral do próprio upsert.
+- **Zero autocorreção, zero escrita em estado operacional**: Fotografia O
+  é só leitura + insert nas 3 tabelas novas — nunca altera `Atividade`,
+  `Restricao` ou `AtividadeItemProntidao`. Continua vigente a regra da
+  A.9.1: a importação nunca resolve restrição nem marca item de
+  prontidão automaticamente.
+- **Confiança começa só a partir da A.9.3**: só importações processadas
+  DEPOIS desta fase têm Fotografia O. Não existe reconstrução
+  retroativa — uma importação antiga nunca ganha um registro de estado
+  operacional inventado a posteriori (mesmo princípio já aplicado à
+  Fotografia F/A.9.2 e ao Backfill).
+- **Lacuna documentada, decisão deliberada**: "a atividade estava na
+  Programação Semanal ativa no momento desta importação" NÃO foi
+  capturado nesta fase. Investigação confirmou que o dado bruto existe
+  (`ProgramacaoSemanalItem`, append-only, datas congeladas), mas
+  determinar "qual é A semana de referência" num instante arbitrário de
+  importação exige uma decisão de produto ainda não tomada (múltiplas
+  versões/revisões por semana, qual delas conta) — inventar uma
+  definição arbitrária aqui teria sido pior do que não capturar nada.
+  Registrado como pendência para decisão futura, não implementado.
+- **Detector de inconsistências ainda não existe** — Fotografia O é só a
+  camada de captura/persistência; nenhuma comparação F×O, classificação
+  de risco, notificação, Job, Command, Scheduler ou UI foi construída
+  nesta fase (aguardando validação do usuário antes de qualquer avanço).
+- Testes: `tests/Feature/AtividadeSnapshotOperacionalTest.php` (19
+  testes) + regressão nas 11 suítes já existentes de Fotografia F/Health
+  Check/Lookahead/Restrições/Suprimentos/Tenant Isolation. Suíte
+  completa: 316 passed / 983 assertions / 0 failures.
+- **A.9.3.CORREÇÃO — imutabilidade real das FKs históricas**: a
+  auditoria adversarial da A.9.3 provou empiricamente que
+  `restricao_id`/`item_prontidao_id` com `cascadeOnDelete()` apagavam a
+  linha histórica correspondente se a Restrição/ItemProntidao original
+  fosse `forceDelete()`ada — incompatível com "fotografia histórica e
+  imutável". Migration incremental
+  `2026_08_17_000003_restrict_delete_on_fotografia_o_historical_fks.php`
+  trocou SÓ essas 2 FKs pra `restrictOnDelete()` (nenhuma outra coluna/
+  índice/FK tocada, nenhum dado migrado). Resultado: soft delete de
+  Restricao/ItemProntidao continua funcionando normalmente (SoftDeletes
+  nunca dispara FK — só `UPDATE deleted_at`); um `forceDelete()` de
+  qualquer uma das duas, enquanto ainda referenciada por alguma
+  Fotografia O, é REJEITADO pelo banco (MySQL 1451) — nenhuma Fotografia
+  O pode mais desaparecer como efeito colateral. Comprovado tanto em
+  teste automatizado (`tests/Feature/FotografiaOImutabilidadeTest.php`,
+  6 testes) quanto empiricamente no banco de dev real (dado histórico
+  real criado antes da migration, migration aplicada, dado idêntico
+  byte-a-byte depois, `forceDelete()` real rejeitado com o erro 1451).
+  `atividade_item_prontidao_id` (`nullOnDelete()`) e as FKs de
+  `atividade_id`/`cronograma_importacao_id`/`tenant_id` (mesmo padrão
+  dormente já usado em Fotografia F) NÃO foram tocadas — fora do escopo
+  desta correção pontual.
+
+## Detector de Inconsistências de Avanço — núcleo (Ciclo 17, A.9.4)
+
+- **Princípio-guia**: o cronograma importado é a fonte factual do avanço —
+  se ele diz que uma atividade iniciou/avançou/concluiu, a plataforma
+  ACEITA (nunca reverte percentual, nunca altera datas reais, nunca
+  bloqueia a importação, nunca fecha Restrição/marca Prontidão como
+  efeito colateral). O detector só produz UMA EVIDÊNCIA histórica: "o
+  cronograma declarou X, mas imediatamente antes dessa importação a
+  plataforma sabia Y" — revisão fica com o usuário, numa fase futura
+  ainda não implementada (sem UI/workflow de resolução nesta etapa).
+- **`App\Services\DetectorInconsistenciasAvanco`**: serviço puro, só lê
+  Fotografia F (`AtividadeSnapshot`) × Fotografia O
+  (`AtividadeSnapshotOperacional`/`Restricao`/`Prontidao`) da MESMA
+  importação (nunca importações anteriores, nunca Restricao/
+  AtividadeItemProntidao/Atividade ao vivo) e insere em lote na tabela
+  nova `inconsistencias_avanco`. Chamado dentro de
+  `MsProjectImporter::aplicar()` logo depois da Fotografia O (mesmo
+  `if ($capturarFotografiaO && ...)`, mesma transação) — se falhar, a
+  importação inteira reverte junto, exatamente como F e O.
+- **Regra factual de INÍCIO/CONCLUSÃO — investigada, não inventada**:
+  `MsProjectImporter::percentualTrabalho()` lê `PercentWorkComplete` e
+  `realInicio`/`realTermino` leem `ActualStart`/`ActualFinish` — cada um
+  parseado INDEPENDENTEMENTE, sem nenhuma validação cruzada no
+  importador (confirmado lendo o parser). O MSPDI permite genuinamente
+  um sem o outro. Por isso `INICIOU = real_inicio != null OR
+  percentual_concluido > 0` e `CONCLUIU = percentual_concluido >= 100 OR
+  real_termino != null` — união dos dois sinais, não um isolado. Quando
+  as duas condições são verdadeiras na mesma declaração (ex.: 100% já na
+  primeira importação de avanço), as duas famílias de inconsistência
+  (início e conclusão) são avaliadas de forma independente — nenhuma
+  suprime a outra.
+- **4 tipos implementados** (`App\Enums\TipoInconsistenciaAvanco`):
+  `inicio_com_restricao_pendente`, `inicio_com_prontidao_pendente`,
+  `conclusao_com_restricao_pendente`, `conclusao_com_prontidao_pendente`.
+  Cada um é comparável só via F+O — nunca depende de Programação Semanal.
+- **Severidade** (`App\Enums\SeveridadeInconsistenciaAvanco`,
+  `informativa`/`atencao`/`critica` — enum novo e dedicado, não
+  reaproveita `HealthCheckSeveridade`, domínio diferente): matriz
+  fechada, sem regra dinâmica —
+  início+restrição bloqueante→`atencao`; início+restrição não
+  bloqueante→`informativa`; início+prontidão→`atencao` (sempre);
+  conclusão+restrição bloqueante→`critica`; conclusão+restrição não
+  bloqueante→`atencao`; conclusão+prontidão→`critica` (sempre,
+  independente de bloqueante — prontidão não tem esse conceito). O pedido
+  original deixava "início+restrição bloqueante" como "crítica ou atenção
+  alta" — resolvido em favor de `atencao`, reservando `critica`
+  exclusivamente pra conclusão (sinal mais forte: se a Fotografia O nunca
+  viu a pendência sair do caminho, declarar conclusão é mais alarmante
+  que iniciar com ela ainda aberta).
+- **Granularidade — nunca só uma contagem**: 1 linha por
+  atividade+importação+tipo+entidade concreta (nunca "atividade tinha 3
+  restrições"). `entidade_tipo`/`entidade_id` (ambos NOT NULL, sem
+  exceção nesta fase) identificam exatamente qual Restrição/ItemProntidao
+  gerou a ocorrência; `detalhes` (json) congela `bloqueante`/`status`
+  (Restrição) ou `item_prontidao_id`/`atividade_item_prontidao_id`
+  (Prontidão) NO INSTANTE detectado — nunca reconsultado depois.
+- **Idempotência por importação, não eterna**: unique
+  `(cronograma_importacao_id, atividade_id, tipo, entidade_tipo,
+  entidade_id)` — nenhuma coluna nullable na chave (nenhuma brecha de
+  múltiplos NULL do MySQL). Chamar o detector duas vezes pra MESMA
+  importação é rejeitado pelo banco (erro 1451-like de duplicidade,
+  nunca duplica silenciosamente). Importações sucessivas (I1, I2...) da
+  MESMA pendência geram ocorrências INDEPENDENTES, uma por importação —
+  a inconsistência pertence à fotografia, nunca é "uma entidade eterna
+  da Atividade".
+- **`entidade_id` sem FK física, de propósito**: não pode apontar uma FK
+  real pra 2 tabelas possíveis (Restricao OU ItemProntidao), e mesmo se
+  pudesse, a A.9.3.CORREÇÃO acabou de provar que referência histórica
+  nunca deve usar `cascadeOnDelete()` — o ULID puro elimina o risco por
+  construção, sem precisar de `restrictOnDelete()` aqui.
+- **Atividade nova na própria importação (tipo Ambos) nunca gera falso
+  positivo**: reaproveita o mesmo sinal já estabelecido pela A.9.3
+  (`AtividadeSnapshotOperacional.status === null` = "sem 'antes'
+  genuíno") — se a atividade não existia antes desta importação, o
+  detector pula ela inteiramente, mesmo que a obra tenha checklist de
+  prontidão configurado (que geraria pendência pra qualquer atividade
+  PRÉ-EXISTENTE sem o item concluído).
+- **Performance**: 4 queries em lote (F, O-pai, O-restrições,
+  O-prontidão, todas já escopadas por `cronograma_importacao_id`) +
+  insert em chunks de 1000 — nunca 1 query por atividade. Medido
+  empiricamente com N=5/20/100 atividades sintéticas: contagem de
+  queries do detector isolado não cresce com N.
+- **Programação Semanal — deliberadamente NÃO implementada nesta fase**:
+  o produto final também quer "atividade iniciou/concluiu sem aparecer
+  na programação semanal vigente", mas `ProgramacaoSemanal::ativaPara()`
+  resolve em relação ao ESTADO ATUAL (`orderByDesc('versao')->first()`),
+  sem nenhuma Fotografia temporal própria que prove "qual era a versão
+  vigente exatamente no instante desta importação" — mesma lacuna já
+  registrada na A.9.3. Fica pendente até existir essa definição temporal
+  própria (Fotografia P, hipotética, não implementada).
+- **Confiança começa só a partir da A.9.4**: só importações Avanço/Ambos
+  processadas DEPOIS desta fase têm `inconsistencias_avanco` — nenhuma
+  reconstrução retroativa a partir de F/O históricas já existentes.
+- Testes: `tests/Feature/DetectorInconsistenciasAvancoTest.php` (20
+  testes, cenários A-S do pedido + não-autocorreção ponta a ponta) +
+  regressão completa nas 13 suítes já existentes de Fotografia F/O/
+  Health Check/Lookahead/Restrições/Suprimentos/Tenant Isolation. Suíte
+  completa: 342 passed / 1074 assertions / 0 failures.
+- **Não implementado nesta fase** (aguardando validação do usuário):
+  UI, dashboard, badge, popup, tela de inconsistências, resolução/baixa,
+  justificativa, Notification, Job, Command, Scheduler, e-mail, WhatsApp,
+  detector de Programação Semanal, qualquer autocorreção operacional.
+
+## Detector de Inconsistências de Avanço — hardening (Ciclo 17, A.9.4.HARDENING)
+
+- **Contexto**: a auditoria adversarial final da A.9.4 concluiu "APROVAR
+  A.9.4 COM RESSALVAS" — zero achado C (nada que impedisse aprovação), só
+  2 achados B (fragilidades arquiteturais, não exploráveis no fluxo real,
+  mas defesas incompletas). Esta etapa fecha exatamente essas 2 ressalvas,
+  sem tocar nenhuma regra de negócio, severidade, tipo de inconsistência,
+  UI ou fluxo já aprovado.
+- **B1 — guarda de tipo própria em `DetectorInconsistenciasAvanco::
+  detectar()`**: antes desta etapa, a segurança contra gerar inconsistência
+  pra uma importação Baseline vinha inteiramente do CHAMADOR
+  (`MsProjectImporter` só grava Fotografia O e só chama o detector dentro
+  do gate `$capturarFotografiaO`) — funcionava porque Fotografia O nunca é
+  gravada pra Baseline, mas era defesa por AUSÊNCIA de dado, não uma
+  invariante do próprio serviço. Agora `detectar()` tem uma guarda
+  explícita logo no início: `if (! in_array($importacao->tipo,
+  [TipoCronogramaImportacao::Avanco, TipoCronogramaImportacao::Ambos],
+  true)) { return; }` — mesmo idioma já usado em `MsProjectImporter::
+  $capturarFotografiaO`, nenhuma convenção nova. O gate do
+  `MsProjectImporter` CONTINUA existindo (defesa em profundidade, não
+  substituição) — as duas camadas coexistem. Prova empírica: teste novo
+  que insere Fotografia F/O **sintéticas** (via `DB::table()->insert()`
+  direto, contornando o fluxo real de importação) numa
+  `CronogramaImportacao` tipo Baseline — cenário desenhado pra que, SEM a
+  guarda, geraria inconsistência de verdade (F=100%+real_inicio, O com
+  `status` não-nulo pra passar do guard de "atividade nova", restrição
+  bloqueante aberta) — confirma zero `InconsistenciaAvanco` criada. Teste
+  de controle irmão confirma que o MESMO cenário sintético, só trocando o
+  tipo pra Avanco, de fato gera inconsistência — prova que o teste da
+  guarda não passaria "pelo motivo errado" (ex.: um bug que zerasse tudo
+  independente do tipo).
+- **B2 — Fotografia O inteira representa o MESMO instante pré-importação**:
+  antes desta etapa, `status`/`fora_do_cronograma` já eram capturados
+  ANTES do loop de upsert de atividades (`MsProjectImporter::aplicar()`),
+  mas `pronta` e os filhos de Restrição/Prontidão só eram calculados
+  DEPOIS do upsert, dentro do antigo `gravarFotografiaOperacional()` —
+  seguro só porque o loop de upsert nunca escreve em
+  `Restricao`/`ItemProntidao`/`AtividadeItemProntidao` (confirmado por
+  grep exaustivo, zero ocorrência dessas 3 classes fora do próprio método
+  de captura), mas uma suposição implícita, nunca uma invariante
+  garantida. Agora TUDO — status/fora_do_cronograma/pronta/restrições
+  pendentes/prontidão pendente — é capturado num ÚNICO bloco, em lote, no
+  MESMO ponto do código, ANTES do loop de upsert (`app/Imports/
+  MsProjectImporter.php`, dentro do `if ($capturarFotografiaO) { ... }`
+  que já existia pra status/fora_do_cronograma, agora estendido).
+  `gravarFotografiaOperacional()` deixou de fazer QUALQUER query — vira
+  puramente "persistir o que já foi capturado", recebendo os mapas
+  prontos como parâmetros (`$idsProntasAntes`, `$restricoesPendentesAntesPorAtividade`,
+  `$prontidaoPendenteAntesPorAtividade`, além do `$estadoOperacionalAntes`
+  já existente).
+- **`pronta` reaproveita `Atividade::scopeProntas()` — mesma fonte
+  canônica de sempre**, só que resolvida ANTES do upsert, via `whereIn('id',
+  $atividadeIdsExistentesAntes)` sobre o conjunto de atividades que já
+  existiam (resolvido a partir do MESMO `$estadoOperacionalAntes` que já
+  captura status/fora_do_cronograma, agora também com `id` no select).
+  Nenhuma regra paralela inventada — a instrução explícita do pedido era
+  "não duplicar semântica de pronta", seguida à risca.
+- **Restrições/prontidão pendentes também capturadas em lote ANTES do
+  upsert**, com o MESMO critério canônico de sempre (status
+  `aberta`/`em_tratamento`/`aguardando_terceiros` pra restrições; ausência
+  de row OU `concluido=false` pra prontidão) — só que agora escopadas
+  pelos IDs de atividades que já existiam ANTES desta importação
+  (`$atividadeIdsExistentesAntes`), não mais por `$mapaAtividades` inteiro
+  (que só fica completo DEPOIS do upsert, quando atividades novas já têm
+  ID).
+- **Atividade nova continua sem "estado anterior" inventado**: como ela
+  não existe em `$estadoOperacionalAntes`/`$atividadeIdsExistentesAntes`
+  (só populados ANTES do upsert, quando essa atividade ainda não tinha
+  linha na tabela), ela simplesmente nunca aparece nos mapas de
+  pronta/restrições/prontidão pré-capturados — `pronta` grava `false` pra
+  ela (nunca lida pelo Detector, que já ignora qualquer atividade com
+  `status` pré-importação nulo, ANTES de olhar `pronta`), e zero linha é
+  gravada em `atividade_snapshot_restricoes`/`atividade_snapshot_prontidao`
+  pra ela. Coluna `pronta` permanece `boolean` NÃO nullable (sem migration
+  nova) — decisão deliberada: como o Detector já ignora a linha inteira
+  via `status === null`, não há necessidade de tornar `pronta` nullable
+  só pra uma atividade cujo valor nesse campo é estruturalmente
+  irrelevante.
+- **Reativação (`fora_do_cronograma`)**: preservado sem alteração — só
+  Baseline/Ambos regravam `fora_do_cronograma => false` no upsert, e a
+  captura continua lendo o valor de ANTES dessa reescrita. Teste novo
+  dedicado (arquiva manualmente, reimporta via Ambos, confirma que a
+  Fotografia O grava `true` mesmo com o campo ao vivo já `false` logo em
+  seguida).
+- **Teste de timing — técnica robusta, não grep de string** (item
+  explícito do pedido): `DB::listen()` captura a ORDEM REAL de execução
+  SQL durante `aplicar()` e identifica a query de captura de restrições
+  pendentes pelo SQL + BINDINGS exatos (presença simultânea dos 3 status
+  canônicos nos bindings, não só o nome da tabela — evita falso positivo
+  com outras queries tardias que também tocam `restricoes`, como
+  `SincronizarRestricaoSuprimento` no fim do fluxo) e a de itens de
+  prontidão pela tabela `atividade_itens_prontidao`; confirma que ambas
+  ocorrem ANTES da primeira query de `UPDATE`/`INSERT INTO atividades`.
+  Como o importador hoje genuinamente nunca escreve em
+  `Restricao`/`ItemProntidao`/`AtividadeItemProntidao` durante o upsert
+  (não há mutation real de produção pra criar um cenário antes≠depois),
+  esse teste estrutural de ordenação é o substituto explicitamente
+  pedido — não um teste frágil de string no código-fonte.
+- **Performance — medida isolada, não reaproveitada de fase anterior**:
+  como o custo TOTAL de `aplicar()` pra tipo Avanço já é linear com N por
+  um motivo PRÉ-EXISTENTE e não relacionado a este hardening (o ramo
+  Avanço faz `update()` + `find()` por atividade, um padrão que já existia
+  desde a separação Baseline/Avanço), medir o total bruto mascararia o
+  efeito do hardening. Medição por DELTA (mesma quantidade de atividades,
+  COM pendências vs SEM pendências, mesmo N): DELTA = 5 queries pras 3
+  medições — **N=5 → delta 5 · N=20 → delta 5 · N=100 → delta 5** — custo
+  marginal da captura+gravação da Fotografia O é O(1), confirmado empírico
+  de que o hardening não introduziu N+1 (a movimentação das queries de
+  DEPOIS pra ANTES do loop não muda a CONTAGEM, só o MOMENTO).
+- **Transação**: nenhuma mudança de escopo — captura, upsert, Fotografia
+  F/O e Detector continuam dentro da MESMA `DB::transaction()` de
+  `aplicar()`; teste de rollback já existente (`FotografiaOImutabilidadeTest`)
+  confirma que uma falha simulada depois de tudo isso desfaz a importação
+  inteira, sem transação paralela.
+- **Não alterado**: nenhuma regra de negócio, tipo/severidade de
+  inconsistência, `HealthCheckEngine`, `ScoreCalculator`, `PlanoAcao`,
+  `ConclusaoAutomaticaAtividades` (zero autocorreção reconfirmada pelos
+  testes existentes), migrations (nenhuma nova — `pronta` continua
+  `boolean` não-nullable, decisão documentada acima), UI, Notification,
+  Job/Command/Scheduler, Programação Semanal (zero query nova a
+  `ProgramacaoSemanal`/`ProgramacaoSemanalItem`, confirmado por grep).
+- Testes novos: 2 em `tests/Feature/DetectorInconsistenciasAvancoTest.php`
+  (guarda de tipo + controle) + 3 em `tests/Feature/
+  AtividadeSnapshotOperacionalTest.php` (timing via ordem de queries,
+  reativação, atividade nova estrutural) = 5 testes novos, 22+22=44 testes
+  passando nos 2 arquivos. Regressão das 14 suítes mandatórias (Detector/
+  FotografiaO-Imutabilidade/AtividadeSnapshotOperacional/AtividadeSnapshot
+  FotografiaF/CronogramaImportacao/CronogramaImportacaoLivewire/
+  BackfillLookaheadCommand/RestricoesQuadro/Lookahead/TenantIsolation/
+  AtividadeAnexo/AvancoAtividade/ConclusaoAutomaticaAtividades/
+  MsProjectImporterSuprimentosHook): **347 passed / 1089 assertions / 0
+  failures**. Suíte completa (dívida externa, não corrigida nesta etapa,
+  já documentada como pré-existente desde a auditoria da A.9.4): **1978
+  passed / 6 skipped / 3 failed / 5603 assertions** — as 3 falhas
+  (`DocumentosEngenhariaDashboardTest`, `ItemSuprimentoStatusTest`,
+  `ProgramacaoSemanalSnapshotTest`) são fixtures com data relativa ao
+  calendário real, sem nenhuma relação de código com este hardening.
+- **Não avançar pra UI, resolução/baixa, justificativa, Notification,
+  Job/Command/Scheduler, Fotografia P ou qualquer outra fase sem validação
+  do usuário** (instrução explícita) — aguardando aprovação desta etapa.
+
+## Fotografia P — Programação Semanal no instante do Avanço (Ciclo 17, A.9.5)
+
+- **Investigação obrigatória antes de codificar** (regra explícita do
+  pedido: "PARE se a temporalidade não for inequívoca"): `ProgramacaoSemanal::
+  ativaPara()` resolve só "versão mais alta hoje", sem noção de instante —
+  a auditoria anterior suspeitou que não havia como reconstruir "qual
+  versão valia num instante histórico X". Investigação encontrou que os
+  dados JÁ suportavam essa reconstrução (`congelada_em` por versão é
+  estritamente crescente, porque `CriarRevisaoProgramacaoSemanal` só cria
+  uma revisão a partir de uma versão Fechada — cadeia sempre linear, nunca
+  ramifica), mas essa garantia vivia só na APLICAÇÃO, nunca no schema.
+  **Decisão do usuário**: tornar essa vigência EXPLÍCITA como coluna, não
+  deixar como dedução sobre dados existentes.
+- **`programacoes_semanais.superseded_at`** (nova coluna, nullable
+  timestamp, sem backfill — mesmo princípio de toda fotografia do Ciclo
+  17): `NULL` enquanto a versão é a mais recente da semana; carimbado
+  (`now()`, mesma transação, MESMO timestamp do `congelada_em` da revisão
+  nova — nunca um `now()` separado, pra não abrir um micro-gap onde
+  nenhuma das duas seria vigente) quando `CriarRevisaoProgramacaoSemanal`
+  cria uma revisão dela. `ProgramacaoSemanal::vigenteEm(Work, string
+  $semanaInicio, $instante)` (novo, `ativaPara()` intocada e continua
+  sendo o único ponto usado pelo fluxo AO VIVO de comprometer/revisar):
+  versão vigente = `congelada_em <= instante` E (`superseded_at` nulo OU
+  só passou a valer depois do instante).
+- **Instante de comparação — decisão do usuário, não escolhida por
+  preferência**: `real_inicio`/`real_termino` da própria Fotografia F
+  (A.9.2), NUNCA `importado_em`/`now()` da importação — avanço importado
+  com atraso é cenário real deste projeto (documentado em vários lugares
+  deste arquivo), e usar o instante da importação faria uma importação
+  atrasada "herdar" retroativamente uma versão da Programação Semanal que
+  só passou a existir DEPOIS do evento real, mascarando exatamente o
+  falso-positivo que a investigação identificou. Granularidade de DIA
+  (fim do dia de `data_factual`), nunca de timestamp exato — `real_inicio`/
+  `real_termino` nunca carregam hora no MSPDI parseado por este projeto.
+- **`atividade_snapshot_programacoes`** (nova tabela, 1 linha por
+  `(cronograma_importacao_id, atividade_id, evento)` — até 2 linhas por
+  atividade na mesma importação, início e conclusão são fatos
+  independentes, mesmo princípio já usado pelo Detector): `evento`
+  (`App\Enums\EventoFotografiaProgramacao`, `inicio`|`conclusao`),
+  `data_factual`, `semana_inicio_resolvida`, `programacao_semanal_id`
+  (nullable), `programacao_semanal_versao` (denormalizado — sobrevive
+  mesmo se o cabeçalho referenciado desaparecer), `atividade_estava_na_
+  programacao` (boolean, nunca nulo), `programacao_semanal_item_id`
+  (nullable). **`programacao_semanal_id`/`programacao_semanal_item_id`
+  são `nullOnDelete()` — NUNCA `cascadeOnDelete()`** (lição da
+  A.9.3.CORREÇÃO aplicada desde o início aqui: editar/remover a
+  Programação Semanal depois não pode destruir silenciosamente esta
+  fotografia). Nomes de constraint explícitos e curtos em toda a
+  migration (`aspg_*`) — o nome completo da tabela estoura os 64
+  caracteres do MySQL nos nomes automáticos do Laravel pra várias FKs
+  (mesma classe de problema já documentada no projeto).
+- **`data_factual` exige a data REAL correspondente, nunca cai pra outra
+  quando ausente**: uma linha de evento `inicio` só é criada quando
+  `real_inicio` existe (nunca "iniciou via só percentual>0" — sem data
+  genuína, não há semana pra resolver); mesma regra pro evento `conclusao`
+  com `real_termino`. Regra própria de P, deliberadamente MAIS estrita que
+  o INICIOU/CONCLUIU do Detector de O (que não precisa de nenhuma data).
+- **`App\Imports\MsProjectImporter::capturarFotografiaProgramacao()`**:
+  resolução 100% em lote — agrupa os eventos pelas semanas realmente
+  necessárias, 2 queries totais (`ProgramacaoSemanal`/`ProgramacaoSemanalItem`,
+  ambas escopadas pelo conjunto de semanas), resolve vigência em memória
+  com a MESMA regra de `vigenteEm()` (reimplementada só pra evitar N
+  chamadas ao banco — nunca uma regra paralela diferente). Chamada dentro
+  de `aplicar()` logo depois da Fotografia O, mesmo gate de tipo
+  (`$capturarFotografiaO`, reaproveitado — Fotografia P também só existe
+  pra Avanço/Ambos), antes do Detector — tudo na MESMA `DB::transaction()`.
+- **Atividade nova — decisão DIFERENTE da Fotografia O, investigada e
+  documentada explicitamente** (pedido pedia pra não reutilizar
+  automaticamente a regra de O): uma atividade que nasce nesta própria
+  importação já iniciada/concluída NÃO é ignorada por P. Ela
+  estruturalmente não pode estar em nenhuma Programação Semanal
+  pré-existente (`ProgramacaoSemanalItem.atividade_id` só referencia
+  atividade que já existia no momento do comprometimento) — a resolução
+  natural de P já produz "fora"/"sem programação" pra ela sem precisar de
+  nenhum guard especial. Isso PODE ser uma inconsistência útil de verdade
+  ("atividade executada que nem sequer existia antes") — decisão do
+  usuário confirmada na investigação.
+- **Taxonomia de 4 tipos, não 2** (decisão do usuário — 2 fatos
+  conceitualmente diferentes, nunca fundidos): `App\Enums\
+  TipoInconsistenciaAvanco` ganhou `InicioForaProgramacaoSemanal`/
+  `ConclusaoForaProgramacaoSemanal` (existia Programação da semana, mas a
+  atividade não estava nela — `entidade_tipo = ProgramacaoSemanal`,
+  `entidade_id = programacoes_semanais.id`) e `InicioSemProgramacaoSemanal`/
+  `ConclusaoSemProgramacaoSemanal` (nenhuma Programação existia pra
+  aquela semana — sem entidade de programação nenhuma pra referenciar,
+  `entidade_tipo = Atividade`, `entidade_id` reaproveita o próprio
+  `atividade_id`). **Decisão de schema**: `entidade_id` de
+  `inconsistencias_avanco` continua NOT NULL (nenhuma migration de
+  alteração nessa tabela) — tornar nullable abriria a brecha clássica do
+  MySQL de múltiplos NULL "iguais" dentro do unique constraint,
+  permitindo duplicação silenciosa exatamente nos 2 tipos novos que mais
+  precisam de proteção contra chamada dupla do detector.
+- **Severidade — mesma matriz de sempre, sem regra paralela**: início =
+  `atencao`, conclusão = `critica` (idêntico ao padrão já usado pra
+  restrição/prontidão — conclusão é sempre o sinal mais forte).
+- **`App\Services\DetectorInconsistenciasAvanco`**: bloco novo, depois do
+  bloco O já existente, lendo `AtividadeSnapshotProgramacao` da mesma
+  importação — mesma guarda de tipo do topo do método já cobre este
+  bloco (não precisa de guarda própria). `detalhes` grava
+  `semana_inicio_resolvida`/`data_factual`/`programacao_semanal_id`/
+  `programacao_semanal_versao` — explicabilidade total mesmo meses depois
+  ("foi considerada fora da programação porque, pra 14/08/2026, a
+  programação oficial da semana X era a versão Y e a atividade não estava
+  nela").
+- **Zero autocorreção reconfirmada pra Programação Semanal**: nunca
+  adiciona atividade retroativamente a `ProgramacaoSemanalItem`, nunca
+  altera `versao`/status, nunca mexe em `Restricao`/`AtividadeItemProntidao`
+  — só leitura + insert em `atividade_snapshot_programacoes`.
+- **Performance — medida por delta, mesmo motivo já documentado no
+  hardening da A.9.4**: custo total de `aplicar()` já é linear em N por
+  um motivo pré-existente (ramo Avanço, update+find por atividade) —
+  medir o total mascararia o efeito real de P. Delta (mesmas N
+  atividades, COM Programação Semanal relevante vs SEM nenhuma): **< 10
+  queries de diferença em N=5/20/100**, confirmado empírico de que a
+  resolução em lote não introduz N+1.
+- **Testes**: `tests/Feature/FotografiaProgramacaoSemanalTest.php` (19
+  testes, cenários A-S do pedido — incluindo o cenário crítico da
+  investigação, F: V1 criada segunda e fechada, V2/revisão criada
+  quarta, atividade começou terça mas só foi comprometida em V2 na
+  quinta — resolve corretamente V1, nunca o falso positivo "estava
+  programada" que a resolução ingênua "versão mais recente hoje"
+  produziria). `tests/Feature/DetectorInconsistenciasAvancoTest.php::
+  test_p_atividade_nova_na_importacao_nao_gera_falso_positivo` reescopado
+  (não enfraquecido) — a asserção original de "zero inconsistências"
+  datava de antes da A.9.5 e testava só Fotografia O; agora verifica
+  explicitamente que O continua sem falso positivo E que P gera
+  `inicio_sem_programacao_semanal` pra essa mesma atividade nova (o
+  comportamento novo e intencional desta fase, não um bug). Regressão das
+  14 suítes mandatórias: **349 passed / 1106 assertions / 1 failure**
+  — a única falha (`ProgramacaoSemanalSnapshotTest`, mesmo teste/mesma
+  linha/mesmo `ModelNotFoundException` já documentado como dívida externa
+  de fixture com data relativa desde a auditoria da A.9.4.HARDENING) é
+  pré-existente e sem relação de código com esta fase, confirmada rodando
+  a suíte isolada antes e depois desta implementação.
+- **Não implementado nesta fase** (aguardando validação do usuário): UI,
+  badge, tela, card, modal, dashboard, Notification, Job, Command,
+  Scheduler, fluxo de baixa, justificativa.
+
+## Fotografia P — hardening pós-auditoria (Ciclo 17, A.9.5.HARDENING)
+
+- **Contexto**: A.9.5 foi **APROVADA COM RESSALVAS** pela auditoria
+  adversarial final (2 ressalvas não bloqueantes: cobertura de teste
+  faltando pro caso "item adicionado à versão vigente depois do fato", e
+  a política de granularidade diária não documentada explicitamente).
+  Esta microetapa fecha as duas — **nenhuma linha de lógica funcional foi
+  alterada** (nem `MsProjectImporter::capturarFotografiaProgramacao()`,
+  nem `ProgramacaoSemanal::vigenteEm()`, nem `DetectorInconsistenciasAvanco`
+  — os três foram lidos fresh e confirmados corretos, sem bug encontrado).
+  Sem migration nova, sem mudança de schema, sem mudança de enum/taxonomia.
+- **Regra dos 3 passos, confirmada por leitura de código antes de
+  qualquer edição** (item explícito do pedido): "atividade estava
+  comprometida" = (1) resolver a `ProgramacaoSemanal` historicamente
+  vigente na data factual — `MsProjectImporter::
+  capturarFotografiaProgramacao()`, filtro `$v->congelada_em->lte(...)
+  && ($v->superseded_at === null || $v->superseded_at->gt(...))`,
+  mesma regra de `ProgramacaoSemanal::vigenteEm()`; (2) encontrar o item
+  da atividade dentro dessa versão; (3) só considerar esse item válido
+  se `$item->created_at->lte($evento['instante'])` — **trecho exato**:
+  ```php
+  $itemEncontrado = $headerVigente
+      ? $itensPorProgramacao->get($headerVigente->id, collect())
+          ->first(fn ($item) => $item->atividade_id === $evento['atividade_id']
+              && $item->created_at->lte($evento['instante']))
+      : null;
+  ```
+  (`app/Imports/MsProjectImporter.php`, dentro de
+  `capturarFotografiaProgramacao()`). Confirmado que a condição 3 já
+  existia desde a A.9.5 — não foi adicionada nesta etapa, só **agora tem
+  teste de regressão dedicado** que a exercita através do fluxo
+  funcional completo (Fotografia P + Detector), não só de
+  `vigenteEm()` isolado.
+- **`tests/Feature/FotografiaProgramacaoSemanalTest.php` ganhou 4 testes
+  novos** (T/U/V/W), a suíte foi de 19 pra 23 testes:
+  - **T** (crítico) — item adicionado à MESMA versão (V1, sem nenhuma
+    revisão/V2 envolvida — distinto do teste F, que prova resolução de
+    VERSÃO) DEPOIS do fato: x1 inicia terça, só é comprometida em V1 na
+    quarta. Assertions explícitas sobre versão resolvida
+    (`programacao_semanal_versao === 1`, mesma V1), `data_factual`,
+    existência ATUAL do `ProgramacaoSemanalItem` (existe de verdade —
+    `assertNotNull($itemAtual)`), `created_at` do item sendo posterior
+    ao fato (`assertTrue($itemAtual->created_at->gt(...))`),
+    `atividade_estava_na_programacao === false`,
+    `programacao_semanal_item_id === null`, e a inconsistência resultante
+    (`InicioForaProgramacaoSemanal`, severidade `atencao`). Prova que o
+    Detector nunca considera "programada" só porque o item existe HOJE.
+  - **U** (controle de T) — item já existia na versão ANTES do fato
+    (datas/atividade deliberadamente distintas de T, pra não passar por
+    coincidência de estado residual): `atividade_estava_na_programacao
+    === true`, zero inconsistência de "fora"/"sem programação" gerada.
+  - **V** — política de granularidade diária, cenário do mesmo dia: V1
+    fechada às 09h, V2 (revisão) criada às 15h do MESMO dia, fato ocorre
+    nesse mesmo dia (sem hora). Confirma empiricamente em teste (não só
+    em probe manual, como na auditoria anterior) que V2 vence — mesma
+    política já documentada abaixo. Relógio congelado via
+    `Carbon::setTestNow()`/`finally` (nenhuma data do teste depende de
+    `now()` real).
+  - **W** — `superseded_at` legado: DUAS versões com `superseded_at=NULL`
+    nas duas (simulando dado anterior à existência da coluna — como
+    `CriarRevisaoProgramacaoSemanal::execute()` SEMPRE carimba
+    `superseded_at` no original ao revisar, o teste força `null` de volta
+    logo depois, deliberadamente contrariando o que a Action real faria,
+    pra reproduzir o cenário legado de verdade). Teste focado direto em
+    `ProgramacaoSemanal::vigenteEm()` (não precisa passar pelo fluxo
+    funcional inteiro — é o único caso do pedido que autoriza isso
+    explicitamente) — consulta um instante ENTRE as duas `congelada_em`,
+    confirma que resolve V1 (a mais recente cuja `congelada_em` já tinha
+    passado), nunca V2. Não havia nenhuma cobertura equivalente antes
+    (confirmado por grep — `superseded_at` só aparecia no teste F, que
+    sempre seta o campo de propósito).
+- **Política de granularidade diária — documentada exatamente como
+  implementada, não uma regra nova**: `real_inicio`/`real_termino` na
+  Fotografia F (A.9.2) são `DATE`, nunca `DATETIME` — o MSPDI parseado
+  por este projeto nunca carrega hora nesses dois campos. Por isso não
+  existe precisão factual intradia, e a Fotografia P trabalha com
+  granularidade de DIA em toda a resolução de vigência. Transformação
+  exata usada na comparação (`capturarFotografiaProgramacao()`):
+  `$evento['instante'] = Carbon::parse($evento['data_factual'])
+  ->endOfDay();` — o fato é sempre comparado contra o **fim** do dia em
+  que ocorreu (23:59:59.999999), nunca o início. Consequência direta e
+  deliberada: uma revisão/versão criada **mais tarde no MESMO DIA** do
+  fato (`congelada_em` com hora, ex.: 15h) ainda satisfaz `congelada_em
+  <= endOfDay(data_factual)` e pode ser resolvida como vigente — mesmo
+  tendo nascido depois do instante em que a atividade realmente começou
+  dentro daquele dia. Congelado em teste pelo teste V acima. **Isso é
+  limitação consciente de precisão dos dados de origem** (o XML nunca
+  informa a hora do início/término real), não um bug e não um timestamp
+  inventado a partir de `importado_em` — `importado_em` nunca substitui
+  `real_inicio`/`real_termino` em nenhum ponto do código (reconfirmado
+  por leitura fresh de `capturarFotografiaProgramacao()`: a única fonte
+  de `data_factual` é `$snap['real_inicio']`/`$snap['real_termino']`,
+  vindos da Fotografia F). Se o negócio precisar de precisão intradia no
+  futuro, exigiria capturar hora no parser do MSPDI (fora de escopo desta
+  etapa e da A.9.5 inteira).
+- **Concorrência na criação de revisão — registrada, deliberadamente NÃO
+  corrigida** (fora de escopo desta microetapa, por instrução explícita):
+  `CriarRevisaoProgramacaoSemanal::execute()` não usa `lockForUpdate()`
+  nem nenhum mutex — duas requisições concorrentes criando revisão a
+  partir da MESMA versão original dependem inteiramente da constraint
+  `UNIQUE(obra_id, semana_inicio, versao)` (já existente antes da A.9.5,
+  parte do modelo de versionamento original) como defesa final: a
+  transação perdedora falha com erro de duplicidade do MySQL, nunca
+  produz um dado silenciosamente corrompido. Não foi demonstrada (nem
+  nesta etapa, nem na auditoria anterior) nenhuma corrupção silenciosa —
+  o pior caso observável é uma exceção de banco numa das duas transações
+  concorrentes. É uma dívida pré-existente do mecanismo de versionamento
+  em si (a mesma corrida já existiria só pela alocação de `versao`, com
+  ou sem `superseded_at`) — **não introduzida nem alargada pela A.9.5**,
+  que só passou a escrever mais um campo (`superseded_at`) dentro da
+  mesma transação já protegida por essa constraint.
+- **Semântica funcional confirmada intacta** (nenhuma das 8 garantias
+  abaixo foi alterada nesta etapa — todas reverificadas por leitura fresh
+  + regressão): `real_inicio`/`real_termino` continuam a única fonte de
+  data factual; `importado_em` nunca é fallback; sem data factual não há
+  evento P; FORA e SEM PROGRAMAÇÃO continuam tipos distintos; início e
+  conclusão continuam independentes; atividade nova continua analisada
+  por P (nunca pulada, ao contrário de O); Fotografia O mantém sua regra
+  própria de atividade nova (`status === null`), intocada; Detector
+  continua lendo só `AtividadeSnapshotProgramacao` já congelada, nunca
+  `ProgramacaoSemanal`/`ProgramacaoSemanalItem` ao vivo; zero
+  autocorreção (nenhuma escrita em `ProgramacaoSemanal`/
+  `ProgramacaoSemanalItem`/`Atividade`/`Restricao`/`AtividadeItemProntidao`
+  por este mecanismo).
+- **Regressão**: `FotografiaProgramacaoSemanalTest` (23/23, incluindo os
+  4 novos) e `DetectorInconsistenciasAvancoTest` (22/22) isolados, depois
+  12 suítes mandatórias rodadas sequencialmente (nunca em paralelo, pra
+  não contaminar o banco `testing` compartilhado — lição já registrada na
+  auditoria anterior sobre deadlocks de execução concorrente):
+  `AtividadeSnapshotOperacionalTest`, `AtividadeSnapshotFotografiaFTest`,
+  `FotografiaOImutabilidadeTest`, `CronogramaImportacaoTest`,
+  `CronogramaImportacaoLivewireTest`, `BackfillLookaheadCommandTest`,
+  `RestricoesQuadroTest`, `LookaheadTest`, `TenantIsolationTest`,
+  `AtividadeAnexoTest`, `tests/Unit/ConclusaoAutomaticaAtividadesTest`,
+  `MsProjectImporterSuprimentosHookTest` — todas verdes, zero regressão.
+  (`AvancoAtividadeTest`, o 13º nome pedido, não corresponde a nenhum
+  arquivo existente no repositório — não inventado, sinalizado como tal.)
+  Full suite separada: **2001 passed / 6 skipped / 3 failed / 5705
+  assertions**, as 3 falhas sendo as mesmas 3 já documentadas como
+  pré-existentes e sem relação (`DocumentosEngenhariaDashboardTest`,
+  `ItemSuprimentoStatusTest`, `ProgramacaoSemanalSnapshotTest`) — zero
+  quarta falha.
+- **Não avançar pra A.9.6, UI, baixa/justificativa, Notification, Job/
+  Command/Scheduler sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa antes de continuar.
+
+## Tratamento humano de InconsistenciaAvanco (Ciclo 17, A.9.6)
+
+- **Contexto**: primeiro fluxo humano sobre as `InconsistenciaAvanco`
+  criadas pelo Detector (A.9.4/A.9.5) — até aqui elas só se acumulavam,
+  sem nenhuma forma de análise/baixa. A importação continua sendo o fato
+  factual verdadeiro: tratar uma inconsistência **nunca** reverte
+  percentual/datas, fecha Restrição, marca item de Prontidão, ou altera
+  Fotografia F/O/P — só registra que um humano analisou o caso.
+- **Modelagem — campos na própria tabela, não tabela filha** (decisão
+  explícita, seguindo o critério do próprio pedido: "se o produto exige
+  apenas uma baixa definitiva por ocorrência, campos na própria tabela
+  são suficientes"): migration incremental
+  `2026_08_17_000007_add_tratamento_to_inconsistencias_avanco_table.php`
+  adiciona `status` (string, default `'aberta'`), `tratado_por`
+  (nullable, FK `users` `nullOnDelete()`), `tratado_em` (nullable
+  timestamp), `justificativa` (nullable text) + índice
+  `(obra_id, status)` pro filtro default da listagem. Nenhuma migration
+  histórica alterada.
+- **`App\Enums\StatusInconsistenciaAvanco`** (`Aberta`|`Tratada`) —
+  enxuto de propósito, mesmo espírito de `StatusPlanoAcao`. **Sem
+  reabertura nesta fase** (instrução explícita) — `estaAberta()` só
+  informa o estado atual, nenhuma transição `Tratada -> Aberta` existe em
+  nenhum ponto do código.
+- **Sem distinção "reconhecida"/"justificada"**: investigado e
+  descartado — as duas ações teriam exatamente o mesmo efeito prático
+  (justificativa obrigatória, nenhuma mudança de dado externo), então a
+  distinção não acrescentaria valor real ao modelo. Uma única ação
+  "Tratar inconsistência", sempre com justificativa obrigatória.
+- **`App\Actions\InconsistenciaAvanco\TratarInconsistenciaAvanco`** —
+  único ponto de escrita do tratamento. Concorrência/duplo tratamento:
+  sem `DB::transaction()`/`lockForUpdate()` (uma única escrita) — a
+  proteção é o `UPDATE ... WHERE status = 'aberta'` condicional, atômico
+  ao nível de linha do InnoDB; 0 linhas afetadas =
+  `App\Exceptions\InconsistenciaJaTratadaException` (nunca sobrescreve
+  silenciosamente autor/justificativa do primeiro tratamento). A mesma
+  query condicional, por já ser um `InconsistenciaAvanco::where(...)`,
+  também aplica o global scope de `BelongsToTenant` de graça — chamar a
+  Action direto com um objeto de outro tenant em memória (bypassando a
+  UI) também vira `InconsistenciaJaTratadaException` (0 linhas afetadas),
+  nunca um tratamento cross-tenant de verdade.
+- **`App\Policies\InconsistenciaAvancoPolicy`** — reaproveita a permissão
+  já existente `restricoes.lookahead` (nenhum slug novo no catálogo, por
+  instrução explícita: "não crie nova funcionalidade/permissão sem
+  necessidade concreta") — `viewAny`/`view` exigem `ver`, `tratar` exige
+  `editar`. Isolamento de obra é checado no MÉTODO/Action (não só
+  escondendo o botão): `⚡inconsistencias-avanco.blade.php::
+  confirmarTratamento()` reconsulta `InconsistenciaAvanco::where('obra_id',
+  $this->obra->id)->find(...)` antes de chamar `$this->authorize('tratar', ...)`
+  — cross-obra dentro do MESMO tenant retorna mensagem amigável, nunca
+  uma exceção crua.
+- **UI — tela dedicada `Radar → Inconsistências de Avanço`**
+  (`radar.inconsistencias-avanco`, mesmo padrão de `radar.plano-acao`):
+  investigado e confirmado que não havia Central/Quadro existente
+  adequado (as inconsistências atravessam várias atividades/importações,
+  não cabem num popup por atividade). MVP: listagem paginada + filtros
+  (status — default `abertas` —, severidade, tipo, busca por atividade,
+  importação) + 3 contadores (abertas/críticas abertas/atenção abertas,
+  1 query agregada `GROUP BY severidade`) + modal "Tratar" com
+  justificativa obrigatória (`required|string|min:5`, mesma convenção já
+  usada em `⚡restricoes.blade.php::resolver()`).
+- **Textos didáticos**: `textoTipo()`/`textoEntidade()` traduzem os 8
+  `TipoInconsistenciaAvanco`/4 `EntidadeInconsistenciaAvanco` pra
+  linguagem operacional — nunca expõe nome de enum cru na tela.
+- **Contexto histórico, nunca estado atual**: a UI usa exclusivamente
+  `detalhes` (JSON já congelado pelo Detector) e Fotografia F
+  (`AtividadeSnapshot` da mesma importação, 1 query em lote pra toda a
+  página via `fotografiaFPorOcorrencia`) — nunca reconsulta
+  Restricao/AtividadeItemProntidao ao vivo pra explicar a causa. Uma
+  Restrição que já foi resolvida HOJE continua sendo descrita como
+  "estava aberta" na inconsistência antiga — a causa histórica nunca
+  desaparece nem se reclassifica.
+- **I1 tratada nunca impede I2**: o Detector (A.9.4/A.9.5, intocado nesta
+  etapa) nunca filtra por "já foi tratada antes" — cada inconsistência
+  pertence à sua própria `cronograma_importacao_id`. Tratar C1 (de I1)
+  não tem nenhum efeito sobre a mesma pendência reaparecendo como C2 numa
+  importação I2 posterior — C2 nasce `Aberta` normalmente.
+- **Não implementado nesta fase** (instrução explícita): e-mail/WhatsApp,
+  Notification, Job, Scheduler, resumo diário, Dashboard gerencial,
+  auto-baixa de Restrição/Prontidão, reabertura, anexos/comentários da
+  inconsistência, SLA, escalonamento, bulk treatment, export PDF/Excel,
+  badge no Lookahead (registrado como possível A.9.6.1 futuro, não
+  implementado agora).
+- Testes: `tests/Feature/InconsistenciaAvancoTratamentoTest.php` (22
+  testes — nasce aberta, tratamento autorizado, justificativa vazia
+  rejeitada, sem permissão bloqueado (Policy + UI), isolamento
+  tenant/obra/obra-dupla-do-mesmo-usuário, prova de que Restrição/
+  Prontidão/Atividade/Fotografias F-O-P/RestricaoAcao permanecem
+  intocadas, ocorrência tratada continua no banco, filtros de
+  status/severidade/tipo, causa histórica sobrevive à resolução atual da
+  Restrição, I1 tratada não impede I2, duplo tratamento não sobrescreve
+  primeiro autor, isolamento da listagem, N+1, smoke de renderização).
+  **Achado de teste**: `Livewire::test()` chamado DUAS VEZES dentro do
+  MESMO método de teste, pra este componente, corrompe o mecanismo de
+  snapshot da segunda chamada ("Invalid Livewire snapshot structure") —
+  descoberto isolando cada medição de N+1 numa função própria (só ajudou
+  parcialmente) e resolvido de vez evitando por completo uma segunda
+  `Livewire::test()` por método; a medição de N+1 usa uma única
+  renderização com N=30 e teto absoluto de queries, não mais delta
+  entre duas chamadas. Regressão direcionada (15 suítes, sequencial,
+  sem paralelismo): todas verdes. Full suite solo: **2023 passed / 6
+  skipped / 3 failed / 5755 assertions** — as mesmas 3 falhas
+  pré-existentes e sem relação (`DocumentosEngenhariaDashboardTest`,
+  `ItemSuprimentoStatusTest`, `ProgramacaoSemanalSnapshotTest`), zero
+  quarta falha.
+- **Não avançar pra Notification/Job/Scheduler/Dashboard/reabertura sem
+  validação do usuário** (instrução explícita) — aguardando aprovação
+  desta etapa.
+
+## GRD — Distribuição Física de Documentos (Ciclo 18, Etapa 18.5.1)
+
+- **Contexto**: fundação do domínio de GRD (Guia de Remessa de Documentos)
+  — distribuição FÍSICA de revisões de Documento de Engenharia pra
+  destinatários (pessoa/equipe/setor/local/cliente/subcontratada). Só
+  domínio nesta etapa (migrations/models/enums/Actions/queries de
+  leitura) — **sem UI** (fica pra 18.5.2, não implementada).
+- **GRD é um fato de distribuição FÍSICA, deliberadamente independente
+  de liberação para construção (Etapa 18.3/18.4)**: um documento pode
+  estar liberado e nunca ter sido distribuído (pendência de distribuição,
+  não de prontidão); `Atividade::scopeProntas()`/prontidão operacional
+  NUNCA leem nada do domínio de GRD — confirmado por teste dedicado
+  (`GrdDominioTest::test_aq_...`) que emitir/recolher uma GRD nunca muda
+  `estaPronta()` de nenhuma atividade.
+- **`GrdItem.documento_engenharia_revisao_id` aponta pra PK EXATA de
+  `DocumentoEngenhariaRevisao`, nunca pro Documento** — uma GRD já
+  emitida nunca resolve a revisão vigente dinamicamente; nascer uma
+  revisão nova (R2) NUNCA altera o `documento_engenharia_revisao_id` nem
+  os snapshots de uma `GrdItem`/`GrdDestinatario` já emitida (histórico
+  imutável de verdade, não só por convenção de UI).
+- **`Destinatario` é obra-scoped** (`App\Models\Destinatario`, mesmo
+  nível de simplicidade de `Fornecedor`/`EquipeResponsavel` — sem
+  polimorfismo): campos de texto livre (`nome`/`empresa`/`setor`/
+  `email`/`telefone`) + `user_id` nullable pro caso "é um usuário do
+  sistema" (mesmo precedente de `Restricao.responsavel_id` +
+  `responsavel_externo`).
+- **Matriz explícita item×destinatário** (`GrdDistribuicao`, chave
+  `(grd_item_id, grd_destinatario_id)`, `quantidade` default 1) — nunca
+  um produto cartesiano implícito entre os itens e destinatários de uma
+  GRD: só as combinações efetivamente marcadas (`AtualizarRascunhoGrd::
+  marcarDistribuicao()`) viram linha.
+- **Rascunho editável → Emitida imutável**, mesmo espírito de
+  `Report::rascunho/emitido`: enquanto Rascunho, `App\Actions\Engenharia\
+  AtualizarRascunhoGrd` permite adicionar/remover item, adicionar/remover
+  destinatário, marcar/desmarcar distribuição, alterar quantidade,
+  alterar observação — TODOS os métodos reafirmam o guard de status
+  server-side (`GrdImutavelException` se a GRD já não é Rascunho, nunca
+  confiado só à UI). `App\Actions\Engenharia\EmitirGrd` faz a transição
+  única Rascunho→Emitida, dentro de UMA transação: valida ≥1 item/
+  destinatário/distribuição, que cada revisão é a VIGENTE do Documento E
+  está LIBERADA para construção (`GrdEmissaoInvalidaException` senão),
+  congela snapshots (código/descrição/revisão do Documento;
+  nome/empresa/setor do Destinatario) e atribui `numero` sequencial por
+  obra — nunca antes disso (Rascunho nasce com `numero = null`, não
+  consome sequência).
+- **Numeração**: lock transacional numa linha estável da obra (`Work`,
+  via `lockForUpdate()`) serializa emissões concorrentes da MESMA obra
+  antes de calcular `MAX(numero)+1` — nunca um `max()+1` desprotegido.
+  `UNIQUE(obra_id, numero)` é a defesa FINAL a nível de banco, não o
+  mecanismo principal (provado por teste dedicado inserindo um duplicado
+  manual). Sequência é 100% independente por obra (obra nova sempre
+  recomeça do 1).
+- **Recolhimento é append-only** (`App\Models\GrdRecolhimento`, mesmo
+  espírito de `PlanoAcaoReconciliacao`/`DocumentoEngenhariaReprogramacao`
+  — `UPDATED_AT = null`, nunca editado nem apagado), registrado só por
+  `App\Actions\Engenharia\RegistrarRecolhimento`. Dois resultados
+  (`App\Enums\ResultadoRecolhimento`): `Recolhido` (soma acumulada NUNCA
+  pode superar `grd_distribuicoes.quantidade`, validado sob lock de linha
+  na própria distribuição) e `NaoLocalizado` (**NUNCA reduz a quantidade
+  pendente** — é só uma tentativa registrada, não um recolhimento de
+  fato). Suporta quantidade PARCIAL (várias entregas de N unidades podem
+  ser recolhidas em lotes menores ao longo do tempo, cada evento
+  preservado). Só permitido em GRD Emitida (`GrdRecolhimentoInvalidoException`
+  numa GRD Rascunho).
+- **Estado da distribuição é DERIVADO, nunca persistido**
+  (`GrdDistribuicao::estado()`: `'pendente'|'nao_localizado'|'recolhido'`,
+  string crua — nenhum enum novo além de `StatusGrd`/`ResultadoRecolhimento`,
+  por instrução explícita): `pendente == 0` → `recolhido`; senão, se o
+  ÚLTIMO evento (mesmo critério canônico `created_at DESC, id DESC` já
+  usado por `RevisaoLiberacao::ultimaLiberacao()`) é `NaoLocalizado` →
+  `nao_localizado`; senão → `pendente`.
+- **`App\Support\Grd\DetectorCopiasObsoletasGrd`/`CandidatosNovaEntregaGrd`**:
+  queries somente-leitura, EM LOTE por obra (O(1) queries, nunca por
+  distribuição — medido empiricamente igual pra N=5/30/100). Cópia
+  obsoleta = GRD Emitida + revisão distribuída ≠ revisão vigente do
+  Documento (comparação de tupla espelhando `DocumentoEngenhariaRevisao::
+  scopeVigentes()`) + pendente > 0. Candidato a nova entrega = já recebeu
+  alguma revisão anterior + revisão vigente está liberada + ainda não
+  recebeu a vigente. **Nunca persistido** — recalculado a cada leitura,
+  mesmo princípio de "alerta derivado" já usado em Health Check/Plano de
+  Ação/Fotografia O.
+- **Entregar R2 NUNCA recolhe R1 automaticamente** — os dois fatos são
+  inteiramente independentes por construção: recolhimento é escopado por
+  `GrdDistribuicao` (uma linha por item×destinatário de UMA GRD
+  específica); distribuir R2 numa GRD nova cria uma `GrdDistribuicao`
+  totalmente separada, nunca toca a linha de R1. Provado pelo teste
+  crítico ponta-a-ponta (`GrdDominioTest::test_ay_...`).
+- **FKs de evidência histórica são `restrictOnDelete()`, nunca
+  `cascadeOnDelete()`** (mesma lição já aplicada em Fotografia O/A.9.3.CORREÇÃO
+  e citada como precedente no docblock de `documento_engenharia_atividades`):
+  `grd_itens.documento_engenharia_revisao_id`, `grd_destinatarios.destinatario_id`,
+  `grd_recolhimentos.grd_distribuicao_id`. Efeito colateral desejável:
+  uma vez que uma revisão foi distribuída, o `Documento` inteiro fica
+  protegido contra `forceDelete()` (a cadeia de FK cascade a partir do
+  Documento esbarra no restrict da revisão).
+- **Autorização**: reaproveita `engenharia.pacotes` (`ver`/`editar`),
+  mesmo slug de toda a árvore GED — nenhum slug novo. As Actions desta
+  etapa NÃO checam permissão internamente (mesmo padrão de
+  `AlterarLiberacaoRevisaoDocumento`: responsabilidade do chamador/UI
+  futura).
+- **Não tocado**: `Atividade::scopeProntas()`/`estaPronta()`,
+  `CentralProntidaoQuery`, Plano Semanal, Lookahead, Restrições,
+  `MsProjectImporter`, `AvancoPeriodo`, Fotografias F/O/P,
+  `DetectorInconsistenciasAvanco`, storage privado da 18.2. Nenhuma
+  `Restricao`/`InconsistenciaAvanco` criada por este domínio (confirmado
+  por teste dedicado).
+- **Achado registrado, não corrigido nesta etapa**: as fases anteriores
+  do Ciclo 18 (18.1-18.4.CORREÇÃO.HARDENING) não deixaram entrada
+  correspondente neste arquivo — só a 18.5.1 está documentada aqui. Não
+  é escopo desta etapa reconstituir esse histórico.
+- Testes: `tests/Feature/GrdDominioTest.php` (44 testes, cobertura A-AY
+  do briefing — matriz parcial, cross-obra/cross-tenant nas Actions e nas
+  queries, snapshots congelados, imutabilidade de todas as mutações,
+  ciclo completo de recolhimento parcial/total/não-localizado,
+  performance O(1), rollback de emissão parcial, unique de numeração a
+  nível de banco, forceDelete bloqueado por FK) + 1 novo em
+  `TenantIsolationTest.php` (as 6 tabelas novas). Regressão direcionada
+  (~20 suítes de GED/Restrições/Lookahead/Cronograma/Inconsistências):
+  595 passed / 1 failed (a mesma falha pré-existente de fixture com data
+  fixa, sem relação). Suíte completa: **2250 passed / 6 skipped / 3
+  failed / 6329 assertions** (de 2205/6/3/6176 antes desta etapa — delta
+  exato de +45 testes novos, as mesmas 3 falhas pré-existentes e sem
+  relação: `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra UI completa (18.5.2), Notification, Job/Scheduler,
+  comprovante/storage, ou qualquer alteração em prontidão/avanço/Detector
+  sem validação do usuário** (instrução explícita) — aguardando aprovação
+  desta etapa antes de continuar.
+
+### 18.5.1.HARDENING — fechamento das ressalvas da auditoria
+
+- **GRD Emitida não pode ser `delete()`/`forceDelete()` pelo domínio,
+  mesmo chamado direto no model**: `App\Observers\GrdObserver::deleting()`
+  (registrado via `Grd::observe(GrdObserver::class)` em
+  `AppServiceProvider::boot()`, mesmo padrão de `AtividadeObserver`/
+  `RestricaoObserver`) lança `GrdImutavelException` quando `$grd->
+  estaEmitida()`. Um único guard no evento `deleting` cobre as DUAS
+  chamadas — `SoftDeletes::forceDelete()` chama internamente `$this->
+  delete()`, que dispara `deleting` antes de `performDeleteOnModel()`.
+  Rascunho continua livre pra ser excluído (soft ou force).
+- **`NaoLocalizado` é limitado à quantidade PENDENTE no instante da
+  tentativa** (`quantidade <= GrdDistribuicao::quantidadePendente()`),
+  nunca à soma acumulada de tentativas — múltiplas tentativas com a
+  MESMA quantidade em datas diferentes são permitidas (é histórico de
+  tentativas, não soma física; `NaoLocalizado` continua NUNCA reduzindo
+  a pendência). `Recolhido` continua limitado pela soma acumulada vs.
+  quantidade entregue, como já era.
+- **Ordem operacional dos eventos de recolhimento é a ordem de
+  REGISTRO** (`created_at DESC, id DESC`), nunca `ocorrido_em` (a data
+  informada do fato, que pode ser digitada retroativamente) — mesmo
+  critério já usado por `RevisaoLiberacao::ultimaLiberacao()` em todo o
+  projeto, congelado e provado por teste dedicado (evento mais antigo
+  por `ocorrido_em` mas mais recente por `created_at` vence).
+- **Destinatario soft-deletado tem semântica DIFERENTE nas duas queries
+  derivadas, ambas explicitamente documentadas e testadas**:
+  `DetectorCopiasObsoletasGrd` CONTINUA mostrando a cópia (é evidência de
+  distribuição física histórica que pode continuar em campo — a query
+  nunca depende da existência ativa do `Destinatario`, só do snapshot
+  congelado em `GrdDestinatario`); `CandidatosNovaEntregaGrd` EXCLUI o
+  destinatário (cadastro inativo não é candidato operacional pra nova
+  entrega — efeito do global scope de SoftDeletes sobre `Destinatario::
+  query()`, agora documentado no código, não mais implícito).
+
+## GRD — UI operacional (Ciclo 18, Etapa 18.5.2)
+
+- **Rota/tela**: `Engenharia → GRDs` (`engenharia.grds`, componente
+  `pages::engenharia.grds`), mesmo padrão de seletor de obra próprio de
+  `⚡documentos-engenharia.blade.php` (`engenharia.pacotes` é
+  ESCOPO_TENANT — a página não trava na obra ativa da sessão). Nenhum
+  slug novo — reaproveita `engenharia.pacotes` (`ver` pra leitura,
+  `editar` pra qualquer mutação).
+- **Autorização de LEITURA agora existe de verdade** (antes, na 18.5.1,
+  ficava só nas Actions de mutação, sem superfície de usuário): o
+  dropdown de obras (`obras()`) já filtra só as obras onde o usuário tem
+  `ver`, e `updatedObraId()` reafirma esse guard server-side a cada troca
+  — inclusive `set('obraId', ...)` disparado direto via Livewire (nunca
+  confiado só ao dropdown já filtrado).
+- **UI só chama o domínio já aprovado (18.5.1/18.5.1.HARDENING)** — zero
+  regra de negócio nova na Blade/componente: toda mutação delega pra
+  `CriarGrd`/`AtualizarRascunhoGrd`/`EmitirGrd`/`RegistrarRecolhimento`;
+  toda leitura de "cópias obsoletas"/"candidatos" consome
+  `DetectorCopiasObsoletasGrd`/`CandidatosNovaEntregaGrd` diretamente.
+  Erros de domínio (`GrdEmissaoInvalidaException`/`GrdImutavelException`/
+  `GrdRecolhimentoInvalidoException`) são capturados no componente e
+  exibidos como mensagem didática (toast ou texto inline no modal) —
+  nunca uma tela de erro genérica.
+- **Fluxo Rascunho→Emitida**: editor em 3 blocos (Documentos/
+  Destinatários/Matriz), matriz item×destinatário EXPLÍCITA (nunca
+  produto cartesiano — só as células marcadas viram `GrdDistribuicao`).
+  Revisão que deixou de ser vigente depois de adicionada ao rascunho
+  NUNCA é removida automaticamente — aparece com alerta textual
+  (`alertasPorItem()`, computed dedicado); `EmitirGrd` continua sendo a
+  única fronteira real de validação (a UI só reduz a chance de erro,
+  nunca substitui a Action).
+- **Detalhe de GRD Emitida usa SNAPSHOTS**, nunca o cadastro vivo —
+  `codigo_documento_snapshot`/`descricao_documento_snapshot`/
+  `revisao_snapshot`/`nome_snapshot` (de `GrdItem`/`GrdDestinatario`),
+  provado por teste que altera o cadastro DEPOIS de emitir e confirma que
+  o texto exibido não muda.
+- **Recolhimento**: modal único e compartilhado
+  (`grd-recolhimento-modal.blade.php`), acionável tanto do detalhe de uma
+  Emitida quanto da aba "Cópias obsoletas em campo" — resolvido sempre
+  via `$this->distribuicaoEmRecolhimento` (escopado à obra atual). Erro
+  de validação (ex.: `NaoLocalizado` acima da quantidade pendente) fica
+  inline no modal, nunca um 500.
+- **Destinatario soft-deletado — semântica visualmente diferenciada nos
+  dois blocos** (já era assim no domínio 18.5.1.HARDENING, agora também
+  visível na UI): continua aparecendo em "Cópias obsoletas em campo" (via
+  snapshot em `GrdDestinatario`); nunca aparece em "Possíveis
+  destinatários da revisão vigente" nem no seletor de "adicionar
+  destinatário existente" ao rascunho (`Destinatario::query()` já
+  exclui soft-deleted por padrão).
+- **Nenhum delete de Emitida oferecido na UI** — o Observer já bloqueia
+  no domínio (18.5.1.HARDENING), mas a UI nem chega a mostrar a opção.
+- **Dívida registrada, não implementada nesta etapa**: exclusão de
+  Rascunho pela UI (nenhuma Action de delete foi construída em 18.5.1 —
+  a UI não chama `$grd->delete()` direto pra não reintroduzir a mesma
+  classe de bypass de domínio que o Observer foi criado pra fechar; fica
+  pra uma Action dedicada futura, se necessário). PDF/impressão da GRD
+  também não implementado (fora de escopo desta etapa, por instrução
+  explícita).
+
+### 18.5.2.HARDENING — fechamento das ressalvas da UI
+
+- **"Usuário removido"**: cabeçalho da GRD Emitida (`Emitida por`) e
+  histórico de recolhimento agora usam o MESMO texto/precedente já usado
+  em `⚡inconsistencias-avanco.blade.php`/`⚡lookahead.blade.php`/
+  `⚡documentos-engenharia.blade.php` — antes mostrava só "—". Como esse
+  bloco só renderiza quando `estaEmitida()` e `EmitirGrd` sempre grava
+  `emitida_por` no fluxo normal, `null` ali só pode significar remoção
+  posterior do usuário (FK `nullOnDelete`) — nunca "nunca informado",
+  então o fallback é seguro sem precisar de coluna nova.
+- **Candidato removido entre a listagem e o clique**:
+  `criarGrdAPartirDeCandidato()` resolve Documento/Destinatario dentro de
+  um `try/catch(ModelNotFoundException)` ANTES de qualquer escrita — se o
+  destinatário foi soft-deletado nesse intervalo, mostra toast didático
+  ("Este destinatário não está mais disponível...") sem criar Grd/item/
+  destinatário/distribuição parcial (nada é escrito antes desse ponto).
+  Revalidado que o mesmo método já resolvia `revisaoVigente()` sempre
+  FRESH (nunca uma revisão stale da listagem) — se uma revisão mais nova
+  nascer no mesmo intervalo, é ela que entra no rascunho, nunca a antiga
+  que aparecia na tela — comportamento já correto, só ganhou teste
+  explícito.
+- **Busca de documentos escalável**: `revisoesDisponiveisParaAdicionar()`
+  ganhou `limit(30)` (mesmo padrão de `destinatariosDisponiveisParaAdicionar()`)
+  — antes carregava o catálogo inteiro da obra. Busca cobre código,
+  descrição e texto da revisão, sempre dentro do MESMO grupo de closure
+  escopado por `obra_id` (nenhum `orWhere` de nível superior, sem risco
+  de vazamento cross-obra/tenant). Revisão vigente não liberada continua
+  aparecendo na lista com badge de alerta — `EmitirGrd` continua sendo a
+  única fronteira real (decisão já aprovada em 18.5.2, não alterada).
+- **Nenhuma mudança no domínio de GRD** (`CriarGrd`/`AtualizarRascunhoGrd`/
+  `EmitirGrd`/`RegistrarRecolhimento`/`GrdObserver`/
+  `DetectorCopiasObsoletasGrd`/`CandidatosNovaEntregaGrd`) — só a UI
+  (`⚡grds.blade.php`, `grd-detalhe.blade.php`) e testes.
+- **Achado da regressão, investigado e corrigido numa microauditoria
+  dedicada** (não fazia parte do escopo original do hardening, mas
+  provado como fixture de teste, não bug de produção, antes de qualquer
+  correção): a regressão desta etapa expôs
+  `DocumentoEngenhariaProntidaoOperacionalTest::
+  test_e_documento_liberado_permite_compromisso`/`test_w_performance_plano_semanal_n_30`
+  falhando. Causa raiz provada empiricamente (`Carbon::setTestNow()`
+  variando o dia da semana): o helper `at()` usa `inicio_planejado =
+  now()->addDays(2)`, e os dois testes usam `semanaInicio =
+  now()->startOfWeek()` — nos dias em que "hoje" é sábado/domingo, `+2
+  dias` empurra a data pra segunda da semana SEGUINTE, fora da janela
+  `[semanaInicio, semanaFim]` que `idsSelecionaveis()` exige.
+  `Atividade::estaPronta()` permaneceu `true` em 100% dos cenários
+  testados (Segunda/Sexta/Sábado/Domingo) — a divergência é 100% na
+  seleção temporal do Plano Semanal, zero relação com GED/prontidão ou
+  com qualquer arquivo tocado em qualquer etapa do Ciclo 18 GRD
+  (confirmado por `git diff` — nenhum dos dois módulos compartilha
+  código). Corrigido travando o relógio (`Carbon::setTestNow()` numa
+  segunda-feira fixa + `finally` de limpeza) só nesses 2 testes — zero
+  linha de produção alterada, zero enfraquecimento de assertion. Ver
+  seção "Testes" para a nota geral desta classe de fragilidade.
+
+## GRD — PDF/impressão histórica (Ciclo 18, Etapa 18.5.3)
+
+- **Só GRD Emitida tem PDF formal** — Rascunho nunca teve conteúdo
+  congelado pra imprimir (`exportarPdfGrd()` faz `abort_unless($grd->
+  estaEmitida(), 404)`, botão "PDF" na UI só aparece nesse status).
+- **Achado de domínio, não corrigido (fora do escopo desta etapa)**:
+  `StatusGrd` só tem `Rascunho`/`Emitida` — **"Cancelada" não existe** em
+  nenhum lugar do domínio de GRD (nenhuma migration, nenhum enum, nenhuma
+  Action). Toda a seção do pedido sobre "GRD Cancelada" ficou inaplicável
+  por esse motivo — confirmado por leitura fresh, não presumido.
+- **Reaproveita o padrão de PDF já usado em todo o projeto** — mesmo
+  mecanismo de `⚡central-prontidao.blade.php::exportarPdf()`:
+  `Barryvdh\DomPDF\Facade\Pdf::loadView()` + `response()->
+  streamDownload()`, chamado direto de um método do componente Livewire
+  (nunca um controller/rota dedicados — não existe nenhum precedente
+  desse tipo no projeto pra PDF, só pra download de arquivo já
+  existente, ex.: `DocumentoEngenhariaRevisaoController`).
+- **`App\Support\Grd\MontarDadosPdfGrd`**: serviço de leitura pura,
+  extraído desde o início (não uma refatoração de código inline) — monta
+  `Grd`+`GrdDistribuicao` com eager load completo, SEM NUNCA consultar
+  `revisaoVigente()`/`Destinatario` ao vivo. Toda a reconstrução vem de
+  `GrdItem.*_snapshot`/`GrdDestinatario.*_snapshot`/`GrdDistribuicao.
+  quantidade` — os mesmos fatos já congelados por `EmitirGrd` na 18.5.1.
+  Prova: teste crítico gera o HTML do PDF, altera Documento e
+  Destinatario ao vivo, gera de novo, e confirma que os dois HTMLs são
+  **byte-a-byte idênticos**.
+- **"Situação Atual / Recolhimentos" é uma seção SEPARADA e claramente
+  rotulada**, nunca sobrescreve a tabela de "Distribuição" (o fato
+  original) — `NaoLocalizado` nunca reduz `quantidadeEntregue()` no PDF,
+  mesma garantia já provada no domínio (18.5.1.HARDENING). Histórico de
+  tentativas (`GrdRecolhimento`) aparece completo, nunca resumido/editado.
+  "Usuário removido" (mesmo texto já usado no resto do projeto) cobre
+  tanto `emitida_por` quanto `registrado_por` de cada evento.
+- **Matriz nunca é reconstruída como produto cartesiano no PDF** — a
+  tabela de "Distribuição" é achatada (uma linha por `GrdDistribuicao`
+  real), nunca uma matriz N×N — só as combinações efetivamente marcadas
+  aparecem.
+- **Autorização**: reaproveita `engenharia.pacotes`/`ver` (leitura),
+  mesmo `garantirPermissaoNaObraAtual()`/`resolverGrdDaObraAtual()` já
+  usados por todo o resto do componente — nenhum slug novo, nenhuma rota
+  nova, nenhum controller novo.
+- **Testes**: `tests/Feature/GrdPdfTest.php` (25 testes) — nunca só
+  "PDF retornou bytes": a maioria renderiza o template real
+  (`view('exports.grd-pdf', $dados)->render()`) e faz
+  `assertStringContainsString`/`assertStringNotContainsString` no HTML
+  de verdade, o mesmo que o DomPDF consome.
+- **Não tocado**: `EmitirGrd`, `RegistrarRecolhimento`,
+  `AtualizarRascunhoGrd`, `CriarGrd`, `GrdObserver`,
+  `DetectorCopiasObsoletasGrd`, `CandidatosNovaEntregaGrd`, nenhuma
+  migration, nenhuma coluna nova, prontidão, avanço, Detector.
+
+## GRD — Central Operacional de Distribuição (Ciclo 18, Etapa 18.5.4)
+
+- **Evolução das abas "Cópias obsoletas em campo"/"Possíveis
+  destinatários da revisão vigente" (18.5.2), não uma tela nova**: cards
+  de resumo, filtros (busca por documento/código, destinatário, estado),
+  colunas Empresa/Setor e badge "Destinatário inativo" — tudo isso vive
+  em `⚡grds.blade.php`/`_partials/grd-obsoletas.blade.php`/
+  `_partials/grd-candidatos.blade.php`. **`DetectorCopiasObsoletasGrd`/
+  `CandidatosNovaEntregaGrd` (18.5.1) não foram alterados** — os
+  computeds `obsoletas()`/`candidatos()` continuam chamando
+  `->porObra()` sem nenhuma mudança de assinatura/SQL, e só filtram/
+  ordenam o resultado **em memória** (`Collection::filter()`/`sortBy()`)
+  a partir das novas propriedades públicas (`buscaObsoletaDocumento`/
+  `destinatarioObsoletaFiltro`/`estadoObsoletaFiltro` e os 2 equivalentes
+  de candidatos).
+- **Cards nunca divergem da lista, por construção**: `cardsObsoletas()`/
+  `cardsCandidatos()` leem `$this->obsoletas`/`$this->candidatos` (os
+  MESMOS computeds já filtrados), nunca uma contagem/query paralela —
+  contagem/soma sempre em cima da coleção que a tabela está exibindo.
+- **"Estado" do filtro de obsoletas** (`pendente`/`nao_localizado`) é
+  derivado de `ultimo_resultado_recolhimento`, um campo que o próprio
+  `DetectorCopiasObsoletasGrd` já pré-computa em lote — nunca chama
+  `GrdDistribuicao::estado()` no model (exigiria `recolhimentos` eager-
+  carregado, que esse serviço não carrega, geraria `LazyLoadingViolationException`).
+  Como o serviço já garante `quantidade_pendente > 0` em toda linha, só
+  falta distinguir pendente/não-localizado — exatamente o que `estado()`
+  faria, sem nunca chamá-lo.
+- **Destinatário inativo — assimetria deliberada entre as duas abas,
+  mantida da 18.5.1.HARDENING**: em Obsoletas, o destinatário
+  soft-deletado continua aparecendo (é evidência histórica de
+  distribuição física, via snapshot em `GrdDestinatario`) com o badge
+  "Destinatário inativo" — e continua **filtrável** pelo `<select>` de
+  destinatário (as opções desse filtro vêm do próprio resultado do
+  Detector, nunca de `Destinatario::query()`, que já exclui soft-deleted
+  por padrão — é assim que um destinatário inativo consegue aparecer como
+  opção). Em Candidatos, o destinatário inativo nunca aparece — nem na
+  lista, nem no `<select>` de filtro (`opcoesDestinatarioCandidatos()`
+  deriva do mesmo `CandidatosNovaEntregaGrd`, que já exclui soft-deleted).
+  O nome exibido é sempre o **snapshot** (`nome_snapshot`) — nunca o
+  cadastro vivo, mesmo que ele tenha sido editado depois da inativação.
+- **2 melhorias opcionais do pedido, deliberadamente NÃO implementadas** —
+  registradas aqui como dívida, não esquecidas: (1) coluna "GRD anterior"
+  por revisão recebida em Candidatos, e (2) linha informativa "revisão
+  vigente ainda não liberada" em Obsoletas. As duas exigiriam estender o
+  formato de retorno/eager-load de `CandidatosNovaEntregaGrd`/
+  `DetectorCopiasObsoletasGrd` (já aprovados em 18.5.1/18.5.1.HARDENING)
+  — decisão de não tocar serviço já aprovado sem um bug comprovado, só
+  por uma melhoria opcional marcada como tal no próprio pedido.
+- **Sem migration, sem enum novo, sem Action nova**: mutações continuam
+  reaproveitando `criarGrdAPartirDeCandidato()`/`abrirModalRecolhimento()`/
+  `confirmarRecolhimento()` exatamente como já existiam.
+- Testes: `tests/Feature/GrdDistribuicaoOperacionalTest.php` (15 testes —
+  cards batendo com a lista com/sem filtro, busca por documento, filtro
+  por destinatário/estado, badge de inativo + filtrabilidade em
+  Obsoletas vs. exclusão total em Candidatos, isolamento por
+  obra/tenant, ausência de N+1 com 100 distribuições, e o cenário
+  crítico ponta a ponta pedido no briefing — João recebe R1, R2 nasce e
+  vira obsoleta antes mesmo de liberada, candidato só aparece após
+  liberar, recolhimento parcial atualiza os cards, nova entrega de R2
+  via atalho de candidato nunca recolhe R1 automaticamente). Suíte
+  completa: **2338 passed / 6 skipped / 3 failed / 6563 assertions** (de
+  2323/6/3/6511 antes desta etapa — delta exato de +15 testes/+52
+  assertions, as mesmas 3 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+
+## GRD — Alertas internos de distribuição (Ciclo 18, Etapa 18.5.5)
+
+- **2 tipos de alerta, event-driven, sem Scheduler**: **Alerta A** ("Revisão
+  nova com cópias antigas em campo") dispara quando uma revisão nasce e vira
+  a vigente do Documento enquanto ainda há cópia física de revisão anterior
+  pendente de recolhimento — **independe de a revisão nova estar liberada**.
+  **Alerta B** ("Nova revisão pronta para distribuição") dispara quando uma
+  revisão vigente é LIBERADA e existem destinatários que receberam a
+  anterior mas ainda não a vigente — é recomendação operacional, nunca
+  "entrega obrigatória". Nenhum dos dois reimplementa regra: ambos consomem
+  `DetectorCopiasObsoletasGrd`/`CandidatosNovaEntregaGrd` (18.5.1, intocados)
+  via `App\Support\Grd\AlertaDistribuicaoGrd`, que só filtra o resultado já
+  derivado por `documento->id` em memória — mesma filosofia de 18.5.4.
+- **Gatilhos, cada um o único ponto que cobre 100% dos caminhos**: Alerta A
+  — `App\Observers\DocumentoEngenhariaRevisaoObserver::created()` (Model
+  Observer, cobre `AnexarRevisaoDocumento` E `DocumentoEngenhariaImporter`
+  sem duplicar a chamada — mesmo padrão de `AtividadeObserver`/
+  `RestricaoObserver`/`GrdObserver`). Alerta B —
+  `App\Observers\RevisaoLiberacaoObserver::created()` (Observer em
+  `RevisaoLiberacao`, não em `AlterarLiberacaoRevisaoDocumento` — evita
+  tocar essa Action já aprovada em 18.3; filtra `liberada_para_construcao
+  === true`, então revogação nunca dispara). As 2 garantias de domínio já
+  existentes em `AlterarLiberacaoRevisaoDocumento::registrar()`
+  (idempotência — no-op se o estado pedido já é o atual — e
+  `garantirRevisaoVigente()` — lança exceção antes de qualquer escrita se a
+  revisão não é a vigente) já bloqueiam, na origem, os 2 casos que mais
+  preocupavam duplicata/alerta indevido — o Observer nunca precisa
+  reimplementá-las. Guarda extra em `AlertaDistribuicaoGrd`: revalida (fresh
+  query) que a revisão AINDA é a vigente no instante do disparo — essencial
+  pro Alerta A (LD import pode inserir revisão com `data_emissao`
+  retroativa, que nunca vira a vigente) e defesa em profundidade barata pro
+  Alerta B.
+- **`DB::afterCommit()` — obrigatório, não opcional**: `DocumentoEngenhariaImporter::
+  aplicar()` roda dentro de `transacaoSegura()`/`DB::transaction()` (import
+  de LD é atômico) — sem `afterCommit()`, uma falha numa linha POSTERIOR do
+  mesmo lote reverteria a transação inteira, mas a Notification da revisão
+  já criada teria sido enviada sobre um dado que deixou de existir. Provado
+  empiricamente (não presumido): `DB::afterCommit()` DISPARA normalmente
+  dentro de um teste `RefreshDatabase` quando o código sob teste abre seu
+  próprio `DB::transaction()` (mesmo aninhado dentro da transação de
+  isolamento do teste), e NÃO dispara quando essa transação sofre rollback
+  — os 2 testes de rollback (`test_w_rollback_alerta_a/b_zero_notification`)
+  exercitam exatamente esse mecanismo, forçando uma exceção depois da
+  escrita e confirmando `Notification::assertNothingSent()` pra aquele
+  tipo. Ambos os Observers envolvem o disparo em `try/catch` +
+  `report($e)` — uma falha de infraestrutura de notificação nunca pode virar
+  erro pro usuário depois que o dado já commitou.
+- **Destinatários — mesma composição já aprovada em produção**:
+  `AlertaDistribuicaoGrd::usuariosComPermissaoNaObra()` reaproveita
+  literalmente a mesma regra de
+  `NotificarProntidaoSemanalCommand::resolverDestinatarios()` (Ciclo 16,
+  A.4) — `$obra->users()` (escopado por `obra_user.work_id`, nunca
+  `temPermissaoEmAlgumaObraDoTenant()`) + `ativo=true` + `temPermissaoNaObra
+  ($obra, 'engenharia.pacotes', 'ver')`, resolvida do zero a cada disparo
+  (nunca cacheada entre eventos). O "destinatário físico" da GRD
+  (`Destinatario`) nunca é notificado por existir — só usuários DO SISTEMA
+  com acesso operacional à obra.
+- **Agregação**: `Notification::send($destinatarios, ...)` já entrega 1
+  linha por usuário destinatário — nunca 1 por cópia física/candidato. A
+  quantidade dentro da mensagem também é agregada: Alerta A soma
+  `quantidade_pendente` de TODAS as cópias obsoletas daquele Documento (não
+  só as da revisão que acabou de nascer — R1 e R2 ambas pendentes quando R3
+  nasce contam juntas); Alerta B conta destinatários candidatos distintos
+  (contrato de `CandidatosNovaEntregaGrd`, 1 linha por par documento×
+  destinatário). Revisões sucessivas (R2 depois R3) geram alertas
+  independentes, nunca deduplicados entre si — a chave é implícita ao
+  próprio evento de domínio (nova revisão / nova liberação), não uma chave
+  artificial armazenada.
+- **Zero migration**: `notifications` (tabela já existente desde antes desta
+  fase) e a idempotência já embutida em `AlterarLiberacaoRevisaoDocumento`
+  bastam — nenhuma tabela/coluna nova de deduplicação foi necessária.
+- **Destinatário inativo — mesma assimetria de 18.5.4**: soft-deletado
+  continua contando no Alerta A (cópia física é fato histórico, snapshot em
+  `GrdDestinatario`); nunca conta no Alerta B (`CandidatosNovaEntregaGrd` já
+  exclui — cadastro inativo não é candidato operacional).
+- **UI 100% reaproveitada, nada novo construído**: sino/badge/lista já
+  existentes (`resources/views/livewire/notificacoes-dropdown.blade.php`,
+  já lia `data['titulo']/['mensagem']/['icone']/['cor']/['link']` e já tinha
+  `markAsRead()`/badge de não lidas) — as 2 Notifications só seguem esse
+  mesmo contrato. Link usa `route('engenharia.grds', ['obra'=>...,
+  'aba'=>'obsoletas'|'candidatos'])` — `⚡grds.blade.php` ganhou
+  `#[Url(as:'obra')]`/`#[Url(as:'aba')]` em `$obraId`/`$abaAtiva` (mesmo
+  padrão já usado por `$grdAbertaId`/`plano-acao`'s `$filtroRegraId`), e
+  `mount()` **revalida** `ver` em `engenharia.pacotes` pra `obraId` vindo da
+  URL — clicar num link antigo depois de perder acesso à obra nunca abre o
+  dado (mesma garantia já existente pra `grdAbertaId`, agora estendida pro
+  parâmetro de obra também).
+- **Notification é histórica; Central Operacional (18.5.4) é o estado
+  atual** — os dois nunca são sincronizados um com o outro: recolher a
+  cópia toda ou entregar a revisão nova faz o item sumir da Central
+  Operacional, mas NUNCA apaga/altera a Notification já enviada (ela
+  continua existindo, lida ou não, como registro histórico de que o alerta
+  ocorreu — mesmo raciocínio já usado pra `plano_acao_reconciliacoes`:
+  reconciliação automática nunca é o mesmo conceito que auditoria de
+  evento). `markAsRead()` só preenche `read_at`, nunca apaga a linha.
+- **Zero Scheduler/e-mail/WhatsApp/Z-API/comprovante/digest nesta etapa**
+  (instrução explícita) — só `database`+`broadcast` (mesmo par de canais já
+  usado por `RestricaoCriadaNotification`), event-driven a partir dos 2
+  gatilhos acima.
+- Testes: `tests/Feature/GrdNotificacaoTest.php` (31 testes — cobertura A-AB
+  do briefing: os 2 alertas isolados e com quantidade agregada correta,
+  destinatário inativo nos 2 sentidos, revisões sucessivas sem dedup
+  indevido, reimportação de LD idêntica sem duplicata, backdating de
+  revisão sem alerta espúrio, liberar revisão não-vigente sem alerta,
+  revogação sem alerta, Notification comprovadamente só-leitura
+  (Grd/GrdRecolhimento/Restricao/prontidão intocados), isolamento de
+  obra/tenant/permissão, rollback com prova empírica de `DB::afterCommit()`,
+  link correto + revalidação de autorização, `markAsRead()` preserva
+  histórico, ausência de N+1 com 100 cópias/100 candidatos, e o fluxo
+  crítico ponta a ponta completo). Suíte completa: **2369 passed / 6
+  skipped / 3 failed / 6623 assertions** (de 2338/6/3/6563 antes desta etapa
+  — delta exato de +31 testes/+60 assertions, as mesmas 3 falhas
+  pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra Scheduler/digest/e-mail/WhatsApp/comprovante ou
+  qualquer outra fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+## GRD — Alertas internos: idempotência estrutural (Ciclo 18, Etapa 18.5.5.HARDENING)
+
+- **Contexto**: a auditoria adversarial da 18.5.5 aprovou COM RESSALVAS —
+  achado principal (B): `AlertaDistribuicaoGrd` não tinha proteção
+  estrutural contra duplicação (provado empiricamente: chamar
+  `dispararCopiasObsoletas()` 2x pro mesmo fato duplicava o envio). Esta
+  etapa fecha essa ressalva sem migration nova, sem tocar
+  `DetectorCopiasObsoletasGrd`/`CandidatosNovaEntregaGrd`/nenhuma regra de
+  domínio do GED.
+- **Identidade lógica determinística**: `AlertaDistribuicaoGrd::idAlerta(
+  tipo, obraId, documentoId, revisaoId, userId)` — UUIDv5 (via
+  `Ramsey\Uuid\Uuid::uuid5()`, dependência transitiva do próprio Laravel/
+  `Str::uuid()`, nenhum pacote novo) sobre a chave lógica do evento **+ o
+  usuário destinatário**. Alerta A usa `tipo='copias_obsoletas'`, Alerta B
+  usa `tipo='candidatos_nova_entrega'` — nunca colidem entre si. A chave
+  NUNCA inclui texto de mensagem/quantidade/timestamp — só
+  tipo+obra+documento+revisão+usuário, então R2 e R3 continuam identidades
+  diferentes (o `revisaoId` está na chave) e o mesmo evento pra 2
+  destinatários gera 2 ids diferentes (1 por usuário).
+- **Mecanismo estrutural, não convenção `if (!exists())`**: `notifications.id`
+  é a PRIMARY KEY (`char(36)`, confirmado via `SHOW CREATE TABLE`) — e
+  `Illuminate\Notifications\NotificationSender::sendToNotifiable()`/
+  `queueNotification()` só geram um UUID aleatório quando `! $notification->id`;
+  um id já atribuído é respeitado tal como está. `AlertaDistribuicaoGrd::
+  enviarComIdempotencia()` atribui o UUIDv5 determinístico a
+  `$notification->id` ANTES de `$user->notify()` — uma 2ª tentativa de
+  gravar a MESMA chave nunca pode virar 2 linhas, é a própria constraint
+  do banco que impede, mesmo sob corrida entre 2 processos. O `exists()`
+  que roda antes disso é só um ATALHO (evita despachar um job de fila
+  fadado a duplicar no caso comum) — quem protege de verdade é a PK.
+- **Retry/corrida tratados como idempotência, nunca como erro**: os 2
+  Notifications (`GrdCopiasObsoletasNotification`/
+  `GrdCandidatosNovaEntregaNotification`) ganharam `failed(\Throwable $e)`
+  — chamado por `SendQueuedNotifications::failed()` quando o job (rodando
+  em fila, fora do processo que disparou o alerta) explode; SQLSTATE 23000/
+  MySQL 1062 (duplicate entry) é absorvido silenciosamente (idempotência
+  bem-sucedida), qualquer outra exceção continua indo pra `report()`. Mesmo
+  critério de detecção já usado em `PlanoAcao::transformarEmRestricoes()`
+  (`$e->errorInfo[1] === 1062`) — não uma heurística nova.
+- **Zero migration**: a PRIMARY KEY de `notifications.id` (tabela
+  pré-existente) já é suficiente — nenhuma tabela/coluna nova de
+  deduplicação foi necessária (Preferência 1 do pedido, confirmada viável
+  antes de cogitar Preferência 2).
+- **Deep-link `?aba=` inválido normalizado**: `⚡grds.blade.php::mount()`
+  reseta `abaAtiva` pro default real da tela (`'grds'`) quando o valor da
+  URL não é um dos 3 válidos (`grds`/`obsoletas`/`candidatos`) — nunca um
+  redirect, só o valor caindo pro estado inicial de sempre. Os deep-links
+  válidos dos 2 Alertas (`?aba=obsoletas`/`?aba=candidatos`) continuam
+  funcionando sem nenhuma mudança.
+- **Fila Redis real — investigado, não incluído como teste permanente**:
+  um smoke usando `Artisan::call('queue:work', ['connection'=>'redis',
+  '--once'=>true, ...])` pra processar de verdade os jobs reais
+  enfileirados pelo próprio teste foi construído e CONFIRMOU manualmente
+  que a linha aparece em `notifications` com o conteúdo certo — mas o
+  tempo de execução variou de forma imprevisível (instantâneo a ~90s, e
+  travou indefinidamente 2 vezes durante a investigação, exigindo `pkill`
+  manual) porque `config('queue.connections.redis.block_for')` é `null`
+  (BLPOP sem timeout) e depende de timing de fila real, não de estado
+  determinístico de teste. Não incluído na suíte permanente pra não
+  arriscar travar o CI — classificado como dívida de cobertura (D), não
+  de comportamento (o mecanismo em si funciona, confirmado manualmente).
+- **Testes novos**: `tests/Feature/GrdNotificacaoTest.php` ganhou 18
+  testes (31→49) — 2x/10x chamadas diretas pro mesmo evento (Alerta A e
+  B) permanecem em exatamente 1 envio por usuário; R2/R3 e mesmo texto de
+  revisão em documentos diferentes provados como identidades distintas
+  (ids diferentes); mesmo evento para 2 usuários gera 2 ids diferentes;
+  PRIMARY KEY testada diretamente (`QueryException`/1062); `failed()`
+  absorve 1062 e relança qualquer outra exceção; os 5 gaps de cobertura
+  da auditoria (NaoLocalizado explícito, mesmo destinatário em 2 GRDs,
+  revogar+reliberar já entregue, usuário sem `ver`, usuário inativo)
+  viraram testes permanentes; rollback e transação aninhada revalidados
+  com o dedupe novo; performance reprocessando o mesmo evento (100
+  cópias/3 usuários, continua 3 envios, nunca 6); aba inválida normaliza
+  sem quebrar. Suíte completa: **2387 passed / 6 skipped / 3 failed /
+  6660 assertions** (de 2369/6/3/6623 antes desta etapa — delta exato de
+  +18 testes/+37 assertions, as mesmas 3 falhas pré-existentes e sem
+  relação: `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra Scheduler/e-mail/WhatsApp/digest/comprovante ou
+  qualquer outra fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+## GRD — Comunicação externa dos alertas: e-mail + WhatsApp (Ciclo 18, Etapa 18.5.6)
+
+- **Canais, sem segunda inteligência**: os 2 Notifications de alerta
+  (`GrdCopiasObsoletasNotification`/`GrdCandidatosNovaEntregaNotification`)
+  ganharam `toMail()`/`toWhatsApp()` e `via()` passou a incluir
+  `App\Notifications\Channels\GrdLedgerMailChannel`/`GrdLedgerZApiChannel`
+  — nenhuma regra de obsolescência/candidato/destinatário foi duplicada;
+  ambos os canais só formatam o MESMO fato já calculado por
+  `AlertaDistribuicaoGrd`. `database`+`broadcast` continuam garantidos
+  independentemente de e-mail/telefone existirem — ausência de canal
+  externo nunca impede a Notification interna.
+- **Política de canal — sem opt-in, por decisão de precedente confirmado**:
+  o projeto não tem (e esta etapa não criou) nenhuma preferência de canal
+  por usuário/tenant. Mail é sempre tentado (`users.email` é `NOT NULL`,
+  sempre existe destinatário técnico); WhatsApp usa exatamente a mesma
+  regra silenciosa já usada pelos outros 4 Notifications mail+ZApi do
+  projeto (`ZApiChannel` no-opa sem telefone/credencial, nunca lança).
+  Nenhuma UI de configuração nova.
+- **Idempotência por canal — ledger `grd_alerta_entregas`, com migration
+  (autorizada explicitamente pelo usuário)**: a PRIMARY KEY de
+  `notifications.id` (18.5.5.HARDENING) protege só o canal `database` —
+  cada canal de `via()` vira um `SendQueuedNotifications` INDEPENDENTE, e
+  um retry do job de `mail` (Laravel lança exceção em falha de SMTP,
+  diferente do WhatsApp) poderia, em tese, reenviar um e-mail já entregue.
+  `App\Models\GrdAlertaEntrega` (`UNIQUE(evento_usuario_id, canal)`) usa o
+  MESMO UUIDv5 determinístico de `AlertaDistribuicaoGrd::idAlerta()` como
+  `evento_usuario_id` — nunca uma segunda identidade. Gravado SEMPRE
+  DEPOIS do envio sem exceção (nunca antes): retry após falha genuína
+  encontra o ledger vazio e tenta de novo; retry após sucesso genuíno
+  encontra a linha e pula. Trade-off documentado nos 2 channels: não cobre
+  "enviou com sucesso, mas o processo morreu antes de gravar a linha" —
+  mesmo residual que qualquer sistema at-least-once carrega, não resolvido
+  por nada existente no projeto (nem pelos 4 Notifications mail+ZApi já em
+  produção). WhatsApp é estruturalmente IMUNE a esse risco por natureza
+  (`ZApiChannel` nunca lança), então o ledger nesse canal é auditoria/
+  consistência, não a defesa real.
+- **Achado crítico da implementação — `TenantContext::actingAs()`
+  obrigatório nos 2 channels wrapper**: `GrdAlertaEntrega` usa
+  `BelongsToTenant`, cujo auto-stamp depende de `Auth::check()`. Os 2
+  channels rodam DENTRO de um job de fila (worker sem usuário
+  autenticado) — sem `actingAs()`, tanto a checagem de idempotência
+  quanto a gravação do ledger operariam com tenant errado/nulo.
+  `AlertaDistribuicaoGrd` captura `$documento->tenant_id` ENQUANTO ainda
+  roda no request original autenticado (dentro do `DB::afterCommit()`
+  síncrono) e repassa pelo construtor das 2 Notifications — os channels
+  usam esse valor pra `TenantContext::actingAs()`, nunca resolvem tenant
+  sozinhos.
+- **Falha de canal é isolada**: `mail`/`whatsapp`/`database` são jobs de
+  fila independentes (1 por canal em `via()`) — falha de um nunca afeta o
+  outro, comportamento nativo do `NotificationSender` do Laravel, não
+  construído nesta etapa.
+- **Conteúdo**: e-mail com assunto `"[{obra}] ..."`, `MailMessage`
+  padrão (greeting/lines/action/salutation, mesmo estilo de
+  `AlertaPrazoSuprimentoNotification`); WhatsApp com texto curto,
+  "Radar EPC — {obra}" + dado essencial + call-to-action pro Radar. Nenhum
+  canal lista destinatários/detalhe completo — só quantidade agregada e
+  link pra plataforma. Links via `route('engenharia.grds', [...])` —
+  nunca host hardcoded.
+- **Zero Scheduler**: 100% event-driven, mesmos 2 gatilhos da 18.5.5
+  (Observer de revisão criada / Observer de liberação).
+- **Testes novos**: `tests/Feature/GrdNotificacaoTest.php` ganhou 15
+  testes (49→64) — conteúdo de mail/WhatsApp dos 2 alertas, ledger
+  idempotente com retry real (mail via `Mail::fake()`, WhatsApp via
+  `Http::fake()`), usuário sem telefone, normalização de telefone
+  (reaproveitando `ZApiChannel` existente, nenhum parser novo), falha de
+  um canal não afeta outro, rollback/nested transaction revalidados
+  incluindo o ledger, zero efeito operacional, performance sem N+1, e o
+  teste crítico multicanal completo (seção 27 do pedido). `TenantIsolationTest`
+  ganhou a tabela `grd_alerta_entregas`. Suíte completa: **2402 passed / 6
+  skipped / 3 failed / 6722 assertions** (de 2387/6/3/6660 antes desta
+  etapa — delta exato de +15 testes/+62 assertions, as mesmas 3 falhas
+  pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra Scheduler/digest/comprovante/assinatura/QR Code ou
+  qualquer outra fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+### 18.5.6.HARDENING — ACHADO C: `TenantContext::actingAs()` era um no-op nos 2 wrappers de ledger
+
+- **Contexto**: auditoria adversarial final da 18.5.6, focada no ledger
+  `grd_alerta_entregas` (retry/janela de falha parcial), encontrou um
+  achado C real (bug de produção, não só de teste) — instrução do usuário
+  foi parar e corrigir só isso antes de continuar. Achado: os 2 wrappers
+  (`GrdLedgerMailChannel`/`GrdLedgerZApiChannel`) construíam `$tenant = new
+  Tenant(['id' => $meta['tenant_id']]);` antes de chamar `TenantContext::
+  actingAs($tenant, ...)`. **`id` não está em `Tenant::$fillable`** (é
+  autogerado por `HasUlids`) — como `Tenant` não é `totallyGuarded()`
+  (`$fillable` não é vazio), `Model::fill()` não lança exceção, só
+  **descarta `id` em silêncio**. Confirmado empiricamente via tinker:
+  `(new Tenant(['id' => 'x']))->id` é `null`.
+- **Efeito em cascata**: `TenantContext::actingAs()` faz `static::$override
+  = $tenant->id;` — com `$tenant->id` sempre `null`, e `currentId()` só
+  usando o override quando `!== null`, a chamada CAÍA DIRETO pro fallback
+  ambiente (`auth()->user()->tenant_id`/impersonation/switch) — um no-op
+  completo, nos DOIS wrappers, desde que a 18.5.6 foi escrita. Nunca
+  detectado antes porque todo teste até então (incluindo os 15 originais
+  da 18.5.6 e as probes P1-P9 desta mesma auditoria) usava um único tenant
+  — o fallback ambiente e o tenant "pretendido" sempre coincidiam por
+  acidente. Só a probe P10 (2 tenants genuinamente diferentes, exigida
+  pelo próprio roteiro da auditoria) expôs a falha.
+- **Impacto real, por caminho de execução** (analisado, não só corrigido às
+  cegas): em **worker de fila assíncrono real** (Redis, sem usuário
+  autenticado), `currentId()` cai pra `null` — o hook `creating()` do
+  `BelongsToTenant` só sobrescreve `tenant_id` quando `currentId()` é
+  truthy, então NÃO MEXE no `tenant_id` explícito já presente em `$meta`
+  (repassado via `array_merge($meta, [...])` pro `create()`) — esse
+  caminho degradava de forma inofensiva. Em **execução síncrona com OUTRO
+  tenant autenticado no ambiente** (fila `sync`, testes, ou qualquer
+  cenário fora do request original que gerou o evento), o hook
+  `creating()` SOBRESCREVIA `tenant_id` pelo tenant ERRADO (o ambiente,
+  não o da notificação) — exatamente o que a P10 reproduziu: a linha do
+  "tenant2" era gravada, mas com `tenant_id` do tenant1, por isso uma
+  query escopada em tenant2 nunca a encontrava. Não foi identificado um
+  fluxo de produção real onde esse segundo caminho se dispara hoje (as 2
+  Notifications GRD sempre nascem dentro do próprio request/tenant que
+  gerou o evento) — mas o código estava estruturalmente errado e a
+  garantia de isolamento que os 2 docblocks afirmavam nunca existiu de
+  fato.
+- **Correção, cirúrgica e local aos 2 chamadores** (por instrução
+  explícita: não alterar `TenantContext`, não mudar assinatura de
+  `actingAs()`, não tornar `id` fillable globalmente em `Tenant` — o bug
+  era no chamador, não na abstração): `$tenant = (new Tenant())->
+  forceFill(['id' => $meta['tenant_id']]);` — `forceFill()` bypassa o
+  guard de mass assignment sem tocar `Tenant::$fillable`/`TenantContext`.
+  Zero mudança de assinatura, zero migration, zero mudança em qualquer
+  outro chamador de `Tenant`/`TenantContext` no projeto.
+- **6 cenários novos, permanentes, em `tests/Feature/GrdNotificacaoTest.php`**
+  (seção "ACHADO C", depois de P10) — cada um provado FALHAR no código
+  anterior (`new Tenant(['id' => ...])`) e PASSAR só com `forceFill()`:
+  `test_achado_c_tenantcontext_forcado_durante_e_restaurado_apos_sucesso`
+  (3 fases explícitas: antes=tenant1, DURANTE o callback=tenant2 — capturado
+  via Mockery `andReturnUsing` —, depois=tenant1 de novo);
+  `test_achado_c_restauracao_apos_excecao_nao_contamina_evento_seguinte`
+  (exceção dentro do callback do tenant2, restaura tenant1, e um evento
+  SEGUINTE do tenant1 no mesmo processo grava corretamente, sem herdar
+  nada do tenant2 que falhou); `test_achado_c_tres_eventos_alternando_
+  dois_tenants_no_mesmo_processo` (A→B→A no mesmo objeto de canal, mesma
+  classe de reuso real de worker); `test_achado_c_execucao_sem_usuario_
+  autenticado_worker_real` (`Auth::logout()` explícito antes do `send()` —
+  a correção não pode depender de um usuário autenticado ambiente pra
+  funcionar, só do override explícito do `actingAs()`). `test_p10_dois_
+  tenants_sequenciais_sem_contaminacao` (já existente) passou a ser o 5º
+  cenário, agora verde. `test_p9_tenantcontext_restaurado_apos_excecao`
+  (já existente, restauração genérica sob exceção) continua o 6º.
+- **Garantia real do ledger (mail), reafirmada após a correção — nada
+  mudou na classificação já documentada nos docblocks de
+  `GrdLedgerMailChannel`/`GrdLedgerZApiChannel`**: at-least-once com
+  deduplicação best-effort via `UNIQUE(evento_usuario_id, canal)`; a
+  janela entre "provedor aceita o envio" e "processo morre antes do
+  INSERT do ledger" continua real e não fechada (exigiria outbox
+  transacional com o provedor externo, fora de escopo) — **nunca
+  exactly-once**. A correção desta etapa resolve o isolamento de tenant
+  do ledger, não essa janela — são 2 achados independentes.
+- **WhatsApp — fix do no-op (P6/P7) da auditoria original, revalidado
+  intacto**: `GrdLedgerZApiChannel` continua checando `tentativaDeEnvioSera
+  Feita()` (telefone roteável + credenciais configuradas) ANTES de gravar
+  o ledger — sem telefone/credencial, zero linha "enviado" falsa. **P8
+  (falha HTTP silenciosa do `ZApiChannel`) continua uma limitação
+  documentada, não corrigida**: `ZApiChannel::send()` retorna `void` mesmo
+  quando a Z-API responde erro — o wrapper não tem como distinguir
+  "entregue" de "tentativa feita mas recusada" sem mudar a assinatura de
+  `ZApiChannel::send()`, usada por mais 4 Notifications em produção, fora
+  do escopo desta correção. Classificação B (limitação aceitável e
+  documentada, impacto prático hoje nulo — nada re-lê esse ledger pra
+  tentar de novo).
+- **Regressão**: `GrdNotificacaoTest` completo (77/77, os 4 novos +
+  P1-P10 + os 63 já existentes), `TenantIsolationTest` (26/26),
+  `ZApiChannelTest`/`NotificarProntidaoSemanalCommandTest`/
+  `ProntidaoSemanalNotificationTest`/`BoasVindasNotificationTest`/
+  `ReportEmissaoNotificacaoTest` (41/41), `GrdDistribuicaoOperacionalTest`/
+  `GrdDominioTest`/`GrdPdfTest` (96/96), `RevisaoLiberacaoTest`/
+  `ImportarDocumentosEngenhariaTest`/`DocumentoEngenhariaProntidaoOperacionalTest`/
+  `DocumentoEngenhariaProntidaoTest`/`GrdPageTest` (141/141) — zero
+  regressão em nenhuma. Suíte completa (full suite solo): **2415 passed /
+  6 skipped / 3 failed / 6774 assertions** (de 2402/6/3/6722 antes desta
+  correção — delta exato de +13 testes/+52 assertions, batendo com os 13
+  testes novos desta etapa: P1-P9 = 9 métodos, P10 = 1, ACHADO C = 4. As
+  mesmas 3 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Não tocado**: `TenantContext` (classe/assinatura), `Tenant::$fillable`,
+  nenhuma migration, nenhuma regra de negócio de Health Check/Plano de
+  Ação/GRD/Fotografia F-O-P/Detector, `ScoreCalculator`, o restante do
+  domínio de GRD (Actions/Observers/Detectores intocados).
+- **Não avançar pra Scheduler/digest/comprovante/assinatura/QR Code ou
+  qualquer outra fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta correção antes de continuar.
+
+## GRD — Digest Semanal de Pendências (Ciclo 18, Etapa 18.5.7)
+
+- **Digest = estado periódico; Alertas A/B = eventos imediatos** — os dois
+  nunca se confundem nem se substituem. Um evento (revisão nasce/é
+  liberada) continua disparando os Alertas A/B imediatos (18.5.5/18.5.6)
+  exatamente como antes — o digest NUNCA reprocessa nem duplica esse
+  histórico. O digest responde uma pergunta diferente: "o que CONTINUA
+  pendente hoje?" — se uma pendência já foi resolvida antes do digest
+  rodar, ela simplesmente não aparece nele, mesmo que tenha gerado um
+  Alerta A/B no passado.
+- **Zero regra nova, por construção**: `App\Services\DigestPendenciasGed::
+  consolidar()` consome exclusivamente `DetectorCopiasObsoletasGrd::
+  porObra()`/`CandidatosNovaEntregaGrd::porObra()` (18.5.1, os MESMOS 2
+  serviços que a Central Operacional 18.5.4 e os Alertas A/B 18.5.5 já
+  usam) — nunca reimplementa "o que é obsoleto"/"o que é candidato". Só
+  agrega em contagens escalares (`App\Support\Grd\
+  ResumoDigestPendenciasGed`): nº de Documentos distintos, nº de
+  destinatários distintos (por `GrdDestinatario.destinatario_id`, a
+  PESSOA — nunca o snapshot da distribuição) e a soma de
+  `quantidade_pendente` (obsoletas). `NaoLocalizado` continua no digest
+  enquanto `quantidade_pendente > 0` (nunca reduz pendência, mesma regra
+  já documentada em 18.5.1.HARDENING) — nenhum tratamento especial aqui,
+  o Detector já garante isso.
+- **Duas decisões de arquitetura, ambas tomadas explicitamente pelo
+  usuário (não inventadas)**, depois de uma investigação que encontrou
+  `App\Console\Commands\NotificarProntidaoSemanalCommand` (Ciclo 16, A.4)
+  como o ÚNICO precedente real de "digest periódico" já em produção:
+  1. **Cadência**: SEMANAL, mesmo dia/horário do Digest de Prontidão
+     (segunda-feira 08:00 — sem `->timezone()` explícito, mesmo padrão
+     UTC de TODOS os comandos já agendados em `Kernel.php`, nenhuma
+     exceção criada) — nunca uma segunda convenção de horário no
+     projeto. As 2 execuções (`prontidao:notificar-semanal`/
+     `engenharia:notificar-pendencias-grd`) não colidem entre si —
+     Commands independentes, cada um com seu próprio `Cache::lock()` por
+     obra.
+  2. **Canais**: só `database`+`broadcast`, IGUAL ao Digest de Prontidão
+     — a própria `ProntidaoSemanalNotification` já documentava essa
+     convenção do projeto ("evento recorrente pra múltiplos usuários da
+     obra, nunca os canais externos reservados a alertas raros e
+     pessoais"). Os Alertas A/B imediatos continuam sendo os ÚNICOS
+     responsáveis por mail/WhatsApp na GRD — `GrdPendenciasDigestNotification`
+     não implementa `toMail()`/`toWhatsApp()`, não usa
+     `GrdLedgerMailChannel`/`GrdLedgerZApiChannel`, e **nunca toca**
+     `App\Models\GrdAlertaEntrega`. Essa decisão eliminou de vez o
+     problema de schema encontrado na investigação: `grd_alerta_entregas`
+     tem `documento_engenharia_id`/`revisao_id` **NOT NULL** — identidade
+     de 1 evento por 1 documento/revisão, incompatível com um digest
+     agregado por obra inteira sem nenhum documento/revisão específico.
+     **Zero migration nesta etapa** — nem alteração em
+     `grd_alerta_entregas`, nem tabela nova.
+- **`App\Console\Commands\NotificarPendenciasGedCommand`
+  (`engenharia:notificar-pendencias-grd`)**: cópia estrutural deliberada
+  de `NotificarProntidaoSemanalCommand` — `Tenant::query()->each()` →
+  `TenantContext::actingAs()` (tenant-safe sem depender de usuário
+  autenticado, mesma lição do ACHADO C da 18.5.6.HARDENING) → obras do
+  tenant, isolamento de falha por obra (try/catch, `report($e)`, nunca
+  derruba as demais). Idempotência por ano-semana
+  (`Carbon::now()->format('oW')`): `Cache::lock()` (30s, evita 2
+  execuções concorrentes da mesma obra) + `Cache::put()` (marcador "já
+  enviado", TTL 14 dias, só gravado DEPOIS de `Notification::send()`
+  retornar sem exceção — uma falha no meio nunca marca a semana como
+  entregue). Destinatários: MESMA composição de
+  `AlertaDistribuicaoGrd::usuariosComPermissaoNaObra()` — `$obra->
+  users()->where('ativo', true)->filter(temPermissaoNaObra($obra,
+  'engenharia.pacotes', 'ver'))`, resolvida do zero a cada execução
+  (nunca cacheada). Sem pendência (`ResumoDigestPendenciasGed::
+  temPendencias()` false) → zero digest, nunca "Tudo certo" (decisão
+  explícita do pedido — evitar ruído).
+- **`App\Notifications\GrdPendenciasDigestNotification`**: título
+  "Pendências GED — {obra}", mensagem só com as cláusulas cujo total é >
+  0 (uma obra pode ter só obsoletas OU só candidatos), 2 links separados
+  no payload (`link_obsoletas`/`link_candidatos`, cada um `null` quando
+  aquela categoria está zerada) além do link genérico pra tela de GRDs —
+  nunca lista as distribuições/candidatos individuais (só contagens).
+- **1 digest por obra+usuário+execução, nunca por Documento/cópia/
+  candidato** — `Notification::send($destinatarios, new
+  GrdPendenciasDigestNotification(...))` já entrega 1 linha por usuário
+  de graça (mesmo mecanismo do Digest de Prontidão); um usuário com
+  acesso a 2 obras recebe 2 Notifications distintas (uma por obra, cada
+  uma com seu próprio `obra_id`/contagens) — nunca uma mensagem
+  combinando o tenant inteiro.
+- **Scheduler** (`Kernel.php`): registrado logo depois de
+  `prontidao:notificar-semanal`, mesma linha (`weeklyOn(1, '08:00')->
+  withoutOverlapping()`) — sem `onOneServer()` (mesma justificativa já
+  documentada pro digest de prontidão: sem evidência de deployment
+  multi-servidor no projeto).
+- **Teste crítico (roteiro do pedido, remapeado pra granularidade
+  SEMANAL — a cadência aprovada não é diária)**: `GrdDigestTest::
+  test_ae_fluxo_critico_completo` percorre 4 semanas com o MESMO
+  documento — semana 1 (obsoletas=2, R2 ainda não liberada — reexecutar
+  na MESMA semana depois de liberar R2 não duplica), semana 2
+  (obsoletas=1 continua, candidatos=1 aparece), semana 3 (recolhimento
+  parcial de R1 + entrega de R2 pro mesmo destinatário — obsoletas cai
+  pra 1 unidade, candidatos zera), semana 4 (zero pendência, zero novo
+  digest) — confirmando que os digests anteriores nunca são reescritos
+  nem duplicados.
+- **Achado de teste, não de produção — `Notification::fake()` bloqueia
+  escrita real em `notifications`**: os testes que precisam inspecionar
+  uma linha PERSISTIDA (nasce não lida / `markAsRead()` / conteúdo
+  imutável do digest histórico) usam a MESMA técnica já estabelecida em
+  `GrdNotificacaoTest::test_y_marcar_como_lida_preserva_notification_historica`
+  — construir a Notification manualmente e chamar `(new
+  \Illuminate\Notifications\Channels\DatabaseChannel())->send($user,
+  $notification)` DIRETO (nunca `Notification::send()`/rodar o Command
+  inteiro, que passariam por `via()` incluindo `broadcast` — tentaria
+  alcançar o Reverb de verdade, indisponível no container de teste).
+- **Achado de teste — `assertNothingSent()` genérico é falso negativo
+  quando o cenário de fixture também cria uma revisão nova**: criar R2
+  dentro de um cenário de teste (`cenarioObsoleta()`) já dispara o
+  Alerta A imediato de verdade (`DocumentoEngenhariaRevisaoObserver` →
+  `AlertaDistribuicaoGrd::dispararCopiasObsoletas()`, via
+  `DB::afterCommit()`) — legítimo e esperado, independente do digest.
+  Testes que precisam confirmar "o digest não enviou nada" usam
+  `Notification::assertNotSentTo($user, GrdPendenciasDigestNotification::class)`,
+  nunca `assertNothingSent()` sem qualificação, quando o cenário de setup
+  também mexe em revisão/liberação.
+- **Não implementado nesta fase** (fora de escopo, por decisão explícita
+  do usuário): mail/WhatsApp no digest, qualquer ledger novo, alteração
+  em `grd_alerta_entregas`, `--obra=`/`--force` no Command (nenhum
+  precedente real que justificasse), reabertura/edição de um digest já
+  enviado.
+- Testes: `tests/Feature/GrdDigestTest.php` (30 testes — presença/
+  ausência do digest, agregação de quantidades/destinatários,
+  NaoLocalizado, recolhimento total, liberação controlando candidatos,
+  destinatário inativo nos 2 sentidos, permissão/ativo/cross-obra/cross-
+  tenant, usuário com 2 obras, idempotência 2x/10x/semana seguinte,
+  histórico não-lido/imutável, payload database, confirmação de canais
+  só database+broadcast, falha isolada por obra, performance com 8
+  obras, zero alteração de domínio, fluxo crítico de 4 semanas,
+  registro no Scheduler). Regressão: `GrdNotificacaoTest`/
+  `GrdDistribuicaoOperacionalTest`/`GrdPageTest`/`GrdDominioTest`/
+  `GrdPdfTest`/`TenantIsolationTest` (265 passed), `NotificarProntidaoSemanalCommandTest`/
+  `ProntidaoSemanalNotificationTest`/`ZApiChannelTest`/
+  `BoasVindasNotificationTest`/`ReportEmissaoNotificacaoTest`/
+  `RevisaoLiberacaoTest`/`ImportarDocumentosEngenhariaTest`/
+  `DocumentoEngenhariaProntidaoOperacionalTest`/
+  `DocumentoEngenhariaProntidaoTest` (146 passed) — zero regressão em
+  nenhuma. Suíte completa (full suite solo): **2445 passed / 6 skipped /
+  3 failed / 6881 assertions** (de 2415/6/3/6774 antes desta etapa —
+  delta exato de +30 testes/+107 assertions, batendo com os 30 testes
+  novos de `GrdDigestTest`. As mesmas 3 falhas pré-existentes e sem
+  relação: `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra comprovante/assinatura/QR Code ou qualquer outra
+  fase sem validação do usuário** (instrução explícita) — aguardando
+  aprovação desta etapa antes de continuar.
+
+## GRD — Comprovante de Entrega/Recolhimento (Ciclo 18, Etapa 18.5.8)
+
+- **Diferente do PDF histórico da GRD (18.5.3)**: aquele responde "o que
+  foi emitido/distribuído no todo, e qual é o estado atual de tudo?"
+  (documentos + destinatários + matriz completa + histórico de TODOS os
+  eventos). O comprovante desta etapa responde uma pergunta menor e mais
+  humana: "qual é o recibo de UMA entrega específica, ou de UM evento de
+  recolhimento específico?" — os dois nunca se confundem, os dois
+  continuam existindo lado a lado (`exportarPdfGrd()` intocado).
+- **Achado de investigação que definiu a arquitetura inteira — emissão ==
+  entrega, neste domínio**: não existe, em nenhum ponto do código
+  (Actions/models/migrations), um segundo fato de "confirmação de entrega
+  física" distinto da emissão da GRD. Evidência, não suposição: o próprio
+  docblock de `GrdDistribuicao` (18.5.1) já a descreve como "o fato
+  atômico 'este destinatário RECEBEU este item'"; o método já se chama
+  `quantidadeEntregue()`; `CandidatosNovaEntregaGrd` (18.5.1) já trata
+  "GRD Emitida" como sinônimo de "já recebeu" em toda sua lógica. Por
+  isso o Comprovante de Entrega é gerável DIRETAMENTE a partir dos
+  snapshots já congelados na emissão — nenhum novo fato precisou ser
+  criado, nenhuma pergunta em aberto (seção 3 do pedido não se aplicou:
+  a resposta já era inequívoca no domínio existente).
+- **Unidade do comprovante — 2 decisões de domínio**:
+  1. **Comprovante de Entrega = 1 `GrdDestinatario`** (nunca 1
+     `GrdDistribuicao` isolada) — representa TODOS os itens que aquele
+     destinatário recebeu naquela GRD. Um destinatário que recebeu 3
+     documentos na mesma GRD ganha 1 comprovante com 3 linhas, nunca 3
+     comprovantes separados — é assim que um recibo físico funciona (quem
+     recebe assina 1 vez por entrega, não 1 vez por papel). `GrdDestinatario.id`
+     (já ULID, já pertence a exatamente 1 Grd) é a identidade estável —
+     nenhuma chave composta nova, nenhum ID sequencial exposto.
+  2. **Comprovante de Recolhimento = 1 `GrdRecolhimento`** — cada evento
+     append-only (18.5.1, nunca editado/apagado) é reproduzido
+     EXATAMENTE como registrado, nunca o estado derivado
+     (`GrdDistribuicao::estado()`) no momento da geração. 3 eventos numa
+     mesma distribuição (Recolhido parcial → NãoLocalizado → Recolhido
+     final) geram 3 comprovantes distintos, cada um congelado no que
+     aquele evento específico disse — gerar o comprovante do evento 1
+     depois dos eventos 2/3 já terem acontecido continua mostrando
+     exatamente o que o evento 1 registrou.
+- **Persistido ou sob demanda — Alternativa A confirmada suficiente,
+  ZERO migration nesta etapa**: todos os fatos necessários já existem e
+  já são imutáveis (`GrdItem.*_snapshot`/`GrdDestinatario.*_snapshot`
+  congelados na emissão; `GrdDistribuicao.quantidade` nunca reescrita;
+  `GrdRecolhimento` append-only) — não há identidade pública nova a
+  criar, nenhum hash a persistir (ver abaixo), nenhuma necessidade do
+  comprovante "sobreviver a alterações externas" que os snapshots já
+  aprovados não resolvam sozinhos. `App\Support\Grd\
+  MontarDadosComprovanteEntrega`/`MontarDadosComprovanteRecolhimento`
+  (mesmo espírito de `MontarDadosPdfGrd`, 18.5.3) são serviços de LEITURA
+  pura — nenhuma entidade `Comprovante` foi criada.
+- **Geração 100% em memória, igual ao PDF 18.5.3** — `Pdf::loadView()` +
+  `response()->streamDownload()`, nenhuma biblioteca nova, **zero
+  interação com Storage** (confirmado por teste dedicado, `Storage::fake()`
+  + `assertEmpty(Storage::allFiles())`).
+- **Hash/integridade/assinatura/QR — investigado, não implementado**:
+  grep no projeto inteiro só encontrou hash pra 2 usos sem relação
+  (checksum de migração de arquivo em `MigrarRevisoesEngenhariaStoragePrivado`,
+  HMAC de webhook em `MercadoPagoWebhookController`) — nenhum precedente
+  de "hash de documento/comprovante" pra reaproveitar. Deliberadamente
+  **não implementado** nesta etapa (instrução explícita) — nunca vender
+  um SHA-256 de PDF regenerável como assinatura digital. Fica pra uma
+  etapa futura, só quando houver decisão de produto real sobre
+  assinatura/QR Code/certificado.
+- **Autorização**: mesma regra do PDF 18.5.3 — `engenharia.pacotes|ver`
+  (nunca `editar`), sempre obra atual + tenant atual
+  (`resolverGrdDestinatarioDaObraAtual()`/`resolverRecolhimentoDaObraAtual()`,
+  `whereHas(...->where('obra_id', $this->obraId))->findOrFail()` — ID de
+  outra obra/tenant vira `ModelNotFoundException`, mesmo padrão real já
+  usado em todo o resto do componente).
+- **Rascunho nunca tem comprovante de entrega** (`abort_unless($grd->
+  estaEmitida(), 404)`) — nenhum fato de entrega existe antes da emissão.
+  Comprovante de Recolhimento não precisa desse guard: um
+  `GrdRecolhimento` só pode existir sobre uma distribuição de uma GRD já
+  Emitida (`RegistrarRecolhimento` já bloqueia isso no domínio,
+  `GrdRecolhimentoInvalidoException` numa Rascunho) — a checagem seria
+  sempre verdadeira, código morto deliberadamente omitido.
+- **R2 nunca contamina o comprovante de R1**: `GrdItem.
+  documento_engenharia_revisao_id` aponta pra PK EXATA da revisão (já
+  garantido desde 18.5.1) — o comprovante nunca resolve `revisaoVigente()`
+  ao vivo, só lê `revisao_snapshot`. Alterar Documento/Destinatario ao
+  vivo depois da emissão nunca muda o texto do comprovante (snapshots).
+- **UI** (`grd-detalhe.blade.php`): "Comprovantes de Entrega" é uma seção
+  PRÓPRIA (1 botão por destinatário), separada da matriz principal —
+  decisão deliberada pra "não poluir a matriz" (instrução explícita do
+  pedido), já que a matriz é por (item×destinatário) e o comprovante é
+  por destinatário sozinho. "Comprovante" de recolhimento é um link
+  pequeno dentro do próprio item da lista de histórico já existente (não
+  é a matriz, é um sub-detalhe — adicionar ali não polui nada).
+- **Achado de teste, não de produção**: `response()->streamDownload()`
+  retornado de um método Livewire vira um "download effect"
+  (`Livewire\Features\SupportFileDownloads`) — a asserção correta em
+  teste é `assertFileDownloaded($filename)`, nunca `assertHeader()`/
+  `assertStatus()` cru sobre o retorno de `$component->call(...)` (que
+  checaria a resposta HTTP do request Livewire/AJAX em si, não o arquivo
+  — `Content-Type` apareceria como `application/json`, não
+  `application/pdf`). Mesmo cuidado vale pra qualquer teste futuro de
+  download via método Livewire no projeto.
+- Testes: `tests/Feature/GrdComprovanteTest.php` (27 testes — escopo
+  Rascunho×Emitida, autorização ver-basta/editar-desnecessário,
+  cross-obra/cross-tenant/contexto-de-obra-errado, todos os snapshots
+  (documento/descrição/revisão/destinatário/empresa/setor), destinatário
+  soft-deletado, usuário removido, R2 não contamina R1, quantidade
+  original vs. quantidade do evento, recolhimento parcial, múltiplos
+  eventos independentes, NãoLocalizado nunca vira Recolhido, ocorrido_em,
+  evento antigo acessível após eventos novos, MIME/nome de arquivo (via
+  `assertFileDownloaded`), zero mutação de domínio, zero storage,
+  performance com histórico grande (< 10 queries por comprovante,
+  independente do tamanho do histórico), isolamento por GRD, evento de
+  outra GRD nunca confundido, fluxo crítico completo de 12 passos da
+  seção 29 do pedido). Regressão: `GrdPdfTest`/`GrdDominioTest`/
+  `GrdPageTest`/`GrdDistribuicaoOperacionalTest`/`GrdNotificacaoTest`/
+  `GrdDigestTest`/`TenantIsolationTest` (292 passed),
+  `RevisaoLiberacaoTest`/`ImportarDocumentosEngenhariaTest`/
+  `DocumentoEngenhariaProntidaoOperacionalTest`/
+  `DocumentoEngenhariaProntidaoTest` (105 passed) — zero regressão.
+  Suíte completa (full suite solo): **2472 passed / 6 skipped / 3 failed
+  / 6958 assertions** (de 2445/6/3/6881 antes desta etapa — delta exato
+  de +27 testes/+77 assertions, batendo com os 27 testes novos de
+  `GrdComprovanteTest`. As mesmas 3 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra assinatura/QR Code/integração externa ou qualquer
+  outra fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa antes de continuar.
+
+## GRD — Aceite/Assinatura de Recebimento + QR Code de Verificação (Ciclo 18, Etapa 18.5.9)
+
+- **NÃO é assinatura digital ICP-Brasil, nem tem valor jurídico de
+  assinatura qualificada** — é uma assinatura manuscrita capturada em
+  tela (canvas) OU um aceite simples sem assinatura, com evidência de
+  quem/quando registrou. Todo texto voltado ao usuário (PDF, página
+  pública de verificação) afirma isso explicitamente. `assinatura_hash`
+  (SHA-256) é checksum de INTEGRIDADE do arquivo, nunca certificado.
+- **Achado de investigação que definiu a arquitetura**: `emissão == fato
+  de entrega` já estava confirmado sem ambiguidade desde a 18.5.8 (mesma
+  evidência: `quantidadeEntregue()`, docblock de `GrdDistribuicao`,
+  `CandidatosNovaEntregaGrd` tratando "Emitida" como "recebida") — por
+  isso o aceite é sempre associado a ENTREGA (unidade = `GrdDestinatario`,
+  mesma da 18.5.8), nunca a recolhimento nesta primeira versão (sem
+  requisito real pra isso — recolhimento é um evento interno de coleta,
+  não algo que o destinatário de campo assina).
+- **QR library já disponível — zero dependência nova**:
+  `bacon/bacon-qr-code` v3.1.1 (BSD-2-Clause) já está em `vendor/`,
+  puxado transitivamente por `laravel/fortify` (QR de 2FA) — mesma
+  técnica (`ImageRenderer`+`SvgImageBackEnd`) reaproveitada aqui, SVG
+  embutido inline no PDF via `{!! $qrSvg !!}` (DomPDF renderiza SVG
+  inline nativamente).
+- **Cardinalidade — decisão explícita do usuário, com garantia
+  ESTRUTURAL no banco (não só `exists()` na aplicação)**: no máximo 1
+  aceite ATIVO por `grd_destinatario_id`, histórico pode acumular vários
+  (invalidados nunca são apagados/alterados em conteúdo). Mecanismo:
+  coluna `ativo_unico_destinatario` (`STORED GENERATED`, `CASE WHEN
+  invalidado_em IS NULL THEN grd_destinatario_id ELSE NULL END`) +
+  `UNIQUE KEY` sobre ela — MySQL trata cada `NULL` como DISTINTO num
+  índice UNIQUE (múltiplos aceites invalidados coexistem livremente,
+  todos geram `NULL`), mas o SEGUNDO INSERT com `invalidado_em IS NULL`
+  pro MESMO destinatário colide de verdade (mesmo valor não-nulo) e é
+  REJEITADO pelo próprio banco, inclusive sob concorrência genuína —
+  **verificado empiricamente** (não só teorizado) contra o MySQL 8.0.32
+  real do projeto antes de escrever a migration, com scratch tables
+  descartadas depois. Correção de erro é SEMPRE um evento novo
+  (invalidar + registrar outro), nunca update destrutivo do aceite
+  errado — `App\Actions\Engenharia\InvalidarAceiteEntrega` só grava
+  `invalidado_em`/`invalidado_por`/`motivo_invalidacao` (`update()`
+  condicional atômico `WHERE invalidado_em IS NULL`, mesmo idioma de
+  `TratarInconsistenciaAvanco`) — conteúdo factual original
+  (nome/empresa/setor/tipo/assinatura/ocorrido_em) nunca muda.
+- **`grd_aceites_entrega`**: `grd_destinatario_id` é `restrictOnDelete()`
+  (mesma lição de evidência histórica já aplicada em toda a árvore GED/
+  Fotografia O). `tipo_aceite` (`App\Enums\TipoAceiteGrd`:
+  `Assinatura`|`SemAssinatura`) cobre o caso operacional real "recebido
+  por João, assinatura indisponível". `token` (48 chars aleatórios,
+  `Str::random()`, `UNIQUE`) é a identidade pública do QR — **nunca uma
+  signed/temporary URL do Laravel**: um QR impresso e arquivado
+  fisicamente numa GRD precisa continuar verificável anos depois, e uma
+  signed URL ficaria permanentemente inválida se `APP_KEY` rotacionar
+  (achado da investigação: `ClienteRelatorioPublicoController`, o
+  precedente mais próximo, usa `temporarySignedRoute` de 30 dias — bom
+  pra "compartilhar com o cliente por um tempo", errado pra "prova
+  permanente de entrega"). O token identifica O REGISTRO (a linha
+  histórica), nunca "o destinatário" — um aceite invalidado continua
+  resolvendo pelo seu próprio token antigo.
+- **Storage**: assinatura em PNG, disco `'local'` (privado, mesmo disco
+  de `AnexarRevisaoDocumento::DISCO`, 18.2), path 100% gerado pelo
+  sistema (`Str::random(26)`, nunca deriva de nome/dado do usuário —
+  nem existe "nome de arquivo" fornecido, a origem é um canvas). Limite
+  de 2MB decodificado, validação real de PNG via
+  `getimagesizefromstring()` (nunca confia só na extensão/mimetype
+  declarado pelo cliente). Atomicidade upload+banco mesma lição de
+  `AnexarRevisaoDocumento`: arquivo salvo ANTES da transação, compensado
+  (deletado) se o INSERT falhar por qualquer motivo — inclusive a
+  colisão da UNIQUE estrutural sob corrida. **Nunca vai pro disco
+  `public`, nunca tem endpoint de download direto** — só é lido
+  server-side e embutido em base64 dentro do PDF.
+- **Checksum de integridade — ativo, não decorativo**: `MontarDadosComprovanteEntrega`
+  recomputa o SHA-256 do arquivo a cada geração de comprovante e compara
+  contra `assinatura_hash` gravado na criação; divergência (arquivo
+  adulterado depois de salvo) NUNCA vira 500 — a imagem simplesmente não
+  é exibida e o PDF mostra "Integridade do arquivo de assinatura não
+  pôde ser confirmada". Ainda assim, nunca chamado de assinatura
+  digital/certificado — é só prova de que os bytes não mudaram desde o
+  registro.
+- **`App\Http\Controllers\GrdVerificacaoPublicaController`** (rota
+  pública `/verificar/grd/{token}`, SEM login, SEM middleware `signed`):
+  mesmo padrão arquitetural de `ClienteRelatorioPublicoController`
+  (resolve `tenant_id` via `DB::table()` cru, entra via
+  `TenantContext::actingAs()`) — única diferença é o mecanismo de
+  identidade (token persistido vs. signed URL), já justificada acima.
+  Superfície DELIBERADAMENTE mínima: obra, GRD, destinatário (snapshot),
+  recebedor, tipo, data/hora, status (válido/invalidado), e só os itens
+  efetivamente distribuídos A ESSE destinatário (nunca a lista completa
+  de itens da GRD, que poderia vazar o que OUTROS destinatários
+  receberam). Nunca expõe IDs internos, path de storage, ou qualquer
+  link de volta pro app — QR não é autorização, não oferece download/
+  editar/recolher/navegar. Aceite invalidado continua resolvendo (nunca
+  404) — mostra "Registro invalidado" claramente, preservando auditoria.
+- **UI** (`grd-detalhe.blade.php`): seção "Entregas e Aceites de
+  Recebimento" — 1 linha por destinatário (status + botão "Registrar
+  recebimento"/"Invalidar" + "Comprovante"), separada da matriz principal
+  (mesma decisão de "não poluir a matriz" já tomada na 18.5.8). Modal de
+  registro (`grd-aceite-modal.blade.php`) usa **Pointer Events**
+  (`pointerdown`/`pointermove`/`pointerup`/`pointerleave`) — unifica
+  mouse e touch numa única implementação, crítico pra coleta em tablet/
+  celular no campo (`touch-action: none` no canvas evita scroll da
+  página durante o traço). `x-data` fica no `.modal-content` (nunca só
+  no `.modal-body`) pra o botão "Confirmar" do `.modal-footer` conseguir
+  chamar os métodos Alpine do canvas.
+- **Achado de bug real, não de produção — `@php($var = expr)` logo após
+  `@foreach` e antes do primeiro elemento `wire:key`-ado quebra a
+  compilação Blade/Livewire**: a primeira versão de "Entregas e Aceites
+  de Recebimento" tinha `@foreach (...) @php($aceiteAtivo = ...) <tr
+  wire:key="...">` — compilava para `<?php($aceiteAtivo = ...)` **sem
+  `?>` de fechamento**, e todo o Blade a partir dali (inclusive `@if`/
+  `@endif`/`@endforeach` de blocos completamente não relacionados,
+  centenas de linhas depois no arquivo) parava de ser processado como
+  diretiva e virava texto cru — um erro de sintaxe PHP só aparecia bem
+  mais adiante, no `@endforeach` de um loop que nunca foi tocado.
+  Diagnosticado compilando o Blade puro fora do teste
+  (`app('blade.compiler')->compileString(...)`) e inspecionando a saída
+  linha a linha — a causa raiz (interação entre a extensão
+  `SupportCompiledWireKeys` do Livewire e o `@php(...)` de uma linha
+  posicionado como PRIMEIRA instrução de um loop, antes do elemento
+  `wire:key`) só ficou visível assim, nunca pela mensagem de erro em si
+  (que apontava um `@endforeach` completamente não relacionado).
+  Corrigido eliminando a variável intermediária — a expressão
+  `$this->aceitesAtivosDaGrdAberta->get($gd->id)` é chamada inline
+  direto onde precisa (a própria propriedade já é `#[Computed]`, cacheada
+  por request — chamar `->get()` várias vezes nunca reexecuta a query).
+  **Regra geral pro projeto**: evitar `@php(...)` de uma linha como
+  primeira instrução logo após `@foreach`/antes de um elemento
+  `wire:key`-ado — usar bloco `@php ... @endphp`, ou preferir expressão
+  inline, se aparecer de novo.
+- Testes: `tests/Feature/GrdAceiteTest.php` (38 testes — escopo Rascunho/
+  Emitida, autorização editar/ver, cross-obra/cross-tenant, nome do
+  recebedor livre, snapshots empresa/setor, R2 não contamina R1, aceite
+  com/sem assinatura, storage privado/path aleatório, checksum e
+  detecção de adulteração, dupla submissão + concorrência real via
+  UNIQUE estrutural, invalidar+novo aceite, usuário removido, destinatário
+  soft-deletado, PDF com/sem assinatura, QR gerado sem dado sensível,
+  endpoint público válido/404 seguro/sem vazamento cross-destinatário,
+  registro invalidado nunca 404, canvas touch-friendly, zero mutação de
+  domínio/prontidão/Restrição, performance do endpoint público, fluxo
+  crítico completo de 16 passos). `TenantIsolationTest` ganhou
+  `GrdAceiteEntrega` na cobertura já existente do domínio GRD. Regressão:
+  `GrdComprovanteTest`/`GrdPdfTest`/`GrdDominioTest`/`GrdPageTest`/
+  `GrdDistribuicaoOperacionalTest`/`GrdNotificacaoTest`/`GrdDigestTest`/
+  `TenantIsolationTest` (330 passed), `RevisaoLiberacaoTest`/
+  `ImportarDocumentosEngenhariaTest`/`DocumentoEngenhariaProntidaoOperacionalTest`/
+  `DocumentoEngenhariaProntidaoTest` (105 passed) — zero regressão.
+  Suíte completa (full suite solo): **2510 passed / 6 skipped / 3 failed
+  / 7060 assertions** (de 2472/6/3/6958 antes desta etapa — delta exato
+  de +38 testes/+102 assertions, batendo com os 38 testes novos de
+  `GrdAceiteTest` + a assertion nova em `TenantIsolationTest`. As mesmas
+  3 falhas pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`).
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita): assinatura digital ICP-Brasil/certificada, integração
+  DocuSign/Clicksign/Adobe Sign, aceite de recolhimento (modelado de
+  forma que poderia ser adicionado depois, mas não implementado).
+- **Não avançar pra assinatura digital/QR Code adicional/integração
+  externa ou qualquer outra fase sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta etapa antes de continuar.
+
+### 18.5.9.CORREÇÃO — blindagem estrutural da imutabilidade de `GrdAceiteEntrega`
+
+- **Achado C da auditoria adversarial final da 18.5.9, corrigido aqui**:
+  `GrdAceiteEntrega` não usa `SoftDeletes` e não tinha nenhum Observer —
+  `$aceite->delete()` (ou `->forceDelete()`, que no `Model` base do
+  Laravel sempre delega pra `delete()` mesmo sem `SoftDeletes` — API
+  real, confirmado lendo o framework) removia a linha FISICAMENTE do
+  banco, sem exceção nenhuma — apesar do próprio docblock do model já
+  afirmar "evidência histórica e imutável" desde a 18.5.9. **Provado
+  empiricamente na auditoria** (fora da suíte, revertido em transação):
+  criar um aceite ativo e chamar `->delete()` direto fazia a linha
+  desaparecer do banco em silêncio. Zero caminho de produção real
+  chamava isso (grep confirmou) — mas a garantia não era estrutural,
+  diferente de `Grd` (protegida por `GrdObserver` desde a
+  18.5.1.HARDENING).
+- **Correção — mesmo padrão exato de `GrdObserver`**: `App\Observers\
+  GrdAceiteEntregaObserver::deleting()` lança
+  `App\Exceptions\GrdAceiteImutavelException` incondicionalmente — um
+  único guard no evento `deleting` cobre as DUAS chamadas
+  (`Model::delete()` dispara `deleting` ANTES de `performDeleteOnModel()`;
+  `forceDelete()` sempre delega pra `delete()`, confirmado lendo
+  `vendor/laravel/framework/.../Model.php`). Registrado em
+  `AppServiceProvider::boot()` (`GrdAceiteEntrega::observe(
+  GrdAceiteEntregaObserver::class)`), mesma convenção explícita já usada
+  pros outros 4 Observers do projeto — nenhum auto-discovery mágico.
+- **Invalidar != deletar, sem exceção**: o guard bloqueia a exclusão
+  TANTO de um aceite ativo QUANTO de um já invalidado — um aceite
+  invalidado continua sendo evidência histórica (nome/motivo/data de
+  invalidação preservados pra sempre), só deixa de ser "o aceite ATIVO"
+  daquele destinatário. `InvalidarAceiteEntrega` continua sendo o ÚNICO
+  mecanismo de correção — registrar um novo aceite depois de invalidar o
+  errado nunca foi tocado nesta correção (cardinalidade/`ativo_unico_destinatario`/
+  update condicional atômico — tudo intacto, zero linha alterada).
+- **Nenhum SoftDeletes adicionado — decisão deliberada**: SoftDeletes só
+  trocaria "apagado fisicamente" por "sumiu das queries normais",
+  continuando a violar a regra de que o registro precisa permanecer
+  visível (como ativo ou invalidado) pra sempre. A correção é BLOQUEAR a
+  exclusão, não escondê-la.
+- **Zero migration, zero mudança de schema, zero mudança em QR/storage/
+  checksum/endpoint público/cardinalidade** — só um Observer + uma
+  exceção nova + registro em `AppServiceProvider`. Confirmado por testes
+  dedicados: arquivo de assinatura permanece byte-idêntico após uma
+  tentativa de exclusão bloqueada (hash nunca recalculado); QR de um
+  aceite ativo continua "Registro válido" e de um invalidado continua
+  "Registro invalidado" após a tentativa; isolamento cross-tenant
+  intacto; zero mutação em `Grd`/`GrdDistribuicao`/`Restricao`.
+- **Dívidas já conhecidas da 18.5.9, reconfirmadas e mantidas sem
+  alteração nesta microetapa** (fora de escopo, por instrução explícita):
+  - **B — `tipo_aceite=Assinatura` com `assinatura_path=NULL`**: o
+    schema tecnicamente permite (sem `CHECK` constraint), mas o único
+    writer real (`RegistrarAceiteEntrega::execute()`, confirmado por
+    grep — nenhum outro ponto do código cria `GrdAceiteEntrega`) sempre
+    rejeita essa combinação (`GrdAceiteInvalidoException` quando
+    `tipo===Assinatura` sem `assinaturaBase64`). Nenhum `CHECK`
+    constraint foi criado — dívida aceita, protegida na prática pelo
+    único escritor real.
+  - **D — página pública de verificação não mostra `motivo_invalidacao`**:
+    decisão deliberada, agora documentada explicitamente (não estava
+    antes): o motivo de invalidação pode conter texto interno sensível
+    (ex.: "funcionário assinou errado", detalhes operacionais) — a
+    página pública (`publico.grd-verificacao`, sem login) mostra só
+    status ("Registro válido"/"Registro invalidado") + data de
+    invalidação, nunca o motivo. O motivo continua visível internamente
+    (autenticado, via `GrdAceiteEntrega.motivo_invalidacao`) pra quem
+    tem `engenharia.pacotes|ver`.
+- Testes: `tests/Feature/GrdAceiteTest.php` ganhou 9 testes na seção
+  "ETAPA 18.5.9.CORREÇÃO" (38→47) — delete de aceite ativo bloqueado,
+  delete de aceite invalidado também bloqueado, `forceDelete()`
+  bloqueado (API real confirmada mesmo sem SoftDeletes), delete de A1
+  bloqueado mesmo depois de A2 existir, delete de A2 ativo bloqueado,
+  arquivo de assinatura byte-idêntico após tentativa, QR ativo/invalidado
+  continuam corretos após tentativa, isolamento cross-tenant intacto após
+  tentativa, zero mutação operacional após tentativa. Nenhum teste
+  existente foi enfraquecido ou removido. Regressão: `GrdAceiteTest`/
+  `GrdComprovanteTest`/`GrdPdfTest`/`GrdDominioTest`/`GrdPageTest`/
+  `GrdDistribuicaoOperacionalTest`/`GrdNotificacaoTest`/`GrdDigestTest`/
+  `TenantIsolationTest` (339 passed), `RevisaoLiberacaoTest`/
+  `DocumentoEngenhariaAtividadeTest`/`DocumentoEngenhariaProntidaoOperacionalTest`/
+  `DocumentoEngenhariaProntidaoTest`/`ImportarDocumentosEngenhariaTest`/
+  `DocumentosEngenhariaPageTest`/`PlanoSemanalTest`/`LookaheadTest`/
+  `RestricoesQuadroTest`/`CentralProntidaoQueryTest`/`CronogramaImportacaoTest`/
+  `DetectorInconsistenciasAvancoTest`/`ConclusaoAutomaticaAtividadesTest`
+  (480 passed) — zero regressão. Suíte completa (full suite solo):
+  **2519 passed / 6 skipped / 3 failed / 7090 assertions** (de
+  2510/6/3/7060 antes desta correção — delta exato de +9 testes/+30
+  assertions, batendo com os 9 testes novos. As mesmas 3 falhas
+  pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra assinatura externa/QR Code adicional/nova
+  funcionalidade ou qualquer outra fase sem validação do usuário**
+  (instrução explícita) — aguardando auditoria/fechamento global do
+  Ciclo 18.
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:
@@ -3132,6 +5153,20 @@ ReportComentario (só em reports emitidos). Reaproveita
 
 **YOU MUST** manter `tests/Feature/TenantIsolationTest.php` passando.
 Rode `php artisan test` antes de considerar qualquer tarefa concluída.
+
+- **Cuidado com `now()->addDays(N)` combinado com `now()->startOfWeek()`
+  no mesmo teste**: se "hoje" cai num sábado/domingo no momento em que a
+  suíte roda, `+N dias` pode empurrar a data pra semana CIVIL seguinte
+  enquanto `startOfWeek()`/`endOfWeek()` continuam apontando pra semana
+  atual — um teste que parecia estável (`DocumentoEngenhariaProntidaoOperacionalTest::
+  test_e_documento_liberado_permite_compromisso`/`test_w_performance_plano_semanal_n_30`,
+  achado numa microauditoria de regressão) só falha nos 2 dias do
+  fim de semana, prova matemática/empírica feita variando
+  `Carbon::setTestNow()` por dia da semana. Corrigido nesses 2 testes
+  travando o relógio numa segunda-feira fixa (`Carbon::setTestNow()` +
+  `finally` de limpeza) — nunca alterando produção. Ao escrever um teste
+  novo com fixture relativa a `now()` E uma janela de "semana atual" no
+  mesmo cenário, considerar travar o relógio desde o início.
 
 ## Infraestrutura de release (Fase 1 do roadmap de maturidade SaaS)
 

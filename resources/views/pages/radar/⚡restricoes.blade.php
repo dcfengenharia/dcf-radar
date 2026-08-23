@@ -1594,11 +1594,20 @@ new class extends Component {
                 $tendenciaImp = $detalhe['tendenciaImportacaoAtual'];
                 $okChk     = collect($checklist)->where('concluido', true)->count();
                 $totalChk  = collect($checklist)->count();
-                $temBloq   = $at->restricoes->filter(fn($r) =>
-                    in_array($r->status->value ?? $r->status, ['aberta','em_tratamento','aguardando_terceiros'])
-                    && $r->bloqueante
-                )->count() > 0;
-                $atividadePronta = !$temBloq && ($totalChk === 0 || $okChk >= $totalChk);
+                // Ciclo 18, Etapa 18.4.CORREÇÃO.HARDENING — deixou de
+                // reimplementar a regra manualmente (restrições+checklist,
+                // sem GED) e passou a delegar 100% à fonte canônica única
+                // (Atividade::estaPronta(), que já considera Documento de
+                // Engenharia vinculado e não liberado — achado B da
+                // auditoria adversarial da 18.4.CORREÇÃO: este popup podia
+                // afirmar "pode ser comprometida no Plano Semanal" pra uma
+                // atividade que o Plano Semanal já rejeitava corretamente).
+                // 1 única query por abertura de popup (uma atividade só,
+                // nunca um loop) — mesmo custo já aceito no popup do
+                // Lookahead. $okChk/$totalChk continuam existindo só como
+                // dado explicativo do checklist (badge/barra de progresso
+                // mais abaixo), nunca mais como fonte decisória.
+                $atividadePronta = $at->estaPronta();
             @endphp
             <div class="modal-header bg-dark text-white">
                 <div class="flex-grow-1">

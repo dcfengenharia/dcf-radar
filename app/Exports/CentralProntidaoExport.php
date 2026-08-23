@@ -43,6 +43,7 @@ class CentralProntidaoExport implements WithMultipleSheets
             $this->folhaPlanoAcao(),
             $this->folhaSuprimentos(),
             $this->folhaEngenharia(),
+            $this->folhaDocumentosEngenhariaBloqueantes(),
         ];
     }
 
@@ -205,6 +206,33 @@ class CentralProntidaoExport implements WithMultipleSheets
         }
 
         return $this->folha('Engenharia', ['Atividade', 'Código', 'Emitido', 'Atrasado'], $linhas);
+    }
+
+    /**
+     * Ciclo 18, Etapa 18.4 — vínculo DIRETO (Ciclo 18.1) não liberado para
+     * construção, distinto da folha "Engenharia" acima (via Suprimento).
+     */
+    private function folhaDocumentosEngenhariaBloqueantes()
+    {
+        $linhas = [];
+        foreach ($this->views() as $v) {
+            foreach ($v->documentosBloqueantes as $d) {
+                $linhas[] = [
+                    $v->nome,
+                    $d->codigo ?? '—',
+                    $d->descricao ?? '—',
+                    $d->revisaoVigente ?? '—',
+                    $d->statusDocumental ?? '—',
+                    $d->motivo === 'sem_revisao' ? 'Ainda não emitido' : 'Revisão vigente não liberada para construção',
+                ];
+            }
+        }
+
+        return $this->folha(
+            'Documentos GED Bloqueantes',
+            ['Atividade', 'Código', 'Descrição', 'Revisão Vigente', 'Situação', 'Motivo'],
+            $linhas
+        );
     }
 
     /**

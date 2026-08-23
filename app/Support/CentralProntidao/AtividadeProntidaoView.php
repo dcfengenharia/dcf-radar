@@ -16,7 +16,8 @@ use Carbon\Carbon;
  * @param  string[]  $checklistPendentes  nomes dos itens de prontidão ainda não concluídos
  * @param  PlanoAcaoResumo[]  $planoAcoesAbertas
  * @param  SuprimentoAlerta[]  $suprimentos  só itens EmRisco/Atrasado (MVP)
- * @param  EngenhariaAlerta[]  $engenharia  só documentos atrasados/não emitidos (MVP)
+ * @param  EngenhariaAlerta[]  $engenharia  só documentos atrasados/não emitidos (MVP) — via ItemSuprimento, Ciclo 15
+ * @param  DocumentoEngenhariaBloqueio[]  $documentosBloqueantes  vínculo direto (Ciclo 18.1) não liberado pra construção — desde a 18.4.CORREÇÃO, a mesma condição já reprovaria `$pronta`; este campo é só pra EXPLICAR o motivo (Lista/detalhe/export), nunca decide `statusOperacional` sozinho
  * @param  string[]  $resumoMotivos  textos curtos prontos pra badge/UI futura
  */
 final readonly class AtividadeProntidaoView
@@ -41,6 +42,7 @@ final readonly class AtividadeProntidaoView
         public array $planoAcoesAbertas,
         public array $suprimentos,
         public array $engenharia,
+        public array $documentosBloqueantes,
         public array $resumoMotivos,
     ) {
     }

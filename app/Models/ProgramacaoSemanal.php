@@ -22,6 +22,7 @@ class ProgramacaoSemanal extends Model
         'semana_inicio',
         'semana_fim',
         'congelada_em',
+        'superseded_at',
         'criado_por',
         'status',
         'fechada_em',
@@ -34,6 +35,7 @@ class ProgramacaoSemanal extends Model
         'semana_inicio' => 'date',
         'semana_fim' => 'date',
         'congelada_em' => 'datetime',
+        'superseded_at' => 'datetime',
         'fechada_em' => 'datetime',
         'status' => StatusProgramacaoSemanal::class,
     ];
@@ -86,6 +88,38 @@ class ProgramacaoSemanal extends Model
     public function estaFechada(): bool
     {
         return $this->status === StatusProgramacaoSemanal::Fechada;
+    }
+
+    /**
+     * Ciclo 17, A.9.5 — resolve qual versão era VIGENTE num instante
+     * histórico qualquer (nunca "a mais recente hoje" — ver `ativaPara()`,
+     * que continua intocada e usada só pro fluxo ao vivo de comprometer/
+     * revisar). Uma versão está vigente em `$instante` quando já existia
+     * (`congelada_em <= $instante`) e ainda não tinha sido substituída por
+     * uma revisão (`superseded_at` nulo, ou só passou a valer DEPOIS de
+     * `$instante`). Cadeia de revisões é estritamente linear
+     * (`CriarRevisaoProgramacaoSemanal` só revisa a versão Fechada mais
+     * recente), então no máximo uma versão satisfaz os dois critérios ao
+     * mesmo tempo — `orderByDesc('versao')` é só uma garantia extra.
+     *
+     * Versões revisadas ANTES da coluna `superseded_at` existir (A.9.5)
+     * ficam com esse campo `null` pra sempre (sem backfill, mesmo
+     * princípio de toda fotografia do Ciclo 17) — pra elas, esta consulta
+     * degrada sozinha pra "versão mais recente cuja `congelada_em` já
+     * tinha passado", sem inventar um instante de substituição que
+     * ninguém registrou.
+     */
+    public static function vigenteEm(Work $obra, string $semanaInicio, $instante): ?self
+    {
+        return static::where('obra_id', $obra->id)
+            ->where('semana_inicio', $semanaInicio)
+            ->where('congelada_em', '<=', $instante)
+            ->where(function ($query) use ($instante) {
+                $query->whereNull('superseded_at')
+                    ->orWhere('superseded_at', '>', $instante);
+            })
+            ->orderByDesc('versao')
+            ->first();
     }
 
     /**

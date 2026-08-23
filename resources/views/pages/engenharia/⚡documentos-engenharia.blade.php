@@ -1,8 +1,10 @@
 <?php
 
 use App\Imports\DocumentoEngenhariaImporter;
+use App\Models\Atividade;
 use App\Models\Disciplina;
 use App\Models\DocumentoEngenharia;
+use App\Models\DocumentoEngenhariaAtividade;
 use App\Models\DocumentoEngenhariaRevisao;
 use App\Models\PacoteEngenharia;
 use App\Models\StatusDocumento;
@@ -62,6 +64,9 @@ new class extends Component {
   public string $revisaoNovaComentarios = '';
   public $revisaoNovaAnexo = null;
 
+  // ---- Vínculo com Atividades (Ciclo 18, Etapa 18.1) ----
+  public string $buscaAtividadeVincular = '';
+
   // ---- Modal importar planilha ----
   public bool $modalImportarAberto = false;
   public $arquivoImportacao = null;
@@ -72,6 +77,33 @@ new class extends Component {
   private function garantirPermissao(string $acao): void
   {
     abort_unless(Auth::user()->temPermissaoEmAlgumaObraDoTenant('engenharia.pacotes', $acao), 403);
+  }
+
+  /**
+   * Ciclo 18, Etapa 18.1.CORREÇÃO — três fronteiras nesta página: tenant
+   * (BelongsToTenant, automático), OBRA ATUAL do componente ($this->obraId)
+   * e permissão do usuário NESSA obra especificamente — nunca "em alguma
+   * obra do tenant" (garantirPermissao(), que o resto da página ainda usa
+   * de propósito — dívida arquitetural pré-existente, fora do escopo
+   * desta correção pontual). Usada só pelos fluxos de vínculo
+   * Documento↔Atividade, os únicos endereçados por esta correção.
+   */
+  private function garantirPermissaoNaObraAtual(string $acao): void
+  {
+    abort_unless(
+      Auth::user()?->temPermissaoNaObra($this->obraId, 'engenharia.pacotes', $acao),
+      403
+    );
+  }
+
+  /**
+   * Resolve o Documento SEMPRE escopado à obra atual do componente —
+   * nunca tenant-only. Documento de outra obra (mesmo tenant) ou
+   * inexistente vira 404, ANTES de qualquer mutação de estado Livewire.
+   */
+  private function resolverDocumentoDaObraAtual(string $documentoId): DocumentoEngenharia
+  {
+    return DocumentoEngenharia::where('obra_id', $this->obraId)->findOrFail($documentoId);
   }
 
   // =========================================================================
@@ -162,7 +194,14 @@ new class extends Component {
     }
 
     return $this->documentosQuery()
-      ->with(['disciplina:id,nome', 'latestRevisao.statusDocumento:id,nome,cor,conclusivo', 'pacote:id,nome'])
+      ->with([
+        'disciplina:id,nome',
+        'latestRevisao.statusDocumento:id,nome,cor,conclusivo',
+        // Ciclo 18, Etapa 18.3 — situação de liberação da revisão vigente,
+        // eager-load em massa (nunca N+1 por documento da Lista Mestra).
+        'latestRevisao.ultimaLiberacao',
+        'pacote:id,nome',
+      ])
       ->withCount(['revisoes', 'reprogramacoes'])
       ->orderBy('codigo')
       ->paginate($this->perPage);
@@ -592,6 +631,20 @@ new class extends Component {
   // MODAL REVISÕES
   // =========================================================================
 
+  /**
+   * Ciclo 18, Etapa 18.1.CORREÇÃO — defesa em profundidade: este computed
+   * roda passivamente a cada render (a Blade lê $this->documentoRevisoes
+   * dentro de um @if), então nunca deve LANÇAR em caso de estado
+   * incoerente (documentoRevisoesId manipulado direto via Livewire pra
+   * um Documento de outra obra) — isso quebraria o render da página
+   * inteira. Em vez disso, degrada pra `null` (a Blade já trata esse caso
+   * normalmente) tanto pra obra incoerente quanto pra permissão ausente
+   * — nenhum metadata do Documento de outra obra chega a ser montado.
+   * abrirRevisoes() é quem faz a validação "de verdade" (com abort/404),
+   * ANTES de setar documentoRevisoesId — este computed é só a segunda
+   * camada, pro caso de alguém pular abrirRevisoes() e mexer no estado
+   * diretamente.
+   */
   #[Computed]
   public function documentoRevisoes(): ?DocumentoEngenharia
   {
@@ -599,24 +652,61 @@ new class extends Component {
       return null;
     }
 
-    return DocumentoEngenharia::with([
-      'revisoes.criadoPor:id,first_name,last_name',
-      'revisoes.statusDocumento',
-      'disciplina',
-      'pacote',
-      'reprogramacoes.criadoPor:id,first_name,last_name',
-    ])->find($this->documentoRevisoesId);
+    if (!Auth::user()?->temPermissaoNaObra($this->obraId, 'engenharia.pacotes', 'ver')) {
+      return null;
+    }
+
+    return DocumentoEngenharia::where('obra_id', $this->obraId)
+      ->with([
+        'revisoes.criadoPor:id,first_name,last_name',
+        'revisoes.statusDocumento',
+        // Ciclo 18, Etapa 18.3 — histórico completo de liberação de CADA
+        // revisão (não só a vigente) pra exibir no modal.
+        'revisoes.historicoLiberacoes.alteradoPor:id,first_name,last_name',
+        // Cada linha da tabela de histórico chama estaLiberadaParaConstrucao()
+        // (via ultimaLiberacao, relação DIFERENTE de historicoLiberacoes
+        // acima) — sem isso, lazy load é disparado e quebra (preventLazyLoading ativo).
+        'revisoes.ultimaLiberacao.alteradoPor:id,first_name,last_name',
+        // Precisa vir eager-loaded (mesmo objeto de $doc->revisaoVigente())
+        // pra nunca disparar lazy-load (Model::preventLazyLoading ativo
+        // fora de produção) quando o Blade chama estaLiberadoParaConstrucao().
+        'latestRevisao.ultimaLiberacao.alteradoPor:id,first_name,last_name',
+        // Etapa 18.3.CORREÇÃO — achado durante a implementação: o
+        // cabeçalho do modal chama $doc->statusAtual() (linha 1674, "Status"
+        // acima do histórico de emissões), que lê $this->latestRevisao->
+        // statusDocumento — sem este eager-load, dispara lazy-load. Mesmo
+        // caminho que já era eager-loaded em documentos() (Lista Mestra).
+        'latestRevisao.statusDocumento',
+        'disciplina',
+        'pacote',
+        'reprogramacoes.criadoPor:id,first_name,last_name',
+      ])
+      ->find($this->documentoRevisoesId);
   }
 
+  /**
+   * Ordem obrigatória (Etapa 18.1.CORREÇÃO): 1) permissão NA OBRA ATUAL,
+   * 2) resolver o Documento NA OBRA ATUAL (404 se for de outra obra —
+   * mesmo tenant ou não), só DEPOIS 3) setar qualquer estado Livewire.
+   * Documento de outra obra nunca chega a ser "aberto" nem por um
+   * instante.
+   */
   public function abrirRevisoes(string $documentoId): void
   {
-    $this->documentoRevisoesId = $documentoId;
+    $this->garantirPermissaoNaObraAtual('ver');
+    $documento = $this->resolverDocumentoDaObraAtual($documentoId);
+
+    $this->documentoRevisoesId = $documento->id;
+    $this->buscaAtividadeVincular = '';
+    unset($this->atividadesVinculadas, $this->atividadesParaVincular);
     $this->resetFormRevisao();
   }
 
   public function fecharRevisoes(): void
   {
     $this->documentoRevisoesId = null;
+    $this->buscaAtividadeVincular = '';
+    unset($this->atividadesVinculadas, $this->atividadesParaVincular);
     $this->resetFormRevisao();
   }
 
@@ -652,35 +742,91 @@ new class extends Component {
 
     $documento = DocumentoEngenharia::findOrFail($this->documentoRevisoesId);
 
-    $this->transacaoSegura(function () use ($documento) {
-      $dados = [
-        'tenant_id' => $documento->tenant_id,
-        'revisao' => $this->revisaoNovaTexto,
-        'data_emissao' => $this->revisaoNovaData ?: null,
-        'status_documento_id' => $this->revisaoNovaStatusId,
-        'descricao' => $this->revisaoNovaDescricao,
-        'comentarios' => $this->revisaoNovaComentarios ?: null,
-        'criado_por_id' => Auth::id(),
-      ];
+    // Ciclo 18, Etapa 18.2 — extraído para App\Actions\Engenharia\
+    // AnexarRevisaoDocumento (storage privado + atomicidade arquivo↔banco
+    // com compensação). Deliberadamente NÃO usa transacaoSegura()/
+    // DB::transaction() aqui: envolver o storage físico numa transaction
+    // SQL reintroduziria a janela de "commit falhou depois do storage ter
+    // sucesso" já auditada no Ciclo 17 — a Action já tem sua própria
+    // atomicidade correta (arquivo primeiro, registro depois, compensação
+    // se o registro falhar).
+    try {
+      app(\App\Actions\Engenharia\AnexarRevisaoDocumento::class)->execute(
+        $documento,
+        [
+          'revisao' => $this->revisaoNovaTexto,
+          'data_emissao' => $this->revisaoNovaData ?: null,
+          'status_documento_id' => $this->revisaoNovaStatusId,
+          'descricao' => $this->revisaoNovaDescricao,
+          'comentarios' => $this->revisaoNovaComentarios ?: null,
+        ],
+        $this->revisaoNovaAnexo,
+        Auth::id()
+      );
+    } catch (\Throwable $e) {
+      report($e);
+      $this->dispatch('show-toast', message: 'Não foi possível concluir a ação. Tente novamente em instantes.', type: 'error');
 
-      if ($this->revisaoNovaAnexo) {
-        $dados['anexo_path'] = $this->revisaoNovaAnexo->store(
-          "documentos-engenharia/{$this->obraId}/{$documento->id}",
-          'public'
-        );
-        $dados['anexo_nome_original'] = $this->revisaoNovaAnexo->getClientOriginalName();
-      }
-
-      $documento->revisoes()->create($dados);
-    });
-
-    if ($this->transacaoSeguraFalhou()) {
       return;
     }
 
     $this->resetFormRevisao();
     unset($this->documentoRevisoes, $this->documentos, $this->totais);
     $this->dispatch('show-toast', message: 'Emissão adicionada.');
+  }
+
+  /**
+   * Ciclo 18, Etapa 18.3 — liberar/revogar sempre operam sobre a REVISÃO
+   * VIGENTE do Documento atualmente aberto no modal, nunca sobre um ID de
+   * revisão vindo de fora (impossível manipular pra atingir uma revisão
+   * antiga ou de outro documento). Reaproveita EXATAMENTE os helpers de
+   * contexto já corrigidos/auditados na Etapa 18.1.CORREÇÃO
+   * (garantirPermissaoNaObraAtual/resolverDocumentoDaObraAtual) — nunca
+   * o erro já corrigido de autorização tenant-wide.
+   */
+  public function liberarRevisaoVigente(): void
+  {
+    $this->garantirPermissaoNaObraAtual('editar');
+    $documento = $this->resolverDocumentoDaObraAtual($this->documentoRevisoesId);
+    $revisao = $documento->revisaoVigente();
+    abort_if($revisao === null, 404);
+
+    // Etapa 18.3.CORREÇÃO — $revisao já É a vigente fresca resolvida
+    // acima, então a guarda de domínio da Action nunca deveria disparar
+    // por este caminho; o catch cobre só a janela teórica de corrida
+    // (outra requisição criou uma revisão mais nova entre as duas linhas
+    // acima e a chamada da Action), nunca deixando exceção crua na tela.
+    try {
+      app(\App\Actions\Engenharia\AlterarLiberacaoRevisaoDocumento::class)->liberar($revisao, Auth::user());
+    } catch (\App\Exceptions\RevisaoDocumentoNaoVigenteException) {
+      unset($this->documentoRevisoes, $this->documentos);
+      $this->dispatch('show-toast', message: 'Esta revisão não é mais a vigente — a lista foi atualizada, tente novamente.', type: 'error');
+
+      return;
+    }
+
+    unset($this->documentoRevisoes, $this->documentos);
+    $this->dispatch('show-toast', message: 'Revisão liberada para construção.');
+  }
+
+  public function revogarLiberacaoRevisaoVigente(): void
+  {
+    $this->garantirPermissaoNaObraAtual('editar');
+    $documento = $this->resolverDocumentoDaObraAtual($this->documentoRevisoesId);
+    $revisao = $documento->revisaoVigente();
+    abort_if($revisao === null, 404);
+
+    try {
+      app(\App\Actions\Engenharia\AlterarLiberacaoRevisaoDocumento::class)->revogar($revisao, Auth::user());
+    } catch (\App\Exceptions\RevisaoDocumentoNaoVigenteException) {
+      unset($this->documentoRevisoes, $this->documentos);
+      $this->dispatch('show-toast', message: 'Esta revisão não é mais a vigente — a lista foi atualizada, tente novamente.', type: 'error');
+
+      return;
+    }
+
+    unset($this->documentoRevisoes, $this->documentos);
+    $this->dispatch('show-toast', message: 'Liberação para construção revogada.');
   }
 
   private function resetFormRevisao(): void
@@ -692,6 +838,154 @@ new class extends Component {
     $this->revisaoNovaComentarios = '';
     $this->revisaoNovaAnexo = null;
     $this->resetValidation();
+  }
+
+  // =========================================================================
+  // VÍNCULO COM ATIVIDADES (Ciclo 18, Etapa 18.1)
+  // =========================================================================
+
+  /**
+   * Atividades já vinculadas ao documento aberto no modal — 1 query em
+   * lote (nunca N+1: a listagem principal de documentos nunca carrega
+   * atividades, só este computed do modal de detalhe, sob demanda).
+   * Parte de `$this->documentoRevisoes` (já escopado à obra atual +
+   * permissão 'ver', com cache de #[Computed] — não gera query extra)
+   * em vez de ler `documentoRevisoesId` cru: se o Documento não resolveu
+   * (outra obra ou sem permissão), nunca chega a montar nenhuma atividade.
+   */
+  #[Computed]
+  public function atividadesVinculadas(): \Illuminate\Support\Collection
+  {
+    $documento = $this->documentoRevisoes;
+    if (!$documento) {
+      return collect();
+    }
+
+    return Atividade::query()
+      ->whereHas('documentosEngenharia', fn($q) => $q->where('documento_engenharia_id', $documento->id))
+      ->orderBy('codigo_cronograma')
+      ->get(['id', 'codigo_cronograma', 'nome', 'status', 'fora_do_cronograma']);
+  }
+
+  /**
+   * Resultado da busca de atividades pra vincular — parte de
+   * `$this->documentoRevisoes` (já escopado à obra atual + permissão
+   * 'ver'), nunca confia no `documentoRevisoesId` cru nem no que a UI
+   * mostra (vincularAtividade() revalida tudo de novo no servidor). Só
+   * busca com 2+ caracteres e limita a 20 resultados — nunca renderiza
+   * milhares de <option>. Atividades arquivadas (fora_do_cronograma) não
+   * entram na busca de NOVOS vínculos, mas um vínculo já existente com
+   * uma atividade que depois foi arquivada continua aparecendo em
+   * atividadesVinculadas().
+   */
+  #[Computed]
+  public function atividadesParaVincular(): \Illuminate\Support\Collection
+  {
+    $busca = trim($this->buscaAtividadeVincular);
+    if (mb_strlen($busca) < 2) {
+      return collect();
+    }
+
+    $documento = $this->documentoRevisoes;
+    if (!$documento) {
+      return collect();
+    }
+
+    $jaVinculadasIds = DocumentoEngenhariaAtividade::where('documento_engenharia_id', $documento->id)
+      ->pluck('atividade_id');
+
+    return Atividade::query()
+      ->where('obra_id', $documento->obra_id)
+      ->where('fora_do_cronograma', false)
+      ->whereNotIn('id', $jaVinculadasIds)
+      ->where(function ($q) use ($busca) {
+        $q->where('nome', 'like', "%{$busca}%")
+          ->orWhere('codigo_cronograma', 'like', "%{$busca}%");
+      })
+      ->orderBy('codigo_cronograma')
+      ->limit(20)
+      ->get(['id', 'codigo_cronograma', 'nome']);
+  }
+
+  public function updatedBuscaAtividadeVincular(): void
+  {
+    unset($this->atividadesParaVincular);
+  }
+
+  /**
+   * Ciclo 18, Etapa 18.1.CORREÇÃO — ordem obrigatória: 1) permissão
+   * 'editar' NA OBRA ATUAL do componente (nunca "em alguma obra do
+   * tenant"); 2) resolver o Documento NA OBRA ATUAL; 3) resolver a
+   * Atividade NA OBRA ATUAL (nunca só comparar atividade.obra_id ===
+   * documento.obra_id entre si — isso permitia Documento B + Atividade B
+   * com o componente contextualizado em A, achado da auditoria
+   * adversarial). Cross-tenant continua coberto de graça pelo global
+   * scope de BelongsToTenant nos dois `where('obra_id', ...)`.
+   * Atividade arquivada só bloqueia quando é um vínculo GENUINAMENTE
+   * NOVO — um clique duplo numa atividade já vinculada que foi arquivada
+   * nesse meio tempo continua idempotente (nunca quebra por trás de um
+   * duplo-clique).
+   */
+  public function vincularAtividade(string $atividadeId): void
+  {
+    $this->garantirPermissaoNaObraAtual('editar');
+
+    $documento = $this->resolverDocumentoDaObraAtual($this->documentoRevisoesId);
+    $atividade = Atividade::where('obra_id', $this->obraId)->findOrFail($atividadeId);
+
+    $jaVinculada = $documento->atividades()->where('atividade_id', $atividade->id)->exists();
+    if (!$jaVinculada) {
+      abort_unless(!$atividade->fora_do_cronograma, 403, 'Não é possível vincular uma atividade arquivada.');
+    }
+
+    $this->transacaoSegura(function () use ($documento, $atividade) {
+      // syncWithoutDetaching é idempotente por natureza — chamar duas
+      // vezes pra mesma atividade nunca cria uma segunda linha no pivô.
+      $documento->atividades()->syncWithoutDetaching([$atividade->id]);
+    });
+
+    if ($this->transacaoSeguraFalhou()) {
+      return;
+    }
+
+    $this->buscaAtividadeVincular = '';
+    unset($this->atividadesVinculadas, $this->atividadesParaVincular);
+    $this->dispatch('show-toast', message: 'Atividade vinculada.');
+  }
+
+  /**
+   * Ciclo 18, Etapa 18.1.CORREÇÃO — este era o ponto mais crítico da
+   * auditoria: a versão anterior não validava obra nenhuma aqui (nem a
+   * checagem mínima que vincularAtividade() já tinha), permitindo
+   * desvincular um par Documento×Atividade de OUTRA obra do tenant só
+   * manipulando `documentoRevisoesId` (propriedade pública Livewire).
+   * Ordem obrigatória: 1) permissão 'editar' NA OBRA ATUAL; 2) resolver
+   * Documento NA OBRA ATUAL; 3) resolver Atividade NA OBRA ATUAL; 4)
+   * confirmar que o vínculo realmente EXISTE entre os dois (404 se não —
+   * nunca um detach silencioso de "nada").
+   */
+  public function desvincularAtividade(string $atividadeId): void
+  {
+    $this->garantirPermissaoNaObraAtual('editar');
+
+    $documento = $this->resolverDocumentoDaObraAtual($this->documentoRevisoesId);
+    $atividade = Atividade::where('obra_id', $this->obraId)->findOrFail($atividadeId);
+
+    abort_unless(
+      $documento->atividades()->where('atividade_id', $atividade->id)->exists(),
+      404
+    );
+
+    $this->transacaoSegura(function () use ($documento, $atividade) {
+      $documento->atividades()->detach($atividade->id);
+    });
+
+    if ($this->transacaoSeguraFalhou()) {
+      return;
+    }
+
+    unset($this->atividadesVinculadas, $this->atividadesParaVincular);
+    $this->dispatch('show-toast', message: 'Atividade desvinculada.');
   }
 
   // =========================================================================
@@ -994,10 +1288,11 @@ new class extends Component {
                 <table class="table table-sm table-hover mb-0 align-middle">
                     <thead class="table-light">
                         <tr>
-                            <th style="width:15%">Código</th>
+                            <th style="width:13%">Código</th>
                             <th>Descrição</th>
-                            <th style="width:15%">Disciplina</th>
-                            <th style="width:12%">Status</th>
+                            <th style="width:12%">Disciplina</th>
+                            <th style="width:10%">Status</th>
+                            <th style="width:14%">Situação Documental</th>
                             <th style="width:12%">Previsão de Emissão</th>
                             <th class="text-center" style="width:8%">Emissões</th>
                             <th style="width:10%">Ações</th>
@@ -1019,6 +1314,21 @@ new class extends Component {
                                 <span class="badge" style="background:{{ $documento->latestRevisao->statusDocumento->cor ?? '#6c757d' }}; color:#fff">{{ $documento->latestRevisao->statusDocumento->nome }}</span>
                                 @else
                                 <span class="badge bg-label-secondary">Não Emitido</span>
+                                @endif
+                            </td>
+                            <td class="small">
+                                {{-- Ciclo 18, Etapa 18.3 — situação documental: revisão vigente +
+                                     liberação para construção, derivadas de $documento->revisaoVigente()/
+                                     estaLiberadoParaConstrucao() (nunca texto solto). --}}
+                                @if($documento->latestRevisao)
+                                <span class="fw-semibold">{{ $documento->latestRevisao->revisao }}</span> —
+                                @if($documento->estaLiberadoParaConstrucao())
+                                <span class="badge bg-label-success">Liberado p/ construção</span>
+                                @else
+                                <span class="badge bg-label-warning">Não liberado</span>
+                                @endif
+                                @else
+                                <span class="text-muted">Sem emissão</span>
                                 @endif
                             </td>
                             <td class="small {{ $documento->estaAtrasado() ? 'text-danger fw-semibold' : 'text-muted' }}">
@@ -1403,30 +1713,76 @@ new class extends Component {
                                     <th>Motivo da Emissão</th>
                                     <th>Comentários</th>
                                     <th style="width:70px">Anexo</th>
+                                    <th style="width:170px">Liberação p/ Construção</th>
                                 </tr>
                             </thead>
                             <tbody>
+                                @php $revisaoVigenteId = $doc->latestRevisao?->id; @endphp
                                 @forelse($doc->revisoes as $rev)
-                                <tr>
-                                    <td class="fw-semibold">{{ $rev->revisao }}</td>
+                                @php $ehVigente = $rev->id === $revisaoVigenteId; @endphp
+                                <tr wire:key="revisao-{{ $rev->id }}" class="{{ $ehVigente ? 'table-active' : '' }}">
+                                    <td class="fw-semibold">
+                                        {{ $rev->revisao }}
+                                        @if($ehVigente)
+                                        <span class="badge bg-label-primary ms-1" style="font-size:0.65rem">vigente</span>
+                                        @endif
+                                    </td>
                                     <td class="small text-muted">{{ $rev->data_emissao?->format('d/m/Y') ?? '—' }}</td>
                                     <td class="small">{{ $rev->descricao }}</td>
                                     <td class="small text-muted">{{ $rev->comentarios ?? '—' }}</td>
                                     <td class="text-center">
-                                        @if($rev->anexoUrl())
-                                        <a href="{{ $rev->anexoUrl() }}" target="_blank" rel="noopener" class="me-2" title="Visualizar {{ $rev->anexo_nome_original }}">
+                                        @if($rev->anexo_path)
+                                        {{-- Ciclo 18, Etapa 18.2 — storage privado: nunca mais uma URL pública
+                                             direta (Storage::url()); o navegador sempre passa pelo controller
+                                             autorizado, que decide inline (visualizar) vs attachment (baixar). --}}
+                                        <a href="{{ route('documentos-engenharia.revisoes.download', $rev) }}?inline=1" target="_blank" rel="noopener" class="me-2" title="Visualizar {{ $rev->anexo_nome_original }}">
                                             <i class="bx bxs-file-pdf text-danger fs-5"></i>
                                         </a>
-                                        <a href="{{ $rev->anexoUrl() }}" download="{{ $rev->anexo_nome_original }}" title="Baixar {{ $rev->anexo_nome_original }}">
+                                        <a href="{{ route('documentos-engenharia.revisoes.download', $rev) }}" title="Baixar {{ $rev->anexo_nome_original }}">
                                             <i class="bx bx-download fs-5"></i>
                                         </a>
                                         @else
                                         <span class="text-muted">—</span>
                                         @endif
                                     </td>
+                                    <td class="small">
+                                        {{-- Ciclo 18, Etapa 18.3 — badge de liberação, imutável pra revisões
+                                             antigas (histórico) e com ação só na revisão VIGENTE. --}}
+                                        @if($rev->estaLiberadaParaConstrucao())
+                                        <span class="badge bg-label-success d-block mb-1">
+                                            <i class="bx bx-check-circle me-1"></i>Liberada
+                                        </span>
+                                        <span class="text-muted" style="font-size:0.7rem">
+                                            @if($rev->liberadaParaConstrucaoPor())
+                                            {{ $rev->liberadaParaConstrucaoPor()->first_name }} {{ $rev->liberadaParaConstrucaoPor()->last_name }}
+                                            @else
+                                            Usuário removido
+                                            @endif
+                                            em {{ $rev->liberadaParaConstrucaoEm()?->format('d/m/Y H:i') }}
+                                        </span>
+                                        @else
+                                        <span class="badge bg-label-secondary">Não liberada</span>
+                                        @endif
+
+                                        @if($ehVigente && Auth::user()->temPermissaoNaObra($obraId, 'engenharia.pacotes', 'editar'))
+                                        <div class="mt-1">
+                                            @if($rev->estaLiberadaParaConstrucao())
+                                            <button type="button" class="btn btn-xs btn-outline-warning" style="font-size:0.7rem; padding:2px 6px"
+                                                    onclick="confirmarAcao(this, { mensagem: 'Revogar a liberação para construção desta revisão?', metodo: 'revogarLiberacaoRevisaoVigente', args: [], corBotao: 'warning', icone: 'bx-undo' })">
+                                                Revogar
+                                            </button>
+                                            @else
+                                            <button type="button" class="btn btn-xs btn-outline-success" style="font-size:0.7rem; padding:2px 6px"
+                                                    onclick="confirmarAcao(this, { mensagem: 'Liberar esta revisão para construção?', metodo: 'liberarRevisaoVigente', args: [], corBotao: 'success', icone: 'bx-check' })">
+                                                Liberar
+                                            </button>
+                                            @endif
+                                        </div>
+                                        @endif
+                                    </td>
                                 </tr>
                                 @empty
-                                <tr><td colspan="5" class="text-center text-muted py-3">Nenhuma emissão registrada ainda.</td></tr>
+                                <tr><td colspan="6" class="text-center text-muted py-3">Nenhuma emissão registrada ainda.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>
@@ -1457,6 +1813,73 @@ new class extends Component {
                         </table>
                     </div>
                     @endif
+
+                    {{-- Ciclo 18, Etapa 18.1 — Atividades vinculadas --}}
+                    <div class="border-top pt-3 mb-4">
+                        <h6 class="fw-bold mb-3">Atividades Vinculadas</h6>
+                        <div class="table-responsive mb-3">
+                            <table class="table table-sm align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width:110px">Código</th>
+                                        <th>Nome</th>
+                                        <th style="width:130px">Status</th>
+                                        @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('engenharia.pacotes', 'editar'))
+                                        <th style="width:110px"></th>
+                                        @endif
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse($this->atividadesVinculadas as $atv)
+                                    <tr wire:key="atividade-vinculada-{{ $atv->id }}">
+                                        <td class="small">{{ $atv->codigo_cronograma ?? '—' }}</td>
+                                        <td class="small">
+                                            {{ $atv->nome }}
+                                            @if($atv->fora_do_cronograma)
+                                            <span class="badge bg-label-secondary ms-1">Arquivada</span>
+                                            @endif
+                                        </td>
+                                        <td class="small text-muted">{{ $atv->status->value }}</td>
+                                        @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('engenharia.pacotes', 'editar'))
+                                        <td>
+                                            <button type="button" class="btn btn-sm btn-outline-danger"
+                                                    onclick="confirmarAcao(this, { mensagem: 'Desvincular esta atividade do documento?', metodo: 'desvincularAtividade', args: ['{{ $atv->id }}'], corBotao: 'danger', icone: 'bx-unlink' })">
+                                                Desvincular
+                                            </button>
+                                        </td>
+                                        @endif
+                                    </tr>
+                                    @empty
+                                    <tr><td colspan="4" class="text-center text-muted py-3">Nenhuma atividade vinculada ainda.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+
+                        @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('engenharia.pacotes', 'editar'))
+                        <div class="row g-2 align-items-start">
+                            <div class="col-md-6">
+                                <label class="form-label small">Vincular atividade</label>
+                                <input type="text" class="form-control form-control-sm" wire:model.live.debounce.400ms="buscaAtividadeVincular"
+                                       placeholder="Buscar por código ou nome (mín. 2 caracteres)...">
+                                @if(mb_strlen(trim($buscaAtividadeVincular)) >= 2)
+                                <div class="list-group mt-1" style="max-height:220px; overflow-y:auto;">
+                                    @forelse($this->atividadesParaVincular as $candidata)
+                                    <button type="button" wire:key="candidata-{{ $candidata->id }}"
+                                            class="list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1 px-2"
+                                            wire:click="vincularAtividade('{{ $candidata->id }}')">
+                                        <span class="small"><strong>{{ $candidata->codigo_cronograma ?? '—' }}</strong> — {{ $candidata->nome }}</span>
+                                        <i class="bx bx-plus text-primary"></i>
+                                    </button>
+                                    @empty
+                                    <span class="list-group-item small text-muted py-1 px-2">Nenhuma atividade encontrada.</span>
+                                    @endforelse
+                                </div>
+                                @endif
+                            </div>
+                        </div>
+                        @endif
+                    </div>
 
                     @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('engenharia.pacotes', 'editar'))
                     <div class="border-top pt-3">

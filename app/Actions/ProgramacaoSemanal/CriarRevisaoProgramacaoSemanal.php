@@ -38,12 +38,21 @@ class CriarRevisaoProgramacaoSemanal
         }
 
         return DB::transaction(function () use ($original) {
+            $agora = now();
+
+            // Ciclo 17, A.9.5 — carimba o instante em que ESTA versão
+            // (original) deixou de ser vigente, mesmo timestamp da
+            // congelada_em da revisão nova — nunca um `now()` separado,
+            // pra não abrir um micro-gap onde nenhuma das duas seria
+            // vigente. Ver App\Models\ProgramacaoSemanal::vigenteEm().
+            $original->update(['superseded_at' => $agora]);
+
             $revisao = ProgramacaoSemanal::create([
                 'tenant_id' => $original->tenant_id,
                 'obra_id' => $original->obra_id,
                 'semana_inicio' => $original->semana_inicio,
                 'semana_fim' => $original->semana_fim,
-                'congelada_em' => now(),
+                'congelada_em' => $agora,
                 'criado_por' => Auth::id(),
                 'status' => StatusProgramacaoSemanal::Aberta->value,
                 'versao' => $original->versao + 1,

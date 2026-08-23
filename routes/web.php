@@ -14,6 +14,15 @@ Route::get('/cliente/relatorio/{report}', [\App\Http\Controllers\ClienteRelatori
     ->middleware('signed')
     ->name('cliente.relatorio.publico');
 
+// GRD — verificação pública (sem login) de UM aceite de entrega via QR Code.
+// Diferente da rota acima: token aleatório PERSISTIDO (grd_aceites_entrega.
+// token), nunca signed/temporary URL — um QR impresso e arquivado
+// fisicamente precisa continuar verificável mesmo que APP_KEY rotacione
+// (ver docblock de GrdVerificacaoPublicaController). Sem middleware `signed`
+// de propósito.
+Route::get('/verificar/grd/{token}', [\App\Http\Controllers\GrdVerificacaoPublicaController::class, 'show'])
+    ->name('publico.grd-verificacao');
+
 // WEBHOOKS — o Mercado Pago bate aqui direto (visitante não-autenticado,
 // sem token CSRF); autenticidade é validada via HMAC no próprio
 // controller (ver App\Http\Middleware\VerifyCsrfToken::$except).
@@ -82,6 +91,12 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
         ->name('atividade-anexos.download');
     Route::delete('/atividade-anexos/{anexo}', [\App\Http\Controllers\AtividadeAnexoController::class, 'destroy'])
         ->name('atividade-anexos.destroy');
+
+    // REVISÕES DE DOCUMENTO DE ENGENHARIA (Ciclo 18, Etapa 18.2) —
+    // mesmo raciocínio dos anexos de atividade acima: fora do grupo
+    // obra.context, ID da revisão já basta pra resolver tenant/obra.
+    Route::get('/documentos-engenharia/revisoes/{revisao}/download', [\App\Http\Controllers\DocumentoEngenhariaRevisaoController::class, 'download'])
+        ->name('documentos-engenharia.revisoes.download');
 
     // cadastros
     Route::prefix('cadastros')->group(function () {
@@ -230,6 +245,12 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
 
             Route::get('/central-prontidao', fn() => view('app.radar.central-prontidao'))
                 ->name('radar.central-prontidao');
+
+            // Ciclo 17, A.9.6 — mesma permissão de restricoes.lookahead
+            // (InconsistenciaAvancoPolicy::viewAny), checada dentro do
+            // mount() do componente Livewire.
+            Route::get('/inconsistencias-avanco', fn() => view('app.radar.inconsistencias-avanco'))
+                ->name('radar.inconsistencias-avanco');
         });
 
     });
@@ -239,6 +260,11 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
     Route::prefix('engenharia')->group(function () {
         Route::get('/pacotes', fn() => view('app.engenharia.pacotes'))
             ->name('engenharia.pacotes');
+
+        // Ciclo 18, Etapa 18.5.2 — mesmo padrão de seletor de obra próprio
+        // de /pacotes (reaproveita a mesma permissão engenharia.pacotes).
+        Route::get('/grds', fn() => view('app.engenharia.grds'))
+            ->name('engenharia.grds');
     });
 
 });

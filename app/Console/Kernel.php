@@ -31,6 +31,14 @@ class Kernel extends ConsoleKernel
         // multi-servidor neste projeto (nenhum outro comando agendado usa).
         $schedule->command('prontidao:notificar-semanal')->weeklyOn(1, '08:00')->withoutOverlapping();
 
+        // Ciclo 18, Etapa 18.5.7 — Digest Semanal de Pendências GED. Mesmo
+        // dia/horário do Digest Semanal de Prontidão acima (decisão
+        // explícita do usuário: reaproveitar a cadência já estabelecida,
+        // nunca criar uma segunda convenção de horário) — as 2 execuções
+        // não colidem entre si (Commands independentes, cada um com seu
+        // próprio lock por obra via Cache::lock() dentro do Command).
+        $schedule->command('engenharia:notificar-pendencias-grd')->weeklyOn(1, '08:00')->withoutOverlapping();
+
         $schedule->command('backup:run --only-db')->dailyAt('03:00');
         $schedule->command('backup:clean')->dailyAt('04:00');
     }

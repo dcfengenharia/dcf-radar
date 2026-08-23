@@ -29,6 +29,19 @@ use RuntimeException;
  * ativaPara()` — a de `versao` mais alta); nunca insere numa
  * programação já Fechada — é preciso criar uma Revisão primeiro
  * (App\Actions\ProgramacaoSemanal\CriarRevisaoProgramacaoSemanal).
+ *
+ * Ciclo 18, Etapa 18.4.CORREÇÃO — defesa em profundidade: os dois únicos
+ * chamadores reais (⚡plano-semanal.blade.php::comprometerSelecionadas(),
+ * ⚡lookahead.blade.php::gerarPlanoSemanal()) já filtram `$atividades` por
+ * `Atividade::scopeProntas()` (a fonte canônica de prontidão, que desde
+ * esta correção considera GED) antes de chamar esta Action — mas esta
+ * Action nunca confiava só nisso (mesmo princípio já aplicado em
+ * `AlterarLiberacaoRevisaoDocumento::garantirRevisaoVigente()`). Por
+ * isso, `execute()` refiltra `$atividades` contra `scopeProntas()` de
+ * novo aqui, em 1 única query em lote — nunca confia que quem chamou já
+ * filtrou corretamente. Uma atividade não-pronta na coleção recebida é
+ * silenciosamente ignorada (nunca vira erro que interrompa o commit das
+ * demais, mesmo espírito de `insertOrIgnore` já usado abaixo).
  */
 class RegistrarComprometimentoSemanal
 {
@@ -59,6 +72,17 @@ class RegistrarComprometimentoSemanal
         } else {
             $header->touch();
         }
+
+        if ($atividades->isEmpty()) {
+            return $header;
+        }
+
+        $idsProntas = Atividade::query()
+            ->where('obra_id', $obra->id)
+            ->whereIn('id', $atividades->pluck('id'))
+            ->prontas()
+            ->pluck('id');
+        $atividades = $atividades->filter(fn (Atividade $a) => $idsProntas->contains($a->id))->values();
 
         if ($atividades->isEmpty()) {
             return $header;

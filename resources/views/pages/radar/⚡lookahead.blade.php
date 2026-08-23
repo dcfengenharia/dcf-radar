@@ -623,6 +623,20 @@ new class extends Component {
 
     $atividades = $query->get();
 
+    // Ciclo 18, Etapa 18.4.CORREÇÃO — "pronta" deixou de ser reimplementada
+    // inline aqui (restrições==0 + checklist, sem nenhuma noção de GED) e
+    // passou a ler o conjunto canônico de `Atividade::scopeProntas()` — a
+    // MESMA regra usada por ⚡plano-semanal.blade.php/Central de Prontidão/
+    // `Atividade::estaPronta()` (achado C da auditoria: esta reimplementação
+    // permitia a tabela/popup/"Gerar Plano Semanal" considerarem prontas
+    // atividades que a Central já classificava como bloqueadas por GED).
+    // 1 única query em lote sobre o conjunto já filtrado — nunca por linha.
+    $idsProntos = Atividade::query()
+      ->where('obra_id', $this->obra->id)
+      ->whereIn('id', $atividades->pluck('id'))
+      ->prontas()
+      ->pluck('id');
+
     // Importação de Avanço efetiva: a escolhida no filtro, ou por padrão a
     // mais recente elegível (ver importacaoTendenciaAtual() — já filtrada
     // por tipo Avanço/Ambos). Só busca snapshot quando existe alguma —
@@ -685,7 +699,7 @@ new class extends Component {
       ->addDays($this->janelaDias);
 
     return $atividades
-      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $tendenciaIdEfetivo, $hhPrevistoPorAtividade, $hhRealizadoPorAtividade, $totalHhProjeto, $avancoAtividade, $hoje, $fimJanela) {
+      ->map(function ($at) use ($totalItens, $itensOkMap, $snapshotsTendencia, $snapshotsBaseline, $tendenciaIdEfetivo, $hhPrevistoPorAtividade, $hhRealizadoPorAtividade, $totalHhProjeto, $avancoAtividade, $hoje, $fimJanela, $idsProntos) {
         if ($tendenciaIdEfetivo) {
           $snap = $snapshotsTendencia->get($at->id);
           $inicioTend = $snap?->inicio_planejado;
@@ -726,7 +740,7 @@ new class extends Component {
         }
 
         $itensOk = $totalItens > 0 ? (int) ($itensOkMap->get($at->id) ?? 0) : $totalItens;
-        $pronta = $at->restricoes_bloqueantes === 0 && ($totalItens === 0 || $itensOk >= $totalItens);
+        $pronta = $idsProntos->contains($at->id);
 
         $peso = $hhPrevistoPorAtividade->has($at->id) && $totalHhProjeto > 0
           ? round((float) $hhPrevistoPorAtividade->get($at->id) / $totalHhProjeto * 100, 1)
@@ -1401,6 +1415,11 @@ new class extends Component {
       'frenteTrabalho:id,nome',
       'disciplina:id,nome',
       'comentarios' => fn($q) => $q->with('autor:id,first_name,last_name')->latest(),
+      // Ciclo 18, Etapa 18.4.CORREÇÃO — pra exibir quais Documentos de
+      // Engenharia bloqueiam esta atividade (mesma fonte canônica de
+      // scopeProntas(), nunca uma leitura paralela).
+      'documentosEngenharia.latestRevisao.ultimaLiberacao',
+      'documentosEngenharia.latestRevisao.statusDocumento',
     ])->where('obra_id', $this->obra->id)->find($this->modalAtividadeId);
 
     if (!$at) {
@@ -1415,6 +1434,21 @@ new class extends Component {
         ->keyBy('item_prontidao_id')
       : collect();
 
+    // Ciclo 18, Etapa 18.4.CORREÇÃO — mesma fonte canônica de
+    // `DocumentoEngenharia::estaLiberadoParaConstrucao()`/`motivoLiberacao()`
+    // já usada por `Atividade::scopeProntas()`/Central de Prontidão — nunca
+    // uma terceira leitura paralela. Guarda cross-obra (mesma defesa da
+    // Central e do scope): documento de outra obra nunca aparece aqui.
+    $documentosBloqueantes = $at->documentosEngenharia
+      ->filter(fn ($documento) => $documento->obra_id === $at->obra_id)
+      ->reject(fn ($documento) => $documento->estaLiberadoParaConstrucao())
+      ->map(fn ($documento) => [
+        'codigo' => $documento->codigo,
+        'revisaoVigente' => $documento->revisaoVigente()?->revisao,
+        'motivo' => $documento->motivoLiberacao(),
+      ])
+      ->values();
+
     return [
       'atividade' => $at,
       'checklist' => $itens->map(
@@ -1426,6 +1460,7 @@ new class extends Component {
           'concluido_em' => $registros->get($item->id)?->concluido_em,
         ]
       ),
+      'documentosBloqueantes' => $documentosBloqueantes,
     ];
   }
 
@@ -2454,7 +2489,13 @@ new class extends Component {
                 $temBloq   = $at->restricoes->filter(fn ($r) =>
                     in_array($r->status->value ?? $r->status, ['aberta', 'em_tratamento', 'aguardando_terceiros']) && $r->bloqueante
                 )->count() > 0;
-                $atividadePronta = ! $temBloq && ($totalChk === 0 || $okChk >= $totalChk);
+                // Ciclo 18, Etapa 18.4.CORREÇÃO — deixou de reimplementar a
+                // regra (restrições+checklist, sem GED) e passou a chamar a
+                // fonte canônica única (Atividade::estaPronta(), que delega
+                // pra scopeProntas()) — 1 query extra, aceitável aqui: é uma
+                // única atividade (o popup nunca renderiza em loop).
+                $atividadePronta = $at->estaPronta();
+                $documentosBloqueantesPopup = $detalhe['documentosBloqueantes'];
                 $curvaAtividade = $this->modalCurvaAtividade;
                 // Ciclo 17, A.2 — snapshot da importação de tendência
                 // EFETIVA da página (mesma regra de atividades()), nunca
@@ -2729,6 +2770,32 @@ new class extends Component {
                     </div>
                     @endif
                 </div>
+
+                {{-- Ciclo 18, Etapa 18.4.CORREÇÃO — Documentos de Engenharia
+                     bloqueantes (vínculo direto, Ciclo 18.1). Mesma fonte
+                     canônica de scopeProntas()/Central de Prontidão — só
+                     leitura, nenhuma ação aqui (liberar/emitir/desvincular
+                     continuam exclusivamente na Lista de Documentos). --}}
+                @if ($documentosBloqueantesPopup->isNotEmpty())
+                <div class="border-top p-4">
+                    <h6 class="fw-bold mb-3 text-danger">
+                        <i class="bx bx-file-blank me-2"></i>Documentos de Engenharia Pendentes
+                        <span class="badge bg-label-danger ms-1">{{ $documentosBloqueantesPopup->count() }}</span>
+                    </h6>
+                    <ul class="mb-0 small">
+                        @foreach ($documentosBloqueantesPopup as $docBloq)
+                        <li>
+                            <strong>{{ $docBloq['codigo'] ?? '—' }}</strong>
+                            @if ($docBloq['revisaoVigente'])
+                            (Rev. {{ $docBloq['revisaoVigente'] }})
+                            @endif
+                            —
+                            {{ $docBloq['motivo'] === 'sem_revisao' ? 'ainda não emitido' : 'revisão vigente não liberada para construção' }}
+                        </li>
+                        @endforeach
+                    </ul>
+                </div>
+                @endif
 
                 <div class="border-top p-4">
                     <h6 class="fw-bold mb-3">

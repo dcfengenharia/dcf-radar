@@ -9,12 +9,20 @@ use App\Models\AtividadeAnexo;
 use App\Models\AtividadeItemProntidao;
 use App\Models\AtividadeSnapshot;
 use App\Models\Client;
+use App\Models\Destinatario;
 use App\Models\DocumentoEngenharia;
+use App\Models\DocumentoEngenhariaAtividade;
 use App\Models\DocumentoEngenhariaReprogramacao;
 use App\Models\Feedback;
 use App\Models\Feriado;
 use App\Models\FluxoSuprimento;
 use App\Models\Fornecedor;
+use App\Models\Grd;
+use App\Models\GrdDestinatario;
+use App\Models\GrdDistribuicao;
+use App\Models\GrdItem;
+use App\Models\GrdAlertaEntrega;
+use App\Models\GrdRecolhimento;
 use App\Models\CronogramaImportacao;
 use App\Models\ItemProntidao;
 use App\Models\ItemSuprimento;
@@ -25,6 +33,7 @@ use App\Models\ProgramacaoSemanalItem;
 use App\Models\Report;
 use App\Models\ReportIndicadorSemana;
 use App\Models\Restricao;
+use App\Models\RevisaoLiberacao;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
@@ -467,6 +476,64 @@ class TenantIsolationTest extends TestCase
         $this->assertNull(AtividadeAnexo::find($anexoB->id));
     }
 
+    /** Ciclo 18, Etapa 18.1.CORREÇÃO — prova estrutural do global scope no pivô Documento de Engenharia ↔ Atividade. */
+    public function test_documento_engenharia_atividade_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $atividadeB = Atividade::factory()->create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+        ]);
+        $documentoB = DocumentoEngenharia::create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+            'codigo' => 'DOC-TENANT-B',
+            'descricao' => 'Documento do tenant B',
+        ]);
+        // TenantContext::actingAs necessário: sem usuário autenticado nem
+        // contexto de tenant ativo, BelongsToTenant não estampa tenant_id
+        // no pivô (que só é estampado quando há TenantContext::currentId()
+        // resolvível — mesma lição já documentada no Ciclo 17, Score Etapa 4).
+        TenantContext::actingAs($tenantB, function () use ($documentoB, $atividadeB) {
+            $documentoB->atividades()->syncWithoutDetaching([$atividadeB->id]);
+        });
+        $vinculoB = DocumentoEngenhariaAtividade::where('documento_engenharia_id', $documentoB->id)
+            ->where('atividade_id', $atividadeB->id)
+            ->firstOrFail();
+
+        $this->actingAs($userA);
+
+        $this->assertNull(DocumentoEngenhariaAtividade::find($vinculoB->id));
+    }
+
+    /** Ciclo 18, Etapa 18.3 — prova estrutural do global scope no histórico de liberação de revisão. */
+    public function test_revisao_liberacao_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $eventoB = TenantContext::actingAs($tenantB, function () use ($tenantB) {
+            $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $documentoB = DocumentoEngenharia::create([
+                'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DOC-TENANT-B-LIB', 'descricao' => 'x',
+            ]);
+            $revisaoB = $documentoB->revisoes()->create(['tenant_id' => $tenantB->id, 'revisao' => 'R0', 'descricao' => 'x']);
+
+            return $revisaoB->historicoLiberacoes()->create([
+                'tenant_id' => $tenantB->id,
+                'liberada_para_construcao' => true,
+                'ocorrido_em' => now(),
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(RevisaoLiberacao::find($eventoB->id));
+    }
+
     /**
      * Ciclo 17, correção pós-QA (recriação de Linha de Base) — a checagem
      * nova de salvar() usa onlyTrashed()/withTrashed() pra localizar uma
@@ -529,5 +596,67 @@ class TenantIsolationTest extends TestCase
         $this->actingAs($userA);
 
         $this->assertNull(AtividadeSnapshot::find($snapshotB->id));
+    }
+
+    /**
+     * Ciclo 18, Etapa 18.5.1 — prova estrutural do global scope nas 6
+     * tabelas novas do domínio de GRD (Destinatario/Grd/GrdItem/
+     * GrdDestinatario/GrdDistribuicao/GrdRecolhimento).
+     */
+    public function test_grd_dominio_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $ids = TenantContext::actingAs($tenantB, function () use ($tenantB) {
+            $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $documentoB = DocumentoEngenharia::create([
+                'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DOC-TENANT-B-GRD', 'descricao' => 'x',
+            ]);
+            $revisaoB = $documentoB->revisoes()->create(['tenant_id' => $tenantB->id, 'revisao' => 'R0', 'descricao' => 'x']);
+
+            $destinatarioB = Destinatario::create([
+                'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Fulano B',
+            ]);
+            $grdB = Grd::create([
+                'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'status' => 'rascunho',
+            ]);
+            $itemB = GrdItem::create([
+                'tenant_id' => $tenantB->id, 'grd_id' => $grdB->id, 'documento_engenharia_revisao_id' => $revisaoB->id,
+            ]);
+            $grdDestinatarioB = GrdDestinatario::create([
+                'tenant_id' => $tenantB->id, 'grd_id' => $grdB->id, 'destinatario_id' => $destinatarioB->id,
+            ]);
+            $distribuicaoB = GrdDistribuicao::create([
+                'tenant_id' => $tenantB->id, 'grd_item_id' => $itemB->id, 'grd_destinatario_id' => $grdDestinatarioB->id, 'quantidade' => 1,
+            ]);
+            $recolhimentoB = GrdRecolhimento::create([
+                'tenant_id' => $tenantB->id, 'grd_distribuicao_id' => $distribuicaoB->id,
+                'resultado' => 'recolhido', 'quantidade' => 1, 'ocorrido_em' => now(),
+            ]);
+            $alertaEntregaB = GrdAlertaEntrega::create([
+                'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'documento_engenharia_id' => $documentoB->id,
+                'revisao_id' => $revisaoB->id, 'tipo_alerta' => 'copias_obsoletas',
+                'evento_usuario_id' => (string) \Illuminate\Support\Str::uuid(), 'canal' => 'mail', 'enviado_em' => now(),
+            ]);
+            $aceiteEntregaB = \App\Models\GrdAceiteEntrega::create([
+                'tenant_id' => $tenantB->id, 'grd_destinatario_id' => $grdDestinatarioB->id,
+                'nome_recebedor_snapshot' => 'Fulano B', 'tipo_aceite' => 'sem_assinatura',
+                'token' => \Illuminate\Support\Str::random(48), 'ocorrido_em' => now(), 'created_at' => now(),
+            ]);
+
+            return compact('destinatarioB', 'grdB', 'itemB', 'grdDestinatarioB', 'distribuicaoB', 'recolhimentoB', 'alertaEntregaB', 'aceiteEntregaB');
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(Destinatario::find($ids['destinatarioB']->id));
+        $this->assertNull(Grd::find($ids['grdB']->id));
+        $this->assertNull(GrdItem::find($ids['itemB']->id));
+        $this->assertNull(GrdDestinatario::find($ids['grdDestinatarioB']->id));
+        $this->assertNull(GrdDistribuicao::find($ids['distribuicaoB']->id));
+        $this->assertNull(GrdRecolhimento::find($ids['recolhimentoB']->id));
+        $this->assertNull(GrdAlertaEntrega::find($ids['alertaEntregaB']->id));
+        $this->assertNull(\App\Models\GrdAceiteEntrega::find($ids['aceiteEntregaB']->id));
     }
 }

@@ -194,33 +194,68 @@ class Atividade extends Model
             ->using(ItemSuprimentoAtividade::class);
     }
 
+    /** Ciclo 18, Etapa 18.1 — Documentos de Engenharia dos quais esta Atividade depende. */
+    public function documentosEngenharia(): BelongsToMany
+    {
+        return $this->belongsToMany(DocumentoEngenharia::class, 'documento_engenharia_atividades')
+            ->using(DocumentoEngenhariaAtividade::class);
+    }
+
     public function itensProntidaoAtividade(): HasMany
     {
         return $this->hasMany(AtividadeItemProntidao::class);
     }
 
+    /**
+     * Ciclo 18, Etapa 18.4.CORREÇÃO — deixou de reimplementar a regra
+     * manualmente (restrições + checklist) e passou a delegar 100% pra
+     * `scopeProntas()`, a ÚNICA definição de "pronta para comprometimento"
+     * de todo o projeto (Plano Semanal/Lookahead/Central/qualquer
+     * consumidor futuro) — nunca mais duas fontes que pudessem divergir
+     * (achado C da auditoria adversarial da 18.4: `estaPronta()` podia
+     * retornar `true` pra uma atividade com Documento de Engenharia
+     * bloqueante, porque a checagem de GED só existia na Central). Custo:
+     * 1 query (`exists()`) por chamada — aceitável, `estaPronta()` nunca é
+     * chamado em loop no código de produção (consultas em lote sempre
+     * usam `scopeProntas()` direto, nunca este método por atividade).
+     */
     public function estaPronta(): bool
     {
-        if ($this->restricoes()
-                ->where('bloqueante', true)
-                ->whereIn('status', ['aberta', 'em_tratamento', 'aguardando_terceiros'])
-                ->exists()) {
-            return false;
-        }
-
-        $totalItens = ItemProntidao::where('obra_id', $this->obra_id)->count();
-        if ($totalItens > 0) {
-            $ok = AtividadeItemProntidao::where('atividade_id', $this->id)
-                      ->where('concluido', true)
-                      ->count();
-            if ($ok < $totalItens) {
-                return false;
-            }
-        }
-
-        return true;
+        return static::query()->whereKey($this->id)->prontas()->exists();
     }
 
+    /**
+     * Ciclo 18, Etapa 18.4.CORREÇÃO — ÚNICA definição de "pronta para
+     * comprometimento/execução" de todo o projeto (Plano Semanal,
+     * Lookahead, Central de Prontidão, `estaPronta()`, e qualquer
+     * consumidor futuro) — nunca reimplementada em paralelo. Considera:
+     *
+     * 1. zero restrição bloqueante aberta (regra original, intocada);
+     * 2. checklist de prontidão (`itens_prontidao`) 100% concluído
+     *    (regra original, intocada);
+     * 3. NOVO — nenhum Documento de Engenharia vinculado DIRETAMENTE
+     *    (Ciclo 18.1, `documentosEngenharia()`) que esteja
+     *    operacionalmente NÃO liberado para construção
+     *    (`DocumentoEngenharia::scopeNaoLiberados()`, que por sua vez
+     *    reaproveita — nunca duplica — a mesma definição de revisão
+     *    vigente da 18.3.CORREÇÃO e de último evento de liberação da
+     *    18.3). Atividade sem NENHUM documento vinculado nunca é afetada
+     *    por esta cláusula (`whereDoesntHave` sobre um conjunto vazio é
+     *    sempre verdadeiro).
+     *
+     * Guarda cross-obra (defesa em profundidade, mesma proteção que já
+     * existia só na Central antes desta correção — agora também aqui, na
+     * fonte canônica): `whereColumn('documentos_engenharia.obra_id',
+     * 'atividades.obra_id')` garante que um pivô corrompido apontando pra
+     * Documento de OUTRA obra (mesmo tenant) nunca bloqueia. Tenant já
+     * garantido pelo global scope de `BelongsToTenant` (automático em
+     * `documentosEngenharia()`/`DocumentoEngenhariaRevisao`/
+     * `RevisaoLiberacao`).
+     *
+     * 100% SQL — `whereDoesntHave` vira um único `NOT EXISTS` correlato
+     * na mesma query, nunca uma query por atividade (sem N+1, mesmo em
+     * lote com centenas de atividades).
+     */
     public function scopeProntas(Builder $query): Builder
     {
         return $query
@@ -235,6 +270,10 @@ class Atividade extends Model
                     '(SELECT COUNT(*) FROM itens_prontidao ip WHERE ip.obra_id = atividades.obra_id) = ' .
                     '(SELECT COUNT(*) FROM atividade_itens_prontidao aip WHERE aip.atividade_id = atividades.id AND aip.concluido = 1)'
                 );
+            })
+            ->whereDoesntHave('documentosEngenharia', function (Builder $q) {
+                $q->whereColumn('documentos_engenharia.obra_id', 'atividades.obra_id')
+                    ->naoLiberados();
             });
     }
 
@@ -248,7 +287,10 @@ class Atividade extends Model
                 '0 < (SELECT COUNT(*) FROM itens_prontidao ip WHERE ip.obra_id = atividades.obra_id) AND ' .
                 '(SELECT COUNT(*) FROM itens_prontidao ip WHERE ip.obra_id = atividades.obra_id) > ' .
                 '(SELECT COUNT(*) FROM atividade_itens_prontidao aip WHERE aip.atividade_id = atividades.id AND aip.concluido = 1)'
-            );
+            )->orWhereHas('documentosEngenharia', function (Builder $q) {
+                $q->whereColumn('documentos_engenharia.obra_id', 'atividades.obra_id')
+                    ->naoLiberados();
+            });
         });
     }
 }

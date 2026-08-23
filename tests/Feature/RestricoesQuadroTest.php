@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Actions\Engenharia\AlterarLiberacaoRevisaoDocumento;
 use App\Enums\Papel;
 use App\Enums\StatusRestricao;
 use App\Enums\TipoCronogramaImportacao;
@@ -10,6 +11,8 @@ use App\Models\AtividadeItemProntidao;
 use App\Models\AtividadeSnapshot;
 use App\Models\CronogramaImportacao;
 use App\Models\Disciplina;
+use App\Models\DocumentoEngenharia;
+use App\Models\DocumentoEngenhariaRevisao;
 use App\Models\FrenteTrabalho;
 use App\Models\ItemProntidao;
 use App\Models\Restricao;
@@ -52,6 +55,241 @@ class RestricoesQuadroTest extends TestCase
             'tenant_id' => $this->obra->tenant_id,
             'obra_id' => $this->obra->id,
         ], $overrides));
+    }
+
+    private function criarDocumento(array $overrides = [], ?Work $obra = null): DocumentoEngenharia
+    {
+        $obra ??= $this->obra;
+
+        return DocumentoEngenharia::create(array_merge([
+            'tenant_id' => $obra->tenant_id,
+            'obra_id' => $obra->id,
+            'codigo' => 'DOC-' . uniqid(),
+            'descricao' => 'Documento de teste',
+        ], $overrides));
+    }
+
+    private function criarRevisao(DocumentoEngenharia $documento, string $texto = 'R1'): DocumentoEngenhariaRevisao
+    {
+        return $documento->revisoes()->create([
+            'tenant_id' => $documento->tenant_id,
+            'revisao' => $texto,
+            'descricao' => 'Emissão ' . $texto,
+        ]);
+    }
+
+    private function liberar(DocumentoEngenhariaRevisao $revisao): void
+    {
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($revisao, $this->user);
+    }
+
+    private function revogar(DocumentoEngenhariaRevisao $revisao): void
+    {
+        (new AlterarLiberacaoRevisaoDocumento())->revogar($revisao, $this->user);
+    }
+
+    // ===================== 18.4.CORREÇÃO.HARDENING: popup delega a estaPronta() =====================
+
+    /**
+     * Reprodução exata do achado B da auditoria: Documento explicitamente
+     * vinculado, com revisão vigente NÃO liberada, zero Restrição
+     * bloqueante, checklist vazio (satisfeito por definição) — o popup
+     * ANTES desta correção afirmava "pode ser comprometida no Plano
+     * Semanal" mesmo assim, porque calculava prontidão manualmente sem
+     * considerar GED.
+     */
+    public function test_popup_nao_afirma_pronta_quando_ged_bloqueante(): void
+    {
+        $atividade = $this->criarAtividade();
+        $documento = $this->criarDocumento();
+        $this->criarRevisao($documento, 'R1'); // não liberada
+        $atividade->documentosEngenharia()->attach($documento->id, ['tenant_id' => $this->obra->tenant_id]);
+
+        $this->assertFalse($atividade->fresh()->estaPronta(), 'Pré-condição: fonte canônica deve considerar não pronta.');
+
+        $html = $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->html();
+
+        $this->assertStringNotContainsString('Atividade pronta — pode ser comprometida no Plano Semanal', $html);
+        $this->assertStringContainsString('Pendências impedem o comprometimento no Plano Semanal', $html);
+        $this->assertStringContainsString('⚠ Com pendências', $html);
+    }
+
+    /**
+     * Controle positivo: liberando a MESMA revisão pelo mecanismo real
+     * (App\Actions\Engenharia\AlterarLiberacaoRevisaoDocumento), sem
+     * nenhuma outra pendência, o popup deve voltar a afirmar prontidão —
+     * prova que a correção delega de verdade, não apenas esconde o texto.
+     */
+    public function test_popup_afirma_pronta_quando_ged_liberado(): void
+    {
+        $atividade = $this->criarAtividade();
+        $documento = $this->criarDocumento();
+        $revisao = $this->criarRevisao($documento, 'R1');
+        $this->liberar($revisao);
+        $atividade->documentosEngenharia()->attach($documento->id, ['tenant_id' => $this->obra->tenant_id]);
+
+        $this->assertTrue($atividade->fresh()->estaPronta());
+
+        $html = $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->html();
+
+        $this->assertStringContainsString('Atividade pronta — pode ser comprometida no Plano Semanal', $html);
+        $this->assertStringContainsString('✅ Pronta', $html);
+    }
+
+    public function test_popup_nova_revisao_volta_a_bloquear_sem_cache_stale(): void
+    {
+        $atividade = $this->criarAtividade();
+        $documento = $this->criarDocumento();
+        $r1 = $this->criarRevisao($documento, 'R1');
+        $this->liberar($r1);
+        $atividade->documentosEngenharia()->attach($documento->id, ['tenant_id' => $this->obra->tenant_id]);
+
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Atividade pronta — pode ser comprometida no Plano Semanal');
+
+        $this->criarRevisao($documento, 'R2'); // nasce não liberada
+        $this->assertFalse($atividade->fresh()->estaPronta());
+
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Pendências impedem o comprometimento no Plano Semanal');
+
+        $r2 = $documento->fresh()->revisaoVigente();
+        $this->liberar($r2);
+        $this->assertTrue($atividade->fresh()->estaPronta());
+
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Atividade pronta — pode ser comprometida no Plano Semanal');
+    }
+
+    public function test_popup_restricao_bloqueante_normal_continua_funcionando(): void
+    {
+        $atividade = $this->criarAtividade();
+        $documento = $this->criarDocumento();
+        $revisao = $this->criarRevisao($documento, 'R1');
+        $this->liberar($revisao); // GED liberado
+        $atividade->documentosEngenharia()->attach($documento->id, ['tenant_id' => $this->obra->tenant_id]);
+
+        $restricao = Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'bloqueante' => true,
+            'status' => StatusRestricao::Aberta->value,
+        ]);
+
+        $this->assertFalse($atividade->fresh()->estaPronta());
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Pendências impedem o comprometimento no Plano Semanal');
+
+        $this->componente()
+            ->call('abrirModalResolucao', $restricao->id)
+            ->set('acaoTexto', 'Resolvida.')
+            ->call('resolver');
+
+        $this->assertTrue($atividade->fresh()->estaPronta());
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Atividade pronta — pode ser comprometida no Plano Semanal');
+    }
+
+    public function test_popup_checklist_pendente_bloqueia_e_completar_libera(): void
+    {
+        $atividade = $this->criarAtividade();
+        $documento = $this->criarDocumento();
+        $revisao = $this->criarRevisao($documento, 'R1');
+        $this->liberar($revisao);
+        $atividade->documentosEngenharia()->attach($documento->id, ['tenant_id' => $this->obra->tenant_id]);
+
+        $item = ItemProntidao::create(['obra_id' => $this->obra->id, 'nome' => 'Item obrigatório', 'ordem' => 0]);
+
+        $this->assertFalse($atividade->fresh()->estaPronta());
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Pendências impedem o comprometimento no Plano Semanal');
+
+        AtividadeItemProntidao::create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'item_prontidao_id' => $item->id,
+            'concluido' => true,
+        ]);
+
+        $this->assertTrue($atividade->fresh()->estaPronta());
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Atividade pronta — pode ser comprometida no Plano Semanal');
+    }
+
+    public function test_popup_sem_documento_continua_pronta(): void
+    {
+        $atividade = $this->criarAtividade();
+
+        $this->assertTrue($atividade->estaPronta());
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Atividade pronta — pode ser comprometida no Plano Semanal');
+    }
+
+    public function test_popup_cross_obra_pivot_corrompido_nao_bloqueia(): void
+    {
+        $atividade = $this->criarAtividade();
+        $obraB = Work::factory()->create(['tenant_id' => $this->obra->tenant_id]);
+        $documentoObraB = $this->criarDocumento([], $obraB);
+        $this->criarRevisao($documentoObraB, 'R1'); // não liberada
+
+        DB::table('documento_engenharia_atividades')->insert([
+            'id' => (string) \Illuminate\Support\Str::ulid(),
+            'tenant_id' => $this->obra->tenant_id,
+            'documento_engenharia_id' => $documentoObraB->id,
+            'atividade_id' => $atividade->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->assertTrue($atividade->fresh()->estaPronta(), 'Documento de outra obra nunca deve bloquear.');
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Atividade pronta — pode ser comprometida no Plano Semanal');
+    }
+
+    public function test_popup_soft_delete_restore_documento(): void
+    {
+        $atividade = $this->criarAtividade();
+        $documento = $this->criarDocumento();
+        $this->criarRevisao($documento, 'R1'); // não liberada
+        $atividade->documentosEngenharia()->attach($documento->id, ['tenant_id' => $this->obra->tenant_id]);
+
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Pendências impedem o comprometimento no Plano Semanal');
+
+        $documento->delete();
+        $this->assertTrue($atividade->fresh()->estaPronta());
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Atividade pronta — pode ser comprometida no Plano Semanal');
+
+        $documento->restore();
+        $this->assertFalse($atividade->fresh()->estaPronta());
+        $this->componente()->call('verAtividade', $atividade->id)
+            ->assertSee('Pendências impedem o comprometimento no Plano Semanal');
+    }
+
+    public function test_popup_abertura_gera_apenas_uma_query_de_prontidao(): void
+    {
+        $atividade = $this->criarAtividade();
+        $documento = $this->criarDocumento();
+        $this->criarRevisao($documento, 'R1');
+        $atividade->documentosEngenharia()->attach($documento->id, ['tenant_id' => $this->obra->tenant_id]);
+
+        $queries = 0;
+        $queriesProntas = 0;
+        DB::listen(function ($q) use (&$queries, &$queriesProntas) {
+            $queries++;
+            if (str_contains($q->sql, 'from `atividades`') && str_contains($q->sql, 'not exists')) {
+                $queriesProntas++;
+            }
+        });
+
+        $this->componente()->call('verAtividade', $atividade->id);
+
+        $this->assertEquals(1, $queriesProntas, "Esperava exatamente 1 query de scopeProntas() por abertura de popup, encontrou {$queriesProntas}.");
     }
 
     public function test_resolver_restricao_via_fluxo_completo_do_modal(): void

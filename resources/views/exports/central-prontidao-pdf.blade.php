@@ -209,5 +209,27 @@
     @else
     <p class="vazio">Nenhum documento de engenharia atrasado/não emitido.</p>
     @endif
+
+    <h4>Documentos GED Bloqueantes</h4>
+    @php $documentosBloqueantes = $views->flatMap->documentosBloqueantes; @endphp
+    @if ($documentosBloqueantes->isNotEmpty())
+    <table>
+        <thead><tr><th>Atividade</th><th>Código</th><th>Revisão Vigente</th><th>Motivo</th></tr></thead>
+        <tbody>
+            @foreach ($views as $v)
+            @foreach ($v->documentosBloqueantes as $d)
+            <tr>
+                <td>{{ $v->nome }}</td>
+                <td>{{ $d->codigo ?? '—' }}</td>
+                <td>{{ $d->revisaoVigente ?? '—' }}</td>
+                <td>{{ $d->motivo === 'sem_revisao' ? 'Ainda não emitido' : 'Revisão vigente não liberada' }}</td>
+            </tr>
+            @endforeach
+            @endforeach
+        </tbody>
+    </table>
+    @else
+    <p class="vazio">Nenhum documento de engenharia bloqueando liberação para construção.</p>
+    @endif
 </body>
 </html>

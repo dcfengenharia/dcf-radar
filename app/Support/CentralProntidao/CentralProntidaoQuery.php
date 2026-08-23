@@ -162,6 +162,14 @@ class CentralProntidaoQuery
                 'responsavel:id,first_name,last_name',
                 'itensSuprimento.atividades:id,inicio_planejado',
                 'itensSuprimento.documentosEngenharia',
+                // Ciclo 18, Etapa 18.4 — vínculo DIRETO Atividade<->Documento
+                // (Ciclo 18.1, pivô documento_engenharia_atividades), escopado
+                // só a esta Central (nunca eager-loaded globalmente em
+                // Atividade — Lookahead/importador não tocados). SoftDeletes
+                // de DocumentoEngenharia já exclui documento soft-deletado
+                // automaticamente (global scope da relação), sem código extra.
+                'documentosEngenharia.latestRevisao.ultimaLiberacao',
+                'documentosEngenharia.latestRevisao.statusDocumento',
             ])
             ->get();
     }
@@ -259,8 +267,41 @@ class CentralProntidaoQuery
             ->values()
             ->all();
 
+        // Ciclo 18, Etapa 18.4 — documentos vinculados DIRETAMENTE (Ciclo
+        // 18.1) e não liberados para construção. Fonte canônica ÚNICA:
+        // DocumentoEngenharia::estaLiberadoParaConstrucao()/motivoLiberacao()
+        // — nunca status/texto/data inferidos aqui (regra explícita da 18.4).
+        $documentosBloqueantes = $atividade->documentosEngenharia
+            // Defesa em profundidade (Ciclo 18.4): o pivô já é validado
+            // mesma-obra no momento da criação (vincularAtividade() em
+            // ⚡documentos-engenharia.blade.php), mas nunca confiar só nisso
+            // pra dado legado/corrompido — um Documento de outra obra
+            // (mesmo tenant) nunca pode bloquear a Atividade.
+            ->filter(fn ($documento) => $documento->obra_id === $atividade->obra_id)
+            ->reject(fn ($documento) => $documento->estaLiberadoParaConstrucao())
+            ->map(fn ($documento) => new DocumentoEngenhariaBloqueio(
+                documentoId: $documento->id,
+                codigo: $documento->codigo,
+                descricao: $documento->descricao,
+                revisaoVigente: $documento->revisaoVigente()?->revisao,
+                statusDocumental: $documento->statusAtual()?->nome,
+                motivo: $documento->motivoLiberacao(),
+            ))
+            ->values()
+            ->all();
+
         $concluida = $atividade->concluido_em !== null;
 
+        // Ciclo 18, Etapa 18.4.CORREÇÃO — `$pronta` (parâmetro, sempre vindo
+        // de `Atividade::scopeProntas()`) JÁ considera GED bloqueante desde
+        // esta correção — o ramo especial que a 18.4 adicionava aqui
+        // (`$documentosBloqueantes !== [] => NaoPronta`) virou redundante e
+        // foi removido: `! $pronta` já cobre GED, restrição bloqueante e
+        // checklist pendente com a MESMA regra usada por Plano Semanal/
+        // Lookahead/`estaPronta()`. `documentosBloqueantes` continua sendo
+        // calculado e exposto no DTO (Concluida também, ver `$concluida`
+        // abaixo) — é usado pra EXPLICAR o motivo na Lista/detalhe/export,
+        // nunca mais pra decidir `statusOperacional` por conta própria.
         $statusOperacional = match (true) {
             $concluida => StatusOperacionalProntidao::Concluida,
             ! $pronta => StatusOperacionalProntidao::NaoPronta,
@@ -289,6 +330,7 @@ class CentralProntidaoQuery
             planoAcoesAbertas: $planoAcoesResumo,
             suprimentos: $suprimentosAlerta,
             engenharia: $engenhariaAlerta,
+            documentosBloqueantes: $documentosBloqueantes,
             resumoMotivos: $this->montarResumoMotivos(
                 $statusOperacional,
                 $restricoesBloqueantes,
@@ -298,6 +340,7 @@ class CentralProntidaoQuery
                 $planoAcoesResumo,
                 $suprimentosAlerta,
                 $engenhariaAlerta,
+                $documentosBloqueantes,
             ),
         );
     }
@@ -393,6 +436,7 @@ class CentralProntidaoQuery
      * @param  PlanoAcaoResumo[]  $planoAcoes
      * @param  SuprimentoAlerta[]  $suprimentos
      * @param  EngenhariaAlerta[]  $engenharia
+     * @param  DocumentoEngenhariaBloqueio[]  $documentosBloqueantes
      * @return string[]
      */
     private function montarResumoMotivos(
@@ -404,6 +448,7 @@ class CentralProntidaoQuery
         array $planoAcoes,
         array $suprimentos,
         array $engenharia,
+        array $documentosBloqueantes,
     ): array {
         if ($status === StatusOperacionalProntidao::Concluida || $status === StatusOperacionalProntidao::Pronta) {
             return [];
@@ -413,6 +458,10 @@ class CentralProntidaoQuery
 
         if ($restricoesBloqueantes !== []) {
             $motivos[] = 'Restrição bloqueante (' . count($restricoesBloqueantes) . ')';
+        }
+
+        if ($documentosBloqueantes !== []) {
+            $motivos[] = 'Documento de engenharia não liberado (' . count($documentosBloqueantes) . ')';
         }
 
         if ($checklistTotal > 0 && $checklistConcluido < $checklistTotal) {
