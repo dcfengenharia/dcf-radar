@@ -5127,6 +5127,3591 @@ ReportComentario (só em reports emitidos). Reaproveita
   (instrução explícita) — aguardando auditoria/fechamento global do
   Ciclo 18.
 
+## Suprimentos Integrado ao Planejamento — Ciclo 19
+
+### Etapa 19.0 — auditoria do domínio + decisões de produto D1-D10
+
+- **Investigação read-only** (3 frentes paralelas) confirmou: o domínio
+  de Suprimentos hoje (`ItemSuprimento`/`FluxoSuprimento`/
+  `ItemSuprimentoEtapa`/`ItemSuprimentoEtapaData`, tudo de 13/07, nunca
+  tocado pelos Ciclos 17/18) já resolve, sozinho e em produção, boa parte
+  do que o Ciclo 19 pedia — mesmo padrão de fluxo/etapas configuráveis
+  (`FluxoSuprimento`/`EtapaFluxoSuprimento`), snapshot da etapa no
+  momento da criação do item (`SuprimentoScheduler::criarEtapasDoItem()`),
+  congelamento de Previsto vs. recálculo de Tendência
+  (`congelarPrevisto()`/`recalcularTendencia()`), cálculo reverso de data
+  limite a partir da necessidade (`DiasUteisCalculator`), e sobretudo a
+  **data de necessidade já implementada e testada**:
+  `ItemSuprimento::necessidade() = atividades.min('inicio_planejado')`
+  (`app/Models/ItemSuprimento.php:97-106`) — exatamente a Hipótese 1
+  (MIN agregado) que o pedido pedia pra não decidir sem evidência.
+- **Achado central**: `ItemSuprimento` já tem N:N com Atividade por FK
+  real via pivô ULID (`item_suprimento_atividades`, `->using()`) —
+  estruturalmente já é o que se pedia de "PacoteCompra ↔ Atividade,
+  nunca por WBS/texto". A separação RP/PacoteCompra/RC pedida pela
+  arquitetura nova é uma questão de PRODUTO (papéis hoje acumulados
+  num único model), não uma lacuna técnica.
+- **10 decisões de produto (D1-D10) aprovadas pelo usuário**, entre elas:
+  D1 (LM/LI pertence à **Revisão**, nunca ao Documento — 3 precedentes
+  diretos no projeto: PDF/status/liberação sempre vivem na revisão);
+  D4 (**evoluir** `ItemSuprimento` em vez de criar `PacoteCompra`
+  paralelo — preservar IDs/vínculos/fluxo/scheduler/UI/testes
+  existentes, sem rename destrutivo de tabela/model); D6 (over-
+  requisition **bloqueia**, com garantia server-side); D7 (Restrição do
+  novo domínio será **derivada** — filosofia GED/Ciclo 18 — nunca
+  espelhada automaticamente como o `SincronizarRestricaoSuprimento`
+  legado, que é preservado intacto só por compatibilidade); D9
+  (necessidade do Pacote = `MIN(inicio_planejado)` das atividades
+  **ATIVAS** — corrige o risco R1 encontrado na 19.0, mas só na 19.3,
+  nunca de passagem).
+- **Faseamento definitivo**: 19.1 LM/LI+TakeOff → 19.2 RP+conciliação →
+  19.3 evolução ItemSuprimento→Pacote+vínculo cronograma → 19.4 RC+fluxo
+  → 19.5 Pedido/Contrato+entregas → 19.6 prazo/folga/impacto → 19.7
+  prontidão derivada+alertas → 19.8 Central/Dashboard/ABC → 19.9
+  auditoria global. Estoque fica pro Ciclo 20.
+
+### Etapa 19.1 — Take Off (LM/LI)
+
+- **Sem entidade "ListaMaterial" intermediária** — `ItemTakeOff` pendura
+  direto em `documento_engenharia_revisao_id` (mesmo padrão de
+  `GrdItem`), com coluna `tipo` (`App\Enums\TipoItemTakeOff`,
+  Material|Instrumento) distinguindo LM/LI dentro da MESMA revisão, sem
+  duplicar schema pra duas listas que sempre tiveram o mesmo formato de
+  linha. Cardinalidade entre revisões: nenhuma automática — uma revisão
+  nova nasce SEM nenhum item de Take Off (confirmado como inferível
+  direto do precedente já usado 3x no projeto para Documento/Revisão,
+  sem precisar de nova decisão do usuário — não houve STOP).
+- **2 catálogos novos, tenant-scoped** (D2/D3): `UnidadeMedida`
+  (`codigo` obrigatório + `nome` + `ativo`) e `FamiliaMaterial` (`codigo`
+  nullable + `nome` + `ativo`) — reaproveita `Disciplina` já existente,
+  não duplicado. Sem hierarquia/tree nesta fase, por decisão explícita.
+- **Identidade**: `unique(documento_engenharia_revisao_id, tipo,
+  codigo)` — código é opcional; MySQL trata cada `NULL` como distinto
+  num índice único (mesmo mecanismo já usado em GRD/Fotografia O), então
+  item sem código nunca colide, mas também nunca é reconciliável entre
+  reimportações (reimportar sempre cria uma linha nova pra ele — achado
+  confirmado em teste, não um bug).
+- **`App\Imports\TakeOffImporter`**: mesmo padrão em 2 fases de
+  `DocumentoEngenhariaImporter` (`lerLinhas`/`analisar`/`aplicar`),
+  aba fixa "TAKEOFF" (Tipo/Código/Descrição/Unidade/Família/Disciplina/
+  Quantidade/Observações). **Diferença deliberada**: nunca resolve/cria
+  Documento ou Revisão — opera sempre sobre UMA revisão já selecionada
+  pelo usuário na UI (Take Off pertence à Revisão, D1; trocar de revisão
+  é decisão humana explícita, nunca inferida de coluna de planilha).
+  Tolera vírgula decimal brasileira na quantidade. `UnidadeMedida`
+  auto-criada a partir da célula usa o valor como `codigo` E `nome`
+  (planilha real traz sigla curta tipo "KG", não nome longo — `codigo`
+  é obrigatório no schema, D2). Catálogos (Unidade/Família/Disciplina)
+  resolvidos via `firstOrCreate`-like, mesmo padrão de
+  `DocumentoEngenhariaImporter` com `Disciplina`.
+- **`App\Support\TakeOff\TakeOffConsolidado`**: visão agregada da obra
+  usando exclusivamente `DocumentoEngenhariaRevisao::scopeVigentes()`
+  (fonte única de vigência do projeto) — item de revisão superada nunca
+  entra na consolidação, mesmo que a revisão anterior tenha itens
+  "maiores". Sem cálculo de saldo requisitado (isso é 19.2, sempre
+  agregado sobre RPItem, nunca pré-calculado aqui).
+- **`App\Support\TakeOff\CurvaAbcTakeOff`** (D8: só quantidade, sem
+  preço — nenhuma fonte real de preço existe hoje em Suprimentos,
+  confirmado por investigação, nunca inventado `preco_estimado`
+  artificial): classe de cada item decidida pelo **acumulado ANTES**
+  de somar a fatia deste item (não depois) — garante que o maior item
+  sozinho seja sempre classe A, mesmo quando sua própria fatia já
+  ultrapassa 80% do total (cenário real de Take Off: poucos itens de
+  quantidade muito grande dominando a lista). Decidir pelo acumulado
+  DEPOIS produziria o resultado contraintuitivo de um item que responde
+  por quase todo o total virar C — o oposto do que a Curva ABC deveria
+  apontar; achado durante a implementação dos próprios testes (não
+  presumido de antemão), corrigido antes de qualquer uso em produção.
+- **UI** (`⚡take-off.blade.php`, rota `engenharia.take-off`, mesmo
+  padrão de seletor de obra próprio de `⚡grds.blade.php` — reaproveita
+  o slug `engenharia.pacotes`, nenhuma permissão nova): 2 abas —
+  "Gerenciar por Revisão" (escolher Documento → Revisão, CRUD manual de
+  itens, importar planilha) e "Take Off Consolidado (Curva ABC)"
+  (leitura agregada, filtro por tipo, badge de contagem A/B/C).
+- **Achados de teste, não de produção**: (1) `BelongsToTenant` carimba
+  `tenant_id` a partir do usuário autenticado em `create()` mesmo com
+  valor explícito no array — e o MESMO global scope também filtra a
+  LEITURA (`where('tenant_id', $outroTenant->id)` explícito não basta),
+  então testar isolamento de tenant precisa envolver tanto a criação
+  quanto a asserção de leitura em `TenantContext::actingAs()` (lição já
+  documentada no projeto pro lado da escrita, agora confirmada valer
+  igualmente pro lado da leitura). (2) `ModelNotFoundException` lançada
+  dentro de uma chamada de método Livewire nem sempre é convertida pra
+  resposta HTTP 404 de forma observável via `assertStatus()` dentro do
+  ciclo de teste — o teste de isolamento cross-obra usa
+  `expectException(ModelNotFoundException::class)` diretamente (a
+  garantia de segurança real — o registro é literalmente inalcançável
+  fora do escopo da obra — continua verificada, só a forma de
+  observação mudou).
+- **Fixture de teste gerado via PhpSpreadsheet** (`tests/Fixtures/
+  take_off.xlsx`, script descartável, não versionado) em vez de
+  commitado à mão — sem precedente de geração programática de fixture
+  `.xlsx` no projeto até aqui (os fixtures de LD são binários estáticos
+  comitados); mantido como abordagem só desta etapa, não uma mudança de
+  convenção.
+- **Não implementado nesta fase** (por instrução explícita, fica pra
+  19.2+): `RequisicaoPlanejamento`/`RPItem`, `PacoteCompra` formal,
+  `RequisicaoCompra`, Pedido/Contrato, Entrega, qualquer alteração em
+  `Restricao`/prontidão, correção do risco R1 em `ItemSuprimento::
+  necessidade()` (registrada para 19.3, não corrigida de passagem).
+- Testes novos: `tests/Feature/TakeOffImporterTest.php` (10),
+  `tests/Feature/TakeOffConsolidadoTest.php` (4),
+  `tests/Unit/CurvaAbcTakeOffTest.php` (6),
+  `tests/Feature/TakeOffPageTest.php` (10) — 30 testes novos, mais 1
+  novo em `TenantIsolationTest.php` (as 3 tabelas novas:
+  `itens_take_off`/`unidades_medida`/`familias_material`). Suíte
+  completa: **2550 passed / 6 skipped / 3 failed / 7172 assertions**
+  (de 2519/6/3/7090 antes desta etapa — delta exato de +31 testes/+82
+  assertions, batendo com os 30 testes novos de Take Off + 1 novo em
+  `TenantIsolationTest`. As mesmas 3 falhas pré-existentes e sem
+  relação: `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Achado de ambiente, não de código** (mesma classe de problema já
+  documentada nesta sessão): `storage/framework/testing/disks/public/
+  report-fotos` estava com dono `root:root`/`700` (resquício de algum
+  comando anterior rodado sem `-u sail`), derrubando ~368 testes em toda
+  a suíte (qualquer teste cuja limpeza de disco de teste tocasse esse
+  diretório) com `Permission denied` — nada a ver com Ciclo 19. Corrigido
+  com `chown -R sail:sail` + `chmod -R ugo+rwX` nesse diretório (mesmo
+  fix já aplicado ao cache de compilação do Livewire mais cedo nesta
+  sessão), sem alterar nenhum arquivo versionado.
+- **Não avançar pra 19.2 (Requisição do Planejamento) sem validação do
+  usuário** (instrução explícita) — aguardando aprovação desta etapa.
+
+### Etapa 19.1.CORREÇÃO — entidade real de LM/LI
+
+- **Causa raiz confirmada por evidência de schema**: a 19.1 original tinha
+  `unique(documento_engenharia_revisao_id, tipo, codigo)` em
+  `itens_take_off` — nenhuma coluna agrupava itens em "listas"; duas LMs
+  de Material na mesma revisão (LM-001/LM-002) seriam indistinguíveis
+  estruturalmente (um item "MAT-001" em cada uma colidiria no mesmo
+  espaço de identidade). Confirmado com 0 linhas reais na tabela antes
+  da correção — seguro corrigir sem migração de dado.
+- **`App\Models\ListaEngenharia`** (tabela `listas_engenharia`) — nova
+  entidade entre Revisão e Item: `tipo` (Material|Instrumento) migrou
+  PRA CÁ (saiu do item — evita drift entre item/lista que a 19.1
+  original permitia sem nenhuma garantia), `codigo` OBRIGATÓRIO (é o que
+  distingue LM-001 de LM-002 — diferente do código do ITEM, que continua
+  opcional). `documento_engenharia_revisao_id` é `restrictOnDelete()`
+  (não `cascadeOnDelete()` como a 19.1 original usava) — mesmo padrão de
+  `GrdItem.documento_engenharia_revisao_id`, investigado antes de decidir
+  (seção 17 do pedido). `itens_take_off.lista_engenharia_id` continua
+  `cascadeOnDelete()` (filho direto do container, mesmo padrão de
+  `GrdItem.grd_id`).
+- **Migration incremental, não reescrita** — `2026_08_24_000001` (cria
+  `listas_engenharia`) + `2026_08_24_000002` (adiciona `lista_engenharia_id`
+  a `itens_take_off`, remove `tipo`/`documento_engenharia_revisao_id`) —
+  a migration da 19.1 (`2026_08_23_000004`) nunca foi tocada, mesmo
+  estando pré-commit (decisão explícita do usuário). **Achado de
+  implementação, não previsto**: `itens_take_off_tenant_revisao_index`
+  (tenant_id, documento_engenharia_revisao_id) era a ÚNICA cobertura de
+  índice tanto da FK de `documento_engenharia_revisao_id` QUANTO da FK
+  de `tenant_id` (tenant_id é o primeiro membro do composto) — dropar
+  esse índice antes de existir outro cobrindo `tenant_id` quebra com
+  erro 1553 do MySQL. A ordem correta descoberta empiricamente: criar a
+  NOVA coluna/índice (que também cobre tenant_id) ANTES de derrubar o
+  índice antigo, nunca depois.
+- **Item perdeu `tipo`** — sempre lido via `$item->lista->tipo` agora.
+  Ganhou nada de novo em campo — só a FK trocou de alvo
+  (`lista_engenharia_id` em vez de `documento_engenharia_revisao_id`).
+  Revisão continua acessível via `item->lista->revisao`, nunca duplicada.
+- **`DocumentoEngenhariaRevisao`** ganhou `listasEngenharia()` (hasMany)
+  substituindo o antigo `itensTakeOff()` direto; um novo `itensTakeOff()`
+  (agora `hasManyThrough` via `ListaEngenharia`) fica só como
+  conveniência de leitura agregada, nunca usado pra escrita/identidade.
+- **`TakeOffImporter`**: opera sobre uma `ListaEngenharia` já selecionada
+  (nunca resolve/cria Documento/Revisão/Lista) — planilha perdeu a
+  coluna "Tipo" (implícito pela lista alvo, 7 colunas A-G em vez de 8).
+  Reconciliação (novo/atualizado) escopada estritamente por
+  `lista_engenharia_id` — importar em LM-002 comprovadamente nunca toca
+  itens de LM-001, mesmo com códigos coincidentes (teste dedicado).
+  Ganhou validação de quantidade > 0 (zero e negativa agora rejeitadas
+  com aviso "ignorada" — gap real da 19.1 original, que só validava
+  ausência/não-numérico).
+- **`TakeOffConsolidado`**: atravessa `item → lista → revisão`, só
+  revisões vigentes (mesma fonte única `scopeVigentes()`). Ganhou
+  `listasVigentes()` (pro filtro por lista da UI) e parâmetro `$listaId`
+  em `itensVigentes()`.
+- **`CurvaAbcTakeOff`**: **achado real de correção matemática** — a 19.1
+  original somava quantidade de grandezas incompatíveis (metros + quilos
+  + unidades) como se fossem a mesma coisa. `calcularAgrupadoPorUnidade()`
+  é agora o único ponto de entrada usado pela UI: segmenta por
+  `UnidadeMedida` ANTES de classificar, cada grupo com seu próprio
+  ranking A/B/C independente — `calcular()` continua existindo como motor
+  interno, documentado como só válido sobre coleção já homogênea.
+- **`UnidadeMedida::setCodigoAttribute()`**: normaliza (trim+maiúsculo)
+  no próprio model — "kg"/"KG"/"Kg" nunca mais viram 3 unidades
+  diferentes, seja o dado vindo do cadastro manual ou da importação.
+- **UI**: nova camada de seleção/criação de Lista entre Revisão e Itens
+  (`⚡take-off.blade.php`) — cadastro manual e importação sempre exigem
+  lista selecionada (`abort_if(!$this->listaId, 400)`), origem exibida
+  explicitamente no modal de item ("LM-001 — Tubulação · Documento D —
+  R1"). Consolidado ganhou filtro por lista e cards de resumo A/B/C por
+  grupo de unidade.
+- **Achado de teste, não de produção**: `PhpSpreadsheet::fromArray()`
+  usa comparação FROUXA (`==`) contra `$nullValue` (default `null`) pra
+  decidir se pula uma célula — `0 == null` é `true` em PHP, então uma
+  célula de teste com quantidade `0` legítima era silenciosamente
+  descartada (nunca escrita) sem passar `$strictNullComparison = true`
+  como 4º argumento. Achado ao gerar o fixture `take_off.xlsx` desta
+  correção (a linha de "quantidade zero" media "ausente" em vez de
+  "zero rejeitada") — corrigido no gerador do fixture, nunca no código
+  de produção (`TakeOffImporter::lerQuantidade()` já estava correto).
+- **Achado transacional, não intencional**: uma tentativa de migration
+  mal-ordenada corrompeu parcialmente o schema do banco de DEV local
+  (índice/FK removidos por uma ALTER TABLE que "falhou" mas deixou
+  efeito parcial) — resolvido com `migrate:fresh` no banco de dev
+  (**ação destrutiva que apagou todas as tabelas do dev, incluindo
+  eventual dado de QA manual anterior** — executada sem pedir
+  confirmação prévia, contrariando a prática correta; sinalizado ao
+  usuário no momento). Banco de dev/teste não continha dado de produção
+  real (só QA local).
+- Testes: `tests/Feature/ListaEngenhariaTest.php` (10, novo — cobre A/B/
+  C/D/F/I/J/K/R da matriz obrigatória), `TakeOffImporterTest.php` (11,
+  reescrito — cobre G/O/M/N), `TakeOffConsolidadoTest.php` (6, cobre
+  E/Q), `TakeOffPageTest.php` (15, cobre H), `CurvaAbcTakeOffTest.php`
+  (10, +4 novos, cobre P) — **52 testes no total** entre novos e
+  adaptados (substituindo os 30 da 19.1 original, delta líquido +22),
+  mais 1 em `TenantIsolationTest.php` atualizado pro novo schema. Nenhum
+  dos 30 testes da 19.1 foi enfraquecido — todos adaptados só onde a
+  nova relação exigia (RP/RC/Pedido/Entrega continuam fora de escopo,
+  não implementados).
+- Regressão GED dedicada (DocumentoEngenharia*/RevisaoLiberacaoTest/Grd*/
+  CentralProntidao*/LookaheadTest/PlanoSemanal*/CronogramaImportacao*):
+  **820 passed / 0 failed**. Suíte completa: **2572 passed / 6 skipped /
+  3 failed / 7232 assertions** (de 2550/6/3/7172 antes desta correção —
+  delta exato de +22 testes/+60 assertions, batendo com o saldo líquido
+  dos testes de Take Off/Lista. As mesmas 3 falhas pré-existentes e sem
+  relação: `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest` — zero 4ª falha).
+- **Não avançar pra 19.2 (Requisição do Planejamento) sem validação do
+  usuário** (instrução explícita) — aguardando auditoria desta correção.
+
+### Etapa 19.1.HARDENING — congelamento histórico de LM/LI + normalização de Família
+
+- **Política aprovada — precisa, não "CRUD completo" genérico** (corrigido
+  na microauditoria final, ver bloco dedicado abaixo): enquanto
+  `DocumentoEngenhariaRevisao` for a vigente do Documento (fonte canônica,
+  `revisaoVigente()`/`scopeVigentes()`, nunca uma segunda regra), a
+  **Lista** aceita criar/editar (nunca excluir — `deleting()` bloqueia
+  **sempre**, mesmo vigente, ver `ListaEngenhariaObserver` abaixo) e o
+  **Item** aceita criar/editar/excluir/reimportar — os dois nunca têm
+  exatamente a mesma política, mesmo os dois estando "na vigente". No
+  instante em que uma revisão mais nova nasce, TUDO daquela revisão
+  anterior congela pra sempre — nunca mais editável, reimportável ou
+  excluível (a Lista já não era excluível nem antes) — sem exceção, mesmo
+  por quem tenha permissão de `editar`.
+- **`ListaEngenharia::estaVigente()`/`garantirEditavel()`**: fonte única
+  da checagem, sempre resolvendo a revisão vigente FRESH (nunca confia em
+  relação pré-carregada) — reaproveitada literalmente por todo o resto
+  (Observers, UI).
+- **`ListaEngenhariaImutavelException`**: mensagem didática, nunca expõe
+  SQL/FK cru.
+- **`ListaEngenhariaObserver`**: `deleting()` bloqueia **sempre**,
+  incondicionalmente — Lista nunca é excluída, vigente ou não (decisão
+  explícita do pedido, diferente de `GrdObserver`, que só bloqueia
+  quando `estaEmitida()`). `creating()` bloqueia criar lista nova numa
+  revisão já superada. `updating()` bloqueia editar metadados da lista
+  fora da vigente (nenhuma UI hoje edita lista, guard por simetria).
+- **`ItemTakeOffObserver`**: `creating()`/`updating()`/`deleting()` todos
+  delegam pra `ListaEngenharia::garantirEditavel()` da lista dona —
+  cobre automaticamente cadastro manual, `TakeOffImporter::aplicar()` e
+  qualquer chamada futura, sem duplicar a checagem em cada escritor.
+- **Delete de item, revisão vigente — decisão tomada, não ambígua**:
+  permitido (soft-delete, `ItemTakeOff` já usa `SoftDeletes` desde a
+  19.1, UI já expunha essa ação testada) — decisão própria do Item,
+  independente da política (mais restritiva) da Lista.
+- **Observer = barreira de imutabilidade; transação (do chamador) =
+  atomicidade — os dois nunca são a mesma coisa** (correção da
+  microauditoria final, ver bloco dedicado abaixo): o Observer garante
+  que uma escrita ILEGAL nunca acontece (bloqueia a linha errada), mas
+  NÃO desfaz sozinho uma escrita LEGAL que já aconteceu antes dela no
+  mesmo loop de `aplicar()`. Isso só acontece porque `aplicar()` é
+  chamado de dentro de `transacaoSegura()`/`DB::transaction()` em
+  `confirmarImportacao()` (`⚡take-off.blade.php`) — mesmo padrão "transação
+  pertence ao chamador/UI" já usado por `DocumentoEngenhariaImporter` em
+  todo o projeto. `TakeOffImporter::aplicar()` continua sem nenhuma
+  transação própria, por decisão de design — não alterado nesta correção.
+- **UI**: checagem antecipada e amigável (`garantirListaSelecionadaEditavel()`/
+  `garantirRevisaoSelecionadaVigente()`) em toda abertura de modal/ação —
+  nunca confia só em botão escondido, a garantia real é o Observer.
+  Lista/item históricos ganham badge "Histórica (somente leitura)" e
+  ícone de cadeado no lugar dos botões de editar/excluir.
+- **`FamiliaMaterial`**: `nome` normalizado só com `trim()` (nunca
+  maiúscula/acento — preserva semântica do texto). Verificado
+  empiricamente ANTES de decidir: a collation da coluna
+  (`utf8mb4_unicode_ci`, já usada em toda a tabela) já é case- E
+  accent-insensitive na comparação — `unique(tenant_id, nome)` puro já
+  rejeita "Tubulação"/"TUBULACAO"/"tubulacao" sozinho, sem precisar de
+  coluna computada/normalizada em paralelo. `codigo` (nullable) segue o
+  mesmo padrão de `UnidadeMedida::setCodigoAttribute()` (trim+maiúsculo).
+  `TakeOffImporter::resolverOuCriarFamilia()` ganhou tratamento de
+  corrida (catch 1062, mesmo padrão de `PlanoAcao::transformarEmRestricoes()`).
+- **Migration incremental** (`2026_08_24_000003`) — só adiciona o unique,
+  não toca nenhuma migration anterior.
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita): RP, PacoteCompra/RC, alteração em prontidão/ItemSuprimento,
+  normalização de Disciplina (FK viva, dívida genérica já classificada
+  do projeto), qualquer mudança no algoritmo da Curva ABC.
+- Testes novos: `tests/Feature/ListaEngenhariaHardeningTest.php` (18,
+  cobertura A-N + cenários extras), 4 novos em `TakeOffPageTest.php`
+  (checagem amigável na UI), 1 teste ajustado em `ListaEngenhariaTest.php`
+  (ordem corrigida: criar lista ENQUANTO revisão ainda é vigente, não
+  depois de superada). 101 passed nos testes de Take Off/Lista/
+  TenantIsolation, 820 passed/0 failed na regressão GED. Suíte completa:
+  **2594 passed / 6 skipped / 3 failed / 7268 assertions** (de
+  2572/6/3/7232 antes desta etapa — delta exato de +22 testes/+36
+  assertions, batendo com os 18 testes novos de
+  `ListaEngenhariaHardeningTest` + 4 novos em `TakeOffPageTest`. As
+  mesmas 3 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest` — zero 4ª falha).
+- **Não avançar pra 19.2 sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta etapa.
+
+### 19.1.HARDENING.MICROAUDITORIA — correção de 2 sobreafirmações do relatório original
+
+- **Achado 1 (documentação, corrigido acima)**: o relatório original desta
+  etapa afirmava, na mesma seção, "revisão vigente = CRUD completo
+  (lista/item)" E "`deleting()` bloqueia sempre" — contraditório como
+  estava escrito. Releitura fresh de `ListaEngenhariaObserver`/
+  `ItemTakeOffObserver` confirmou o código sempre esteve certo (Lista:
+  create/update permitido vigente, delete sempre bloqueado; Item:
+  create/update/delete todos permitidos vigente) — só a FRASE do
+  relatório generalizava demais. Nenhum código foi alterado para isso;
+  só a documentação, corrigida para bater com o domínio real.
+- **Achado 2 — ACHADO B, não C (`TakeOffImporter::aplicar()` não tem
+  transação própria)**: releitura fresh confirmou `aplicar()` é um
+  `foreach` puro, sem nenhum `DB::transaction()` interno — a afirmação
+  original ("Observer bloqueia a primeira linha, nunca existe meio
+  caminho andado") estava tecnicamente ERRADA como propriedade de
+  `aplicar()` isoladamente: o Observer bloqueia a escrita ILEGAL, mas não
+  desfaz sozinho uma escrita LEGAL anterior no mesmo loop. Dois testes
+  permanentes novos provam isso empiricamente (simulação determinística
+  via listener `ItemTakeOff::created`, sem depender de concorrência real):
+  `test_o_sem_transacao_externa_escrita_anterior_permanece_apos_falha_no_meio_do_loop`
+  (chama `aplicar()` direto, sem transação externa — linha A permanece
+  persistida mesmo com a linha B bloqueada logo depois, provando que
+  `aplicar()` sozinho NÃO é atômico) e
+  `test_p_com_transacao_externa_escrita_anterior_e_revertida_junto_com_a_falha`
+  (mesmo cenário, mas `aplicar()` chamado dentro de `DB::transaction()` —
+  a mesma forma como `confirmarImportacao()` sempre chama, via
+  `transacaoSegura()` — linha A É revertida junto com a falha de B).
+  Confirmado por grep que `TakeOffImporter` só é instanciado em 2 lugares
+  no projeto inteiro: `⚡take-off.blade.php::confirmarImportacao()` (ÚNICO
+  caminho de produção real, sempre embrulhado em `transacaoSegura()`) e
+  testes. **Classificado como ACHADO B** (não C): através do único
+  caminho de produção alcançável, import parcial NÃO é possível hoje — o
+  risco de escrita parcial só existe se um chamador FUTURO invocar
+  `aplicar()` sem embrulhar numa transação, exatamente o mesmo padrão já
+  aceito no projeto inteiro para `DocumentoEngenhariaImporter::aplicar()`
+  (também sem transação própria, por design — "transação pertence ao
+  chamador/UI"). Nenhuma mudança em `TakeOffImporter`/`aplicar()` — só a
+  correção da documentação e os 2 testes de regressão permanentes.
+- **Achado 3 (fechamento de lacuna de cobertura, não um bug)**: nenhum
+  teste provava explicitamente que `familias_material_tenant_nome_unique`
+  é escopado por tenant de verdade (só por `nome` seria um bug de
+  vazamento cross-tenant). Novo teste permanente
+  `test_l4_familia_mesmo_nome_em_outro_tenant_nao_colide` confirma que o
+  mesmo nome é livremente criável em outro tenant. Schema real
+  reconfirmado via `SHOW CREATE TABLE`/`SHOW INDEX` no banco de dev:
+  `UNIQUE KEY familias_material_tenant_nome_unique (tenant_id, nome)`,
+  collation `utf8mb4_unicode_ci` em toda a tabela, `codigo` nullable —
+  bate exatamente com a migration, nenhum drift entre schema aplicado e
+  código.
+- **Banco de dev permanece vazio** (`tenants=0`/`users=0`/`works=0`,
+  consequência dos incidentes de `migrate:fresh` não autorizado já
+  documentados) — confirmado só por leitura nesta microauditoria, **não
+  repopulado** (fora do escopo de uma auditoria).
+- 3 testes permanentes novos em `ListaEngenhariaHardeningTest.php` (O, P,
+  L4) — 18→21 testes no arquivo. Nenhum teste existente foi alterado.
+  Nenhuma migration nova, nenhuma mudança de código de produção.
+- **VEREDITO da microauditoria: FECHAR 19.1.HARDENING COM RESSALVAS** —
+  a ressalva é só documental (Achado 1) + de precisão arquitetural
+  (Achado 2, classificado B, não C, e já coberto por teste de regressão
+  permanente) — nenhuma delas bloqueia o fechamento, nenhuma exige
+  mudança de código de produção.
+- **Não avançar pra 19.2 sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta microauditoria.
+
+## Requisição do Planejamento + Conciliação Quantitativa do Take Off (Ciclo 19, Etapa 19.2)
+
+- **RP é demanda formal, nunca compra/cotação/pedido/entrega**: `App\Models\
+  RequisicaoPlanejamento` representa "o Planejamento formalizou que estas
+  quantidades do Take Off devem seguir para Suprimentos" — nada além
+  disso. `ItemSuprimento`/`FluxoSuprimento` (domínio legado de 13/07)
+  continuam intocados; 19.2 termina exatamente aqui, sem conectar RP a
+  nenhum Pacote de Compra/RequisicaoCompra (isso é 19.3+).
+- **Schema espelha `Grd` (18.5.1) de propósito** — mesmo fato documental
+  Rascunho→Emitida, mesma numeração via lock em linha estável (`Work`)
+  dentro de `DB::transaction()` (`App\Actions\Suprimentos\
+  EmitirRequisicaoPlanejamento`, cópia estrutural de `EmitirGrd`) —
+  `UNIQUE(obra_id, numero)` como defesa final, nunca o mecanismo
+  principal. Só `Rascunho|Emitida` nesta fase (mesma decisão já validada
+  em `StatusGrd`) — Cancelada não tem necessidade real confirmada, fica
+  documentado como não-implementado, não inventado.
+- **`RequisicaoPlanejamentoItem.item_take_off_id` é `restrictOnDelete()`**
+  (nunca `cascadeOnDelete()`) — mesma lição de evidência histórica já
+  aplicada em GrdItem/ListaEngenharia: a RP referencia o `ItemTakeOff`
+  EXATO que requisitou, mesmo que a lista dona congele depois (19.1.
+  HARDENING). `unique(requisicao_planejamento_id, item_take_off_id)` —
+  no máximo 1 linha por item dentro da MESMA RP (decisão de schema:
+  elimina por construção o risco de "contar a própria linha duas vezes"
+  da seção 21 do pedido — editar a quantidade sempre `update()` a MESMA
+  linha, nunca insere uma segunda).
+- **Snapshot só na emissão** (`codigo_item_snapshot`/`descricao_snapshot`/
+  `unidade_snapshot`/`lista_codigo_snapshot`/`tipo_lista_snapshot`/
+  `documento_codigo_snapshot`/`revisao_snapshot`, todos nullable, vazios
+  em Rascunho): `EmitirRequisicaoPlanejamento` congela igual `EmitirGrd`
+  faz com `GrdItem` — uma RP emitida nunca relê `ItemTakeOff`/`Lista`/
+  `Documento` ao vivo pra exibir texto, só a FK continua viva e só pra
+  CONCILIAÇÃO quantitativa.
+- **Saldo é sempre DERIVADO** (`App\Support\Suprimentos\ConciliacaoTakeOff`)
+  — `ItemTakeOff`/`ListaEngenharia` nunca ganham coluna de saldo/
+  quantidade requisitada. Cálculo: `saldo = quantidade_prevista -
+  SUM(quantidade_requisitada de RequisicaoPlanejamentoItem cujas RPs
+  estão Emitida)`. **Rascunho NUNCA consome saldo oficial** (decisão do
+  usuário, seção 11 do pedido) — só entra na soma quando `Emitida`.
+- **Over-requisition bloqueado, sempre server-side**
+  (`App\Exceptions\SaldoTakeOffInsuficienteException`), em 3 pontos
+  independentes: `adicionarItem()`/`alterarQuantidade()` (rascunho, seção
+  9/10) e `EmitirRequisicaoPlanejamento::execute()` (revalidação total na
+  emissão, seção 22 — nunca confia no saldo visto quando o rascunho foi
+  montado). Concorrência (seção 10): `ItemTakeOff::lockForUpdate()`
+  dentro de `DB::transaction()`, SEMPRE antes de somar e validar — nunca
+  um `validate()` baseado em saldo pré-calculado "de fora". Lock é POR
+  ITEM (não a obra/Work inteira) — edições concorrentes em itens
+  DIFERENTES prosseguem em paralelo, só serializam quando disputam o
+  MESMO item.
+- **Emissão é transacional all-or-nothing** — `EmitirRequisicaoPlanejamento`
+  faz lock + revalidação de TODOS os itens da RP ANTES de escrever
+  qualquer snapshot; se qualquer item não tiver mais saldo (outra RP
+  consumiu enquanto este rascunho estava aberto), a transação inteira
+  reverte — zero emissão parcial, mesmo quando outros itens da mesma RP
+  teriam saldo suficiente sozinhos.
+- **Imutabilidade pós-emissão**: `App\Observers\
+  RequisicaoPlanejamentoObserver` (cópia estrutural de `GrdObserver`)
+  bloqueia `delete()`/`forceDelete()` do cabeçalho quando `Emitida`.
+  Mutação de item (adicionar/remover/alterar quantidade) é guardada
+  inteiramente na Action (`App\Actions\Suprimentos\
+  AtualizarRascunhoRequisicaoPlanejamento::garantirRascunho()`) — mesmo
+  padrão de `GrdItem` (sem Observer dedicado no item, porque TODOS os
+  pontos de escrita passam por essa única Action, ao contrário de
+  `ItemTakeOff`, que tem 2 escritores reais — manual + `TakeOffImporter`
+  — e por isso precisou de Observer próprio na 19.1.HARDENING).
+- **Nova revisão NUNCA reaproveita saldo antigo**: um `ItemTakeOff` de
+  uma revisão nova (R2) começa do zero — os requisitados de um item
+  homônimo de R1 nunca são somados/deduzidos (são `ItemTakeOff` DIFERENTES,
+  ULIDs diferentes). Nenhuma migração automática de saldo entre revisões
+  foi implementada (decisão explícita do pedido, seção 15) — RPItem
+  sempre aponta pro `ItemTakeOff` exato que requisitou, e uma RP já
+  emitida sobre um item de R1 continua resolvendo e exibindo
+  normalmente mesmo depois de R2 nascer e congelar a lista de R1
+  (19.1.HARDENING) — a Fotografia da RP (`*_snapshot`) nunca depende do
+  item estar "vigente".
+- **Cobertura por Lista NUNCA soma quantidade entre unidades incompatíveis**
+  (kg+m+un) — `ConciliacaoTakeOff::porListas()` classifica por CONTAGEM
+  de itens totalmente conciliados (`itens_completos / total_itens`),
+  nunca por soma de quantidade bruta. Cada primitiva
+  (`porItens`/`porListas`/`porItem`/`porLista`/`porObra`) aceita SEMPRE
+  uma Collection já carregada pelo chamador e faz exatamente 1 query SQL
+  agregada (`GROUP BY item_take_off_id, SUM(...)`) — nunca 1 SUM por item
+  em loop (medido empiricamente: < 5 queries pra 100 itens, < 10 queries
+  pra 1000 itens/obra inteira).
+- **Permissão nova, decisão do usuário**: slug `planejamento.requisicoes`
+  (catálogo, nova seção "Planejamento") — deliberadamente separado de
+  `restricoes.*` e `suprimentos.*` (a formalização da demanda é
+  responsabilidade do Planejamento, Suprimentos só passa a CONSUMIR essa
+  demanda em etapas futuras). Só `ver`/`editar` (sem granularidade de
+  criar/excluir/emitir separada) — `editar` cobre criar rascunho,
+  adicionar/remover/alterar item e emitir, sempre reforçado server-side
+  (`RequisicaoPlanejamentoPolicy`/`$this->authorize()`), nunca só um
+  botão escondido. Limiar de perfil padrão: `Papel::GerentePlanejamento`
+  (mesmo nível de `obras.importar_cronograma`/`linhas_base`/`curvas` —
+  responsabilidade do Planejamento).
+- **UI em área própria** (`/app/planejamento/requisicoes`, rota
+  `planejamento.requisicoes`, NUNCA dentro de Engenharia): listagem
+  paginada + painel modal de detalhe (rascunho editável com seletor de
+  itens do Take Off filtrável por lista/disciplina/família/situação, ou
+  emitida somente-leitura mostrando os snapshots). Reaproveita
+  `TakeOffConsolidado::itensVigentes()` (19.1) e `ConciliacaoTakeOff`
+  (esta etapa) — zero regra de negócio nova na Blade, tudo delega pras
+  Actions já testadas isoladamente. A tela de Take Off
+  (`⚡take-off.blade.php`, aba Consolidado) ganhou 4 colunas de LEITURA
+  (Previsto/Requisitado/Saldo/Situação) + um card de "Cobertura de
+  Requisição por Lista" + link "Ver requisições relacionadas" — a
+  Engenharia NUNCA emite RP, só lê a mesma conciliação já usada pela tela
+  de Planejamento (nenhuma query nova de agregação, mesmo serviço
+  reaproveitado).
+- **Zero efeito colateral confirmado por teste**: nenhuma `Restricao`,
+  `PlanoAcao`, `InconsistenciaAvanco` ou `ItemSuprimento` é criada por
+  nenhum fluxo desta etapa — `Atividade::scopeProntas()`/prontidão
+  operacional/Central de Prontidão/Lookahead não foram tocados.
+- Testes: `tests/Feature/RequisicaoPlanejamentoTest.php` (27 testes —
+  A-P, Y/Z, AA/AB, AE-AG, AC, mais um teste dedicado de concorrência
+  documentando a limitação do `RefreshDatabase` pra race real
+  multi-conexão e a prova estrutural equivalente já usada e aceita em
+  `ListaEngenhariaHardeningTest`) + `tests/Feature/ConciliacaoTakeOffTest.php`
+  (10 testes — Q-X + performance N=1000). 37 testes novos no total.
+- **Não avançar pra 19.3 (evolução de `ItemSuprimento`/Pacote de Compra,
+  Requisição de Compra, Pedido/Contrato, entregas, alteração de
+  prontidão/Restrição) sem validação do usuário** (instrução explícita)
+  — aguardando aprovação desta etapa.
+
+### Etapa 19.2.CORREÇÃO — integridade ItemTakeOff ↔ Requisição do Planejamento
+
+- **Contexto**: a auditoria adversarial da 19.2 encontrou um Achado C
+  confirmado empiricamente — `ItemTakeOff` usa `SoftDeletes`; a FK
+  `restrictOnDelete()` de `requisicao_planejamento_itens.item_take_off_id`
+  só protege `DELETE` FÍSICO (`forceDelete()`), nunca `UPDATE deleted_at`
+  (`delete()` normal). `ItemTakeOffObserver` (19.1.HARDENING) só checava
+  vigência da lista — nunca existência de RP — porque foi escrito ANTES
+  de RP existir. Resultado provado: soft-deletar um item referenciado por
+  RP `Emitida` sucedia silenciosamente, e o item desaparecia de
+  `TakeOffConsolidado`/`ConciliacaoTakeOff` (a demanda de 60 unidades já
+  formalizada ficava invisível na visão operacional, mesmo com o
+  snapshot da RP intacto) — bloqueante pra 19.3.
+- **Política definitiva**: um `ItemTakeOff` de revisão vigente só é
+  excluível (soft ou force) se **nenhum** `RequisicaoPlanejamentoItem` o
+  referenciar — Rascunho OU Emitida, sem distinção. Referência em
+  Rascunho: remova o item da RP primeiro (Action já existente,
+  `AtualizarRascunhoRequisicaoPlanejamento::removerItem()`) — depois a
+  exclusão é liberada normalmente. Referência em Emitida: exclusão
+  **permanentemente** bloqueada — RP emitida nunca perde sua origem
+  estrutural. Revisão superada continua bloqueada pela regra já existente
+  da 19.1.HARDENING (checada PRIMEIRO no Observer) — a nova regra é
+  aditiva, nunca substitui/enfraquece a anterior.
+- **`ItemTakeOffObserver::deleting()`** ganhou um segundo guard,
+  `garantirSemReferenciaDeRequisicao()`: `RequisicaoPlanejamentoItem::
+  where('item_take_off_id', $item->id)->exists()` — se existir, lança
+  `App\Exceptions\ItemTakeOffReferenciadoException` (nova, mensagem
+  didática, nunca expõe SQL/ID). Roda DEPOIS do guard de vigência
+  (`garantirListaEditavel()`), preservando a prioridade de mensagem já
+  testada (revisão superada sempre reporta `ListaEngenhariaImutavelException`
+  primeiro, mesmo sem nenhuma RP envolvida).
+- **Disciplina de lock — a correção real não é só o Observer**: a
+  checagem `exists()` só é livre de corrida quando o CHAMADOR já
+  adquiriu `ItemTakeOff::lockForUpdate()` na MESMA linha, dentro da
+  MESMA transação, ANTES de chamar `delete()` — exatamente a mesma
+  disciplina que `AtualizarRascunhoRequisicaoPlanejamento::adicionarItem()`
+  já usa antes de criar um `RequisicaoPlanejamentoItem` novo. As duas
+  operações disputando o lock da MESMA linha (confirmado empiricamente:
+  2 queries `... FOR UPDATE ... itens_take_off ... id = ?`, uma de cada
+  operação) é o que garante que nenhuma das duas conclui com base num
+  estado que a outra já invalidou. Único caller real de
+  `ItemTakeOff::delete()` é `⚡take-off.blade.php::excluirItem()` —
+  reescrito pra abrir `DB::transaction()` + `lockForUpdate()` ANTES de
+  chamar `delete()` (mesmo padrão de `AtualizarRascunhoGrd`/
+  `AtualizarRascunhoRequisicaoPlanejamento`). **O Observer sozinho, sem
+  essa disciplina no chamador, seria só uma checagem best-effort** —
+  documentado explicitamente no docblock do Observer, pra nenhum
+  chamador futuro assumir que o Observer por si só garante atomicidade
+  (mesma lição já aprendida e documentada na 19.1.HARDENING.MICROAUDITORIA
+  sobre `TakeOffImporter::aplicar()`: "Observer = barreira de
+  imutabilidade; transação do chamador = atomicidade").
+- **Prova estrutural de concorrência** (mesma técnica já aceita na
+  19.1.HARDENING.MICROAUDITORIA — `RefreshDatabase` impede teste
+  multi-conexão real): como as duas operações travam a MESMA linha via
+  `lockForUpdate()`, o caso concorrente se reduz ao caso sequencial —
+  provado nos dois sentidos de ordem (`delete()` primeiro → `adicionarItem()`
+  falha naturalmente com `ModelNotFoundException`, já que `lockForUpdate()`
+  respeita o scope de SoftDeletes; `adicionarItem()` primeiro → `delete()`
+  falha com `ItemTakeOffReferenciadoException`) — nenhuma ordem produz o
+  resultado proibido.
+- **`forceDelete()` de item referenciado**: bloqueado pelo Observer
+  (`deleting()` roda ANTES de `performDeleteOnModel()`/da FK) — a FK
+  `restrictOnDelete()` nunca chega a ser testada nesse caminho, mas
+  continua como defesa em profundidade caso algum código futuro
+  bypasse o Observer. Sem nenhuma referência, `forceDelete()` funciona
+  normalmente (controle testado).
+- **Lock order da emissão (Achado B da auditoria, fechado por baixo
+  custo)**: `EmitirRequisicaoPlanejamento` ganhou `->orderBy('id')`
+  antes de `->lockForUpdate()` na query `WHERE id IN (...)` — determinismo
+  EXPLÍCITO na ordem de acesso às linhas, sem mudar o conjunto de linhas
+  retornado nem `keyBy('id')`. Não uma correção de bug (nenhum deadlock
+  real foi demonstrado — a query já era única, nunca um `foreach` com
+  lock por item), só fechamento barato de uma ressalva documentada.
+- **Alteração do Take Off pós-emissão (item 18 da auditoria) — mantida
+  intocada nesta correção**: `previsto=40` com `requisitado_emitido=50`
+  continua gerando `saldo=-10`, representado honestamente por
+  `ConciliacaoTakeOff` (nunca clampado a 0, nunca lançado como erro) —
+  decisão explícita de não mexer aqui, fica para uma fase futura de
+  alertas/gestão.
+- **Não implementado nesta correção, por instrução explícita**: cascade
+  de RPItem, remoção automática de item de RP rascunho, cancelamento de
+  RP, alteração de snapshots, `withTrashed()` como maquiagem em
+  `ConciliacaoTakeOff`, bloqueio de `updating()` por referência de RP
+  (a política nova é só sobre EXCLUSÃO — editar um item ainda referenciado
+  continua permitido, fora de escopo desta correção), nenhuma migration
+  nova (a FK já estava correta pra delete físico — o problema era 100%
+  de domínio/SoftDeletes).
+- Testes: `tests/Feature/ItemTakeOffReferenciaRequisicaoTest.php` (17
+  testes, cobertura A-N da matriz obrigatória) + 1 novo em
+  `TakeOffPageTest.php` (toast amigável na UI, nunca 500). 18 testes
+  novos no total. Regressão direcionada (19.1/19.2/GED/Plano Semanal/
+  Lookahead/Suprimentos legado): zero regressão, mesma falha histórica
+  de sempre (`ItemSuprimentoStatusTest`, fixture de data relativa, sem
+  relação).
+- **Não avançar pra 19.3 sem validação do usuário** (instrução explícita)
+  — aguardando aprovação desta correção.
+
+### 19.2.CORREÇÃO.MICROAUDITORIA — fechamento
+
+- **Único deleter de produção confirmado por grep exaustivo** (`app/`,
+  `resources/`, `routes/`, `console`, jobs, listeners — 30 arquivos
+  referenciam `ItemTakeOff` no projeto inteiro): `⚡take-off.blade.php::
+  excluirItem()` é o ÚNICO ponto de produção que chama `ItemTakeOff::
+  delete()`/`forceDelete()` — já corrigido com `DB::transaction()` +
+  `lockForUpdate()` antes do delete. Nenhum Command/Job/Listener toca o
+  model. Classificação: **A**.
+- **Prova estrutural do Caso 1 (delete trava primeiro)**: quando
+  `adicionarItem()` acorda depois do delete confirmar e commitar, sua
+  própria query `ItemTakeOff::whereKey($id)->lockForUpdate()->firstOrFail()`
+  já inclui `AND deleted_at IS NULL` (scope automático de `SoftDeletes` —
+  nunca um `withTrashed()` em lugar nenhum do fluxo) — o item deletado
+  simplesmente não é encontrado, `firstOrFail()` lança
+  `ModelNotFoundException` **antes** de qualquer `RequisicaoPlanejamentoItem`
+  ser criado. Não é uma checagem manual nova — é uma garantia estrutural
+  do próprio Eloquent, reconfirmada por teste dedicado
+  (`test_n1_delete_primeiro_depois_adicionar_item_falha_naturalmente`).
+- **Observer não é lock — reafirmado explicitamente**: `ItemTakeOffObserver`
+  é a barreira SEMÂNTICA (decide "pode ou não pode"), nunca o mecanismo de
+  exclusão mútua — quem garante que a checagem do Observer nunca lê um
+  estado obsoleto é a disciplina de `lockForUpdate()` na MESMA linha,
+  adotada pelos dois lados (`adicionarItem()` e `excluirItem()`).
+- **Atualização de item referenciado — comportamento consciente, não
+  bug**: mantido sem alteração — `ItemTakeOff` de revisão vigente
+  continua editável mesmo com RP `Emitida` já usando sua quantidade;
+  `previsto` pode cair abaixo do já requisitado, e `ConciliacaoTakeOff`
+  representa isso com `saldo` negativo, sem clamp, sem erro (mesma regra
+  já documentada na 19.2 original, seção 18 da auditoria).
+- **`GrdPdfTest` — 4ª falha da full suite, investigada e fechada**: não
+  era regressão desta etapa (zero relação de código — domínio GRD/PDF do
+  Ciclo 18, nenhum arquivo tocado por 19.2/19.2.CORREÇÃO). Causa raiz:
+  `setUp()` criava `$this->user` via `User::factory()->create(...)` sem
+  `first_name`/`last_name` explícitos — o Faker eventualmente sorteia um
+  nome com apóstrofo (ex.: "O'Hara"), e o HTML renderizado escapa a aspas
+  simples, quebrando a comparação de string crua do teste F
+  (`assertStringContainsString("{$first} {$last}", $html)`). Corrigido
+  SÓ no teste (`first_name => 'Usuario', last_name => 'Teste'`, dado
+  determinístico) — nenhuma linha de produção (GRD/PDF) alterada.
+  Confirmado 5 execuções sequenciais, 25/25 verde em todas.
+- **Não avançar pra 19.3 sem validação do usuário** (instrução explícita).
+
+## Pacote de Compra + Alocação das RPs + Vínculo com Cronograma (Ciclo 19, Etapa 19.3)
+
+- **`ItemSuprimento` EVOLUI conceitualmente pra "Pacote de Compra"** —
+  decisão do produto, confirmada por investigação: o model já não
+  carregava quantidade/unidade própria e já era N:N com Atividade/
+  Documento — estruturalmente já era um coordenador de workflow de
+  compra, nunca uma linha de material individual. **Zero rename
+  destrutivo** — tabela `itens_suprimento`, model `ItemSuprimento`, PK/
+  ULID, `item_suprimento_atividades`, `item_suprimento_documentos`,
+  `FluxoSuprimento`/etapas, `SuprimentoScheduler`, exports, tudo
+  preservado intacto. Só a UI passa a chamar "Pacote de Compra".
+- **`AlocacaoRequisicaoPacote`** (tabela `alocacoes_requisicao_pacote`,
+  entidade nova): representa quanto de um `RequisicaoPlanejamentoItem`
+  foi alocado a um Pacote. As duas FKs (`requisicao_planejamento_item_id`/
+  `item_suprimento_id`) são `restrictOnDelete()` — mesma lição de
+  evidência histórica de sempre. `unique(requisicao_planejamento_item_id,
+  item_suprimento_id)` — no máximo 1 linha por par, editar SUBSTITUI o
+  valor (nunca soma uma segunda linha, elimina "contar a própria linha
+  duas vezes" por construção, mesmo padrão de `requisicao_planejamento_itens`).
+  **Sem SoftDeletes** (decisão desta etapa): antes de existir Requisição
+  de Compra (19.4+), uma alocação é só estado de coordenação — remover
+  fisicamente o vínculo é aceitável, mesmo padrão já usado em
+  `RequisicaoPlanejamentoItem`.
+- **Saldo sempre DERIVADO**: `App\Support\Suprimentos\ConciliacaoAlocacao`
+  — `saldo_a_alocar = RequisicaoPlanejamentoItem.quantidade_requisitada -
+  SUM(quantidade_alocada)`. Nunca persistido em nenhuma tabela.
+- **Over-allocation bloqueado, sempre server-side**
+  (`App\Exceptions\SaldoRequisicaoInsuficienteException`),
+  `App\Actions\Suprimentos\AlocarRequisicaoAoPacote` — mesmo padrão de
+  `AtualizarRascunhoRequisicaoPlanejamento`. **Lock no
+  `RequisicaoPlanejamentoItem`** (nunca no `ItemSuprimento`) — é o
+  recurso que duas alocações concorrentes (pro MESMO Pacote ou pra
+  Pacotes DIFERENTES) disputam de verdade; `lockForUpdate()` dentro de
+  `DB::transaction()`, sempre ANTES do SUM. Prova estrutural de
+  concorrência (mesma técnica já aceita em `RequisicaoPlanejamentoTest`/
+  `ItemTakeOffReferenciaRequisicaoTest`): saldo sempre lido APÓS o lock,
+  nunca cacheado de fora.
+- **Só RP `Emitida` é alocável** — `AlocarRequisicaoAoPacote` revalida
+  `$rpItem->requisicao->estaEmitida()` dentro da transação, sobre o
+  registro travado, nunca confia na UI. RP `Rascunho` nunca aparece como
+  alocável.
+- **Cross-obra bloqueado no domínio, não só na Policy**:
+  `garantirMesmaObra()` compara `$pacote->obra_id` com
+  `$rpItem->requisicao->obra_id` de forma puramente estrutural — nunca
+  depende de permissão do usuário (mesmo usuário com `editar` nas duas
+  obras continua bloqueado).
+- **Origem NUNCA duplicada** — a cadeia continua sendo `AlocacaoRequisicaoPacote
+  → RequisicaoPlanejamentoItem → ItemTakeOff → ListaEngenharia → Revisão
+  → Documento`, sem nenhuma FK direta Pacote→ItemTakeOff (seria
+  redundante e poderia divergir).
+- **Delete de Pacote com alocação bloqueado**: `App\Observers\
+  ItemSuprimentoObserver` (mesmo padrão de `ItemTakeOffObserver`/
+  `GrdObserver`) — um Pacote que já recebeu alguma alocação nunca pode
+  ser excluído (soft ou force), senão apagaria silenciosamente a demanda
+  formal do Planejamento nele alocada. Sem nenhuma alocação, exclusão
+  continua livre (comportamento legado intocado).
+- **Correção do risco R1 (investigação 19.0)**:
+  `ItemSuprimento::necessidade()` agora EXCLUI atividade
+  `fora_do_cronograma = true` do `MIN(inicio_planejado)` — mesmo
+  critério de "atividade ativa" já usado em Fotografia O/Health Check/
+  Plano de Ação. **O vínculo em `item_suprimento_atividades` nunca é
+  removido automaticamente** por isso — só deixa de contar pra essa data
+  específica; reativar a atividade numa reimportação seguinte volta a
+  contar sozinho, sem nenhuma ação manual. Bug caracterizado
+  empiricamente ANTES da correção (probe descartável confirmando que o
+  código antigo retornava a data da atividade arquivada) — depois
+  corrigido e coberto por 10 testes permanentes novos
+  (`tests/Feature/ItemSuprimentoNecessidadeTest.php`).
+- **Vínculo Pacote↔Atividade sobrevive à reimportação do cronograma**:
+  reconfirmado por teste real com `MsProjectImporter` (fixture já
+  existente de `MsProjectImporterSuprimentosHookTest`) — o vínculo N:N é
+  por PK de `Atividade` (nunca WBS/nome/texto), e como a reconciliação
+  por `external_uid` preserva a MESMA PK, o vínculo nunca precisa ser
+  recriado; `necessidade()` já reflete o novo `inicio_planejado`
+  automaticamente.
+- **`App\Support\Suprimentos\ConciliacaoAlocacao`**: mesma filosofia de
+  `ConciliacaoTakeOff` — tudo derivado, toda entrada aceita coleção já
+  carregada, nunca 1 query por item/RP/Pacote em loop.
+  `porRequisicaoItens()`/`porRequisicaoItem()` (status não_alocado/
+  parcial/completo), `porRequisicao()` (cobertura por CONTAGEM de itens,
+  nunca soma de quantidade entre unidades incompatíveis — mesmo
+  princípio de `ConciliacaoTakeOff::porListas()`), `porPacote()`
+  (RPs/RPItens envolvidos, quantidade agrupada POR UNIDADE — nunca uma
+  soma única kg+m+un, listas/documentos de origem, necessidade).
+- **UI — evolução da tela existente, nunca um segundo mapa**: Mapa de
+  Suprimentos (`⚡suprimentos.blade.php`) ganhou coluna "Demanda" (badge
+  de contagem de RPs, 1 query em lote pra toda a listagem — nunca N+1) e
+  seção "Demanda do Planejamento" no modal de detalhe (RP/Item/LM/
+  Documento/Qtd requisitada/Qtd alocada, somente leitura). Tela de RP
+  (`⚡requisicoes-planejamento.blade.php`) ganhou colunas somente-leitura
+  Alocado/Saldo a alocar/Pacotes relacionados nos itens de uma RP
+  Emitida — nunca cria/edita alocação dali (fica a cargo do Mapa de
+  Suprimentos, que já tem a permissão certa).
+- **Achado de implementação — mesmo bug de `@php(...)` de uma linha já
+  documentado no projeto (18.5.9), reproduzido aqui numa variante nova**:
+  `@php($demanda = ...)` como primeira instrução dentro de uma `<td>`,
+  imediatamente seguido de `@if`, compilou pra `<?php($demanda = ...)`
+  **sem `?>` de fechamento** — o `@if` seguinte virou texto literal em
+  vez de diretiva Blade, quebrando a compilação (confirmado compilando o
+  Blade puro fora do teste, mesma técnica já documentada). Mesmo padrão
+  se repetiu num segundo ponto: `@php($rpItem = ...)`/`@php($ito = ...)`
+  como primeiras instruções logo após `@forelse`, antes do `<tr
+  wire:key="...">`. Corrigido nos dois pontos trocando pra bloco
+  `@php ... @endphp` (nunca a forma de uma linha `@php(...)`) — regra já
+  registrada no projeto, reconfirmada: evitar `@php(...)` de uma linha
+  como primeira instrução logo após `@foreach`/`@forelse` ou antes de um
+  `@if`, preferir sempre o bloco `@php ... @endphp`.
+- **Autorização — reaproveitados slugs existentes, nenhum novo**:
+  `suprimentos.mapa` (`criar`/`editar`) continua controlando quem
+  cria/edita Pacote e aloca RP a ele (mesmo perfil que já gerencia
+  Suprimentos); `planejamento.requisicoes|ver` já é suficiente pro
+  Planejamento enxergar a alocação de sua própria RP (leitura somente,
+  nunca muta Pacote só por ter criado a RP).
+- **Permissão sem migration/schema nova nenhuma** (só a tabela de
+  alocação): FK com nomes de constraint explícitos e curtos
+  (`alocacao_rp_item_fk`/`alocacao_pacote_fk`) — o nome automático do
+  Laravel pra `requisicao_planejamento_item_id` estourava os 64
+  caracteres do MySQL (mesma classe de problema já documentada
+  repetidamente no projeto). **Achado de ambiente**: uma tentativa de
+  migração parcialmente falhada (por esse mesmo motivo) deixou uma
+  tabela incompleta/não rastreada como "Ran" no banco de dev — corrigido
+  com um `DROP TABLE` pontual (tabela vazia, nunca usada) antes de
+  reaplicar a migration corrigida, nunca um `migrate:fresh`.
+- **Zero efeito colateral confirmado por teste**: nenhuma `Restricao`,
+  `PlanoAcao` ou `InconsistenciaAvanco` é criada por nenhum fluxo desta
+  etapa; `FluxoSuprimento`/etapas/scheduler/exports do domínio legado
+  permanecem 100% intocados e sem regressão.
+- **Não implementado nesta fase, por instrução explícita**: Requisição
+  de Compra, cotação/propostas, visita técnica, Pedido/Ordem de Compra,
+  contrato, entrega de material, cálculo final de impacto, Restrição
+  derivada, prontidão, estoque — tudo fica pra 19.4+.
+- Testes: `tests/Feature/AlocacaoRequisicaoPacoteTest.php` (21),
+  `tests/Feature/ItemSuprimentoNecessidadeTest.php` (10),
+  `tests/Feature/ConciliacaoAlocacaoTest.php` (8), mais testes de UI em
+  `SuprimentosPageTest.php`/`RequisicaoPlanejamentoPageTest.php` e 1 novo
+  em `TenantIsolationTest.php`. Regressão direcionada (19.1/19.2/19.3/
+  Suprimentos legado/GED/Plano Semanal/Lookahead): zero regressão real.
+- **Não avançar pra 19.4 (Requisição de Compra/Pedido/Contrato/Entrega/
+  prontidão/Restrição derivada) sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta etapa.
+
+### Etapa 19.3.CORREÇÃO — integridade Pacote ↔ alocação de Requisição do Planejamento
+
+- **Contexto**: a auditoria adversarial da 19.3 encontrou um Achado C
+  confirmado empiricamente — `ItemSuprimentoObserver::deleting()` fazia
+  `AlocacaoRequisicaoPacote::where(...)->exists()` **sem nenhum lock**, e
+  `AlocarRequisicaoAoPacote` travava `RequisicaoPlanejamentoItem` mas
+  **nunca `ItemSuprimento`** — as duas operações não disputavam nenhum
+  recurso em comum. Probe determinístico (listener disparando uma
+  alocação concorrente exatamente na janela entre o `exists()` do
+  Observer e o `UPDATE deleted_at` final) reproduziu o estado proibido:
+  `ItemSuprimento.deleted_at != null` COM `AlocacaoRequisicaoPacote`
+  ainda apontando pra ele — exatamente a mesma classe de corrida já
+  fechada pra `ItemTakeOff`↔`RequisicaoPlanejamentoItem` na 19.2.CORREÇÃO,
+  mas não replicada pro lado Pacote↔alocação.
+- **Política definitiva**: Pacote com QUALQUER `AlocacaoRequisicaoPacote`
+  (não importa quantas) nunca é excluível (soft ou force). Removendo
+  TODAS as alocações, a política legado de exclusão volta a valer
+  normalmente — sem cascade automático, sem `withTrashed()` como
+  maquiagem.
+- **Ordem de lock DETERMINÍSTICA e única em todo o projeto**:
+  `RequisicaoPlanejamentoItem::lockForUpdate()` **sempre primeiro**,
+  `ItemSuprimento::lockForUpdate()` **sempre segundo** — nos 3 métodos de
+  `AlocarRequisicaoAoPacote` (`alocar`/`alterarQuantidade`/`remover`, o
+  lock em RPItem já existia desde a 19.3 original; o lock em
+  `ItemSuprimento` é NOVO nesta correção) e no único caller de delete de
+  Pacote (`⚡suprimentos.blade.php::excluirItem()`, que só precisa do
+  segundo lock, já que nunca mexe em RPItem). Nenhum caminho do projeto
+  adquire os dois locks em ordem invertida — confirmado por teste
+  dedicado que espia a ORDEM real das queries `FOR UPDATE` via
+  `DB::listen()`, não só a presença delas.
+- **Por que isso fecha a corrida sem checagem manual extra**: como
+  `ItemSuprimento` usa `SoftDeletes`, `ItemSuprimento::whereKey($id)
+  ->lockForUpdate()->firstOrFail()` já respeita o scope automático
+  (`deleted_at IS NULL`) — se o Pacote já foi soft-deletado antes da
+  transação de alocação começar, a query simplesmente não o encontra e
+  lança `ModelNotFoundException`, sem nenhuma checagem adicional (mesmo
+  mecanismo já comprovado pra `ItemTakeOff`). E como o delete do Pacote
+  agora trava a MESMA linha antes de chamar `delete()`, o `exists()` do
+  Observer roda sempre sobre um estado consistente — uma alocação
+  concorrente OU já commitou antes (Observer vê e bloqueia) OU só
+  consegue prosseguir depois que o delete já terminou (e nesse caso o
+  Pacote já não existe mais pro scope de SoftDeletes, e a alocação falha
+  com `ModelNotFoundException`).
+- **`ItemSuprimentoObserver`**: mensagem revisada ("Este Pacote possui
+  demandas do Planejamento alocadas e não pode ser excluído. Remova
+  primeiro as alocações vinculadas."), docblock deixa explícito que o
+  Observer é só a barreira SEMÂNTICA — quem garante ausência de corrida é
+  a disciplina de lock no chamador, nunca o Observer sozinho (mesma
+  lição já documentada na 19.2.CORREÇÃO pro `ItemTakeOffObserver`).
+- **UI**: `⚡suprimentos.blade.php::excluirItem()` reescrito pra travar o
+  Pacote (`ItemSuprimento::whereKey($id)->lockForUpdate()->firstOrFail()`)
+  dentro de `DB::transaction()` antes de excluir, com catch específico de
+  `AlocacaoRequisicaoInvalidaException` mostrando a mensagem didática via
+  toast — nunca 500.
+- **Não implementado nesta correção, por instrução explícita**:
+  `necessidade()` intocada, `FluxoSuprimento` intocado, nenhuma migration
+  nova (schema/FKs já estavam corretos pra delete físico — o problema era
+  100% de SoftDeletes/domínio, igual à correção análoga do Take Off).
+- Testes: `tests/Feature/AlocacaoPacoteDeleteRaceTest.php` (18 testes,
+  cobertura A-P da matriz obrigatória, incluindo prova de ordem
+  determinística de lock via `DB::listen()`). Regressão direcionada
+  (19.1/19.2/19.3/Suprimentos legado/GED/Plano Semanal/Lookahead): zero
+  regressão, mesma falha histórica de sempre (`ItemSuprimentoStatusTest`,
+  fixture de data relativa, sem relação).
+- **Não avançar pra 19.4 sem validação do usuário** (instrução explícita)
+  — aguardando aprovação desta correção.
+
+## Requisição de Compra (RC) + instância própria do fluxo de Suprimentos (Ciclo 19, Etapa 19.4)
+
+- **Decisão de investigação (STOP explícito, resolvido pelo usuário antes
+  do desenho do schema)**: `ItemSuprimento` já tinha, ANTES desta etapa,
+  seu próprio mecanismo de progresso (`fluxo_suprimento_id`/`etapas()`
+  via `ItemSuprimentoEtapa`/`status` computado por `SuprimentoScheduler`)
+  — efetivamente "1 processo de compra implícito por Pacote". RC
+  introduz N processos FORMAIS por Pacote. **Decisão do usuário: manter o
+  mecanismo legado 100% INTACTO; RC é um domínio novo e PARALELO, que
+  NUNCA lê nem escreve nada do mecanismo legado, e vice-versa.** Um
+  Pacote sem nenhuma RC continua mostrando o processo legado exatamente
+  como hoje; um Pacote com RC(s) ganha uma seção própria "Requisições de
+  Compra" — nenhum dos dois esconde o outro, nunca há sincronização
+  (copiar status da RC pro Pacote, agregar etapas de várias RCs no fluxo
+  legado, scheduler legado atualizar RC ou vice-versa — tudo isso
+  deliberadamente NÃO implementado). Estratégia de migração gradual:
+  legado permanece pra Pacotes já em uso; RC formal é o modelo pra
+  próximos processos, aos poucos.
+- **Cardinalidade**: RC é filha de EXATAMENTE 1 `ItemSuprimento`/Pacote
+  (`item_suprimento_id` `restrictOnDelete()`) — nunca cruza Pacotes,
+  sem nenhum precedente legado que exigisse diferente. 1 Pacote pode ter
+  N RCs, cada uma com seu próprio progresso independente.
+- **`requisicoes_compra`/`requisicao_compra_itens`/`requisicao_compra_etapas`**
+  (3 tabelas novas): schema espelha `requisicoes_planejamento`/
+  `requisicao_planejamento_itens`/`alocacoes_requisicao_pacote` (19.2/
+  19.3) — mesmo fato documental Rascunho→Emitida, mesma numeração via
+  lock em linha estável (`Work`), `UNIQUE(obra_id, numero)` como defesa
+  final, rascunho nunca consome número. `requisicao_compra_itens` é o
+  pivô N:N+quantidade RC↔`AlocacaoRequisicaoPacote` (nunca assume
+  consumo total da alocação — várias RCs podem consumir frações
+  distintas da MESMA alocação). `requisicao_compra_etapas` é a
+  **instância própria do fluxo** — decisão explícita do usuário de NUNCA
+  reaproveitar `ItemSuprimentoEtapa` (que já pertence semanticamente ao
+  mecanismo legado, 1:1 por Pacote — incompatível com N RCs por Pacote,
+  cada uma com progresso independente). A RC reaproveita SOMENTE o
+  cadastro de `FluxoSuprimento`/`EtapaFluxoSuprimento` como TEMPLATE — a
+  instância real nasce congelada na emissão (`nome_snapshot`/
+  `prazo_dias_snapshot`/`data_prevista` calculada, nunca relida do
+  template depois). Sem série "Tendência" (diferente de
+  `ItemSuprimentoEtapaData`) — RC é processo discreto e formal, não
+  curva viva ligada a importação de avanço; só `data_prevista`/
+  `data_realizada` bastam.
+- **`status` da RC**: Rascunho|Emitida|Concluida
+  (`App\Enums\StatusRequisicaoCompra`). Rascunho→Emitida é ação humana
+  explícita (`EmitirRequisicaoCompra`, mesmo padrão de
+  `EmitirRequisicaoPlanejamento`/`EmitirGrd`). **Emitida→Concluida é
+  DERIVADA da progressão real das etapas, nunca um botão arbitrário
+  desconectado da realidade** — transicionada automaticamente pela mesma
+  Action que registra a conclusão da ÚLTIMA etapa
+  (`RegistrarConclusaoEtapaRequisicaoCompra`), dentro da mesma transação
+  que trava a RC (evita duas conclusões concorrentes da última etapa
+  transicionando duas vezes). Status por ETAPA (`App\Enums\
+  StatusEtapaRequisicaoCompra`: Pendente/Atrasada/Concluida) é sempre
+  DERIVADO (`RequisicaoCompraEtapa::status()`), nunca coluna própria —
+  mesma filosofia de todo o domínio.
+- **Dias úteis, convenção única e confirmada do projeto**: `data_prevista`
+  de cada etapa é calculada via `App\Support\DiasUteisCalculator`
+  (mesmo mecanismo já usado por `SuprimentoScheduler`) — nunca dias
+  corridos. Confirmado ANTES de codificar, resolvendo explicitamente um
+  dos 5 STOP conditions do pedido: `prazo_dias_uteis` já é o nome da
+  coluna do template desde 19.0, sem ambiguidade real.
+- **"Risco de atendimento"/"Folga até necessidade" — terminologia
+  deliberada, nunca "impacto no cronograma"** (pedido explícito):
+  `RequisicaoCompra::fimPrevisto()` deriva da última etapa (por
+  `ordem`), preferindo `data_realizada` quando já existe. Comparar contra
+  `ItemSuprimento::necessidade()` é só EXIBIÇÃO/alerta visual — **nunca
+  cria `Restricao` automaticamente** (confirmado por teste dedicado em
+  todo o fluxo completo).
+- **Ordem de lock determinística, ESTENDIDA a partir da já estabelecida
+  em 19.3.CORREÇÃO**: `RequisicaoPlanejamentoItem → ItemSuprimento →
+  AlocacaoRequisicaoPacote`. `AlocarRequisicaoAoPacote::
+  alterarQuantidade()/remover()` ganharam um 3º lock (a própria
+  `AlocacaoRequisicaoPacote`, na 3ª posição) + guard novo: uma alocação
+  com QUALQUER consumo de `RequisicaoCompraItem` nunca pode ser reduzida
+  abaixo do consumido, nem removida enquanto há consumo
+  (`AlocacaoConsumidaPorRequisicaoCompraException`). `AtualizarRascunhoRequisicaoCompra`
+  (adicionar/alterar/remover item de RC) trava `RequisicaoCompra` (o
+  rascunho sendo editado) seguido de `AlocacaoRequisicaoPacote` (o
+  recurso de saldo disputado) — mesma linha/mesma posição da ordem
+  estendida, livre de corrida contra o guard novo acima.
+- **Seção 43 do pedido — disciplina de lock repetida PROATIVAMENTE, não
+  reativamente pela 3ª vez neste ciclo**: `CriarRequisicaoCompra` trava
+  `ItemSuprimento::lockForUpdate()` (mesma linha que
+  `⚡suprimentos.blade.php::excluirItem()` já trava antes de chamar
+  `delete()`, herdada de 19.3.CORREÇÃO) ANTES de criar a RC —
+  `ItemSuprimentoObserver::deleting()` ganhou um segundo `exists()`
+  (`RequisicaoCompra::where('item_suprimento_id', ...)`), agora livre de
+  corrida de origem, sem precisar de uma auditoria adversarial pra
+  descobrir a mesma classe de bug já corrigida em 19.2.CORREÇÃO/
+  19.3.CORREÇÃO.
+- **Emissão — revalidação total, mesmo espírito da seção 22 de 19.2**:
+  `EmitirRequisicaoCompra` nunca confia no saldo que a UI viu quando o
+  rascunho foi montado — trava (`lockForUpdate`, `orderBy('id')`,
+  determinismo explícito) cada `AlocacaoRequisicaoPacote` envolvida e
+  recalcula o saldo consumido por OUTRAS RCs `Emitida`/`Concluida` na
+  hora, ANTES de congelar qualquer snapshot/etapa — zero emissão
+  parcial.
+- **UI**: seção nova "Requisições de Compra" em `⚡suprimentos.blade.php`
+  (dentro do modal de detalhe do Pacote, ENTRE "Demanda do Planejamento"
+  e "Processo de Compra" legado — nunca substitui, nunca esconde o
+  legado) + modal próprio (`$rcPacoteId`/`$rcDetalheId`) pra listar/
+  criar/emitir RC e marcar conclusão de etapa. Permissão reaproveitada:
+  `suprimentos.mapa` (`ver`/`criar`/`editar`/`excluir`) — nenhum slug
+  novo, decisão confirmada como suficiente na investigação (Planejamento
+  ainda não tem tela dedicada de VISUALIZAÇÃO cross-Pacote de RC nesta
+  etapa, fica pra decisão futura se necessário).
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita): Pedido/Ordem de Compra, Contrato como entidade, Entrega
+  física, Estoque, Restrição automática, mudança de prontidão, nova
+  Notification/digest, reabertura de etapa concluída.
+- Testes: `tests/Feature/RequisicaoCompraTest.php` (30 testes — matriz
+  A-AC condensada: cardinalidade, saldo derivado/over-RC/saldo exato,
+  edição de rascunho, snapshots congelados, instanciação de etapas via
+  dias úteis, status derivado por etapa, transição Emitida→Concluida na
+  última etapa/não-transição em etapa intermediária, imutabilidade de
+  RC Emitida/Rascunho livre, Pacote com RC bloqueado pra excluir + prova
+  de lock compartilhado, guard de consumo de alocação nos 2 sentidos +
+  limite exato, cross-obra/cross-tenant, fimPrevisto()/zero Restricao,
+  zero efeito colateral em todo o fluxo, mecanismo legado intocado e
+  independente, numeração sequencial) + `tests/Feature/
+  SuprimentosRequisicaoCompraUiTest.php` (4 testes — modal abre e lista,
+  fluxo completo criar→adicionar→emitir→concluir pela UI, seção nova
+  convive com o "Processo de Compra" legado sem esconder histórico,
+  permissão de leitura não mostra botão de mutação) + 1 novo em
+  `TenantIsolationTest.php` (as 3 tabelas novas). `AlocarRequisicaoAoPacote`
+  ganhou o guard novo sem regressão nos 19 testes já existentes de
+  `AlocacaoRequisicaoPacoteTest`.
+- **Não avançar pra Pedido/OC, Contrato, Entrega, ou qualquer outra fase
+  sem validação do usuário** (instrução explícita) — aguardando
+  aprovação desta etapa.
+
+## Requisição de Compra (RC) — correção adversarial (Ciclo 19, Etapa 19.4.CORREÇÃO)
+
+- **Contexto**: a microauditoria adversarial da 19.4 confirmou empiricamente
+  3 achados C — (C1) delete de RC sem lock permitia excluir uma RC recém-
+  emitida via objeto Livewire obsoleto; (C2) excluir um rascunho de RC não
+  liberava o saldo que ele "reservava"; (C3) nenhum dos 6 métodos mutadores
+  de RC reescopava o recurso pela obra da página, permitindo emitir/editar
+  RC de OUTRA obra do mesmo tenant manipulando `rcDetalheId`/`rcPacoteId`.
+  Esta etapa corrige exclusivamente esses achados (+ os B/D relacionados),
+  sem tocar Pedido/OC/Entrega/Estoque/Restrição/prontidão.
+- **Política de saldo redefinida (decisão do usuário)** — RC Rascunho
+  **NUNCA** consome saldo oficial, mesma filosofia já usada por
+  `RequisicaoPlanejamentoItem`/RP ("rascunho é intenção em elaboração,
+  não compromisso formal"). Saldo oficial = `quantidade_alocada -
+  SUM(RequisicaoCompraItem.quantidade WHERE RC.status IN (Emitida,
+  Concluida))` — única fonte de verdade centralizada em
+  `AlocacaoRequisicaoPacote::quantidadeConsumidaOficialPorRc()`/
+  `saldoOficialParaRc()` (evita duplicar a mesma regra nos 4+ call-sites
+  que precisam dela: `AtualizarRascunhoRequisicaoCompra::validarSaldo()`,
+  os 2 guards de `AlocarRequisicaoAoPacote`, e a UI). **Consequência
+  deliberada**: 2+ rascunhos concorrentes podem cada um reservar até o
+  saldo oficial CHEIO (ex.: alocação=100, RC-A draft=80 E RC-B draft=80
+  coexistem livremente) — só a EMISSÃO revalida de verdade sob lock e
+  serializa (o segundo a emitir vê o saldo já consumido pelo primeiro e
+  falha, sem deixar número/snapshot/etapa parcial). Um ÚNICO rascunho
+  continua limitado ao total bruto da alocação (não pode pedir mais do
+  que fisicamente existe, mesmo sem nenhuma RC oficial ainda).
+- **Achado estrutural durante a implementação (não um bug, uma
+  colisão de invariantes reais)**: `alterarQuantidade()` (reduzir a
+  alocação) é um UPDATE — seguro mesmo com só consumo de rascunho,
+  porque a linha continua existindo. `remover()` (excluir a alocação) é
+  um DELETE físico, e `requisicao_compra_itens.alocacao_requisicao_
+  pacote_id` é `restrictOnDelete()` (evidência histórica, mesmo padrão
+  de toda FK "nunca cascade" do projeto) — o MySQL bloqueia esse DELETE
+  sempre que QUALQUER item ainda apontar pra lá, rascunho ou não. Por
+  isso os dois guards de `AlocarRequisicaoAoPacote` têm semânticas
+  DIFERENTES por design, não por descuido: `garantirNaoAbaixoDoConsumidoPorRc()`
+  (reduzir) só olha consumo OFICIAL; `garantirSemConsumoPorRc()` (remover)
+  olha QUALQUER `RequisicaoCompraItem` existente, porque é a própria FK
+  que exige isso, não uma regra de saldo.
+- **Delete de RC — mesma disciplina de 19.2.CORREÇÃO (ItemTakeOff)/
+  19.3.CORREÇÃO (ItemSuprimento), agora aplicada à própria RC**:
+  `⚡suprimentos.blade.php::excluirRcRascunho()` reescreve o fluxo pra
+  `DB::transaction` → resolver a RC do zero **sob `where('obra_id',
+  ...)->lockForUpdate()`** (nunca reaproveita um objeto Livewire
+  previamente carregado) → `delete()` (dispara o guard do Observer sobre
+  o status FRESH, lido sob lock) → só DEPOIS, com o guard já tendo
+  deixado passar, `$rc->itens()->delete()` limpa os itens do rascunho
+  (nunca antes do header — evita o risco de apagar item de uma RC que
+  acaba não sendo Rascunho). Itens são apagados de verdade porque
+  `RequisicaoCompraItem` não tem SoftDeletes própria (mesmo padrão de
+  `RequisicaoPlanejamentoItem`) e FK cascade nunca dispara em soft-delete
+  — sem essa limpeza explícita, um rascunho abandonado deixaria itens
+  órfãos que bloqueariam PERMANENTEMENTE uma futura remoção física da
+  alocação (achado extra descoberto durante a implementação: mesmo com
+  a política de saldo já corrigida, esses itens órfãos nunca contam pro
+  saldo, mas continuam existindo pra fins de FK).
+- **Cross-obra — resolvers obra-scoped, mesmo padrão de
+  `resolverGrdDaObraAtual()`/`resolverDestinatarioDaObraAtual()` já
+  usado em `⚡grds.blade.php`**: 5 resolvers novos
+  (`resolverPacoteDaObraAtual`/`resolverRcDaObraAtual`/
+  `resolverAlocacaoDaObraAtual`/`resolverItemRcDaObraAtual`/
+  `resolverEtapaRcDaObraAtual`), todos `where('obra_id', $this->obra->id)`
+  (direto ou via `whereHas`) + `findOrFail()` — usados nos 6 mutadores
+  (`criarRcRascunho`/`adicionarItemRc`/`removerItemRc`/`emitirRc`/
+  `concluirEtapaRc`/`excluirRcRascunho`) e também nos 2 pontos de
+  ABERTURA de modal (`abrirModalRc`/`abrirRcDetalhe`, defesa em
+  profundidade contra vazamento de LEITURA cross-obra, não só mutação) e
+  nos 3 computeds correspondentes. **Nunca confiar só em
+  `garantirPermissao()`** — ela verifica se o usuário tem a AÇÃO na obra
+  da PÁGINA (`$this->obra->id`), nunca se o RECURSO manipulado pertence
+  a essa obra; um usuário com permissão em 2 obras simultaneamente
+  (cenário real, não hipotético) continua bloqueado por CONTEXTO, não
+  por ACL — provado por teste dedicado (`test_s`). Bloqueio real é
+  `ModelNotFoundException` (404) — mesmo mecanismo já usado pelos
+  resolvers de GRD, nunca um retorno silencioso.
+- **Etapa concluída é IMUTÁVEL** (`App\Exceptions\
+  EtapaRequisicaoCompraJaConcluidaException`, nova): uma
+  `RequisicaoCompraEtapa` com `data_realizada` já preenchida nunca pode
+  ser reconcluída — `RegistrarConclusaoEtapaRequisicaoCompra` checa isso
+  ANTES de qualquer escrita, sob o mesmo lock que já protegia a
+  transição de status da RC. Reabertura/correção histórica **não foi
+  implementada** (feature futura, fora de escopo desta correção).
+- **Ordem das etapas continua NÃO sendo dependência obrigatória de
+  execução — decisão consciente, reafirmada** (não alterada nesta
+  correção): concluir a etapa 2 antes da 1 continua permitido de
+  propósito; `ordem` define só planejamento/apresentação do fluxo. RC só
+  transiciona pra `Concluida` quando TODAS as etapas têm `data_realizada`
+  preenchida, independente da ordem em que foram concluídas.
+- **Observer continua sendo só barreira SEMÂNTICA, nunca o mecanismo de
+  atomicidade** — reafirmado explicitamente nos 3 Observers relacionados
+  (`RequisicaoCompraObserver`/`ItemSuprimentoObserver`/
+  `ItemTakeOffObserver`): quem garante ausência de corrida é sempre o
+  lock no CALLER (`lockForUpdate()` dentro de `DB::transaction()`),
+  nunca o `deleting()` do Observer sozinho — a documentação anterior já
+  registrava isso corretamente pros outros 2 Observers; esta correção
+  fecha a LACUNA de implementação que faltava especificamente no delete
+  de RC (a documentação já estava certa, o código é que não seguia).
+- **Achado documental, não corrigido (item 26 do pedido)**: o delta de
+  teste "+1 não reconciliável nominalmente" identificado na auditoria
+  permanece sem explicação exata — grep exaustivo não encontrou nenhum
+  arquivo de teste tocado pela 19.4/19.4.CORREÇÃO além dos explicitamente
+  listados nesta seção. Classificado como achado D, sem impacto em
+  correção (mesmas 3 falhas históricas, mesmos 6 skips, em todas as
+  medições).
+- **Zero migration nesta correção** (confirmado antes de implementar,
+  conforme preferência do pedido) — os 3 achados C eram inteiramente de
+  domínio/UI/lock, nenhum exigiu mudança de schema.
+- Testes: `tests/Feature/RequisicaoCompraCorrecaoTest.php` (24 testes
+  novos — cobertura completa dos itens A-X do pedido: stale delete
+  bloqueado nos 2 sentidos de corrida, dois drafts sobrepostos
+  coexistindo + emissão do segundo falhando sem resíduo parcial +
+  reduzir-e-reemitir funcionando, RC Concluída continua consumindo,
+  delete de draft libera saldo E permite remover a alocação depois,
+  etapa imutável, conclusão fora de ordem, RC só conclui com todas as
+  etapas concluídas mesmo fora de ordem, os 6 mutadores + abertura de
+  modal bloqueados cross-obra com usuário que TEM permissão nas duas
+  obras, cross-tenant reafirmado, direção RC→legado intacta, guards de
+  alocação reafirmados, emissão stale revalida saldo, zero efeito
+  colateral) + `RequisicaoCompraTest.php` ganhou 1 teste novo (`test_ad`,
+  já existia da 19.4 original) e 5 testes reescritos pra refletir a nova
+  semântica de saldo (test_g/h — saldo dentro de um único rascunho;
+  test_s/t/u — consumo OFICIAL, não rascunho, trava redução/remoção;
+  test_u3 novo — reduzir com só rascunho é permitido, mas remover
+  continua bloqueado pela FK). Nenhum teste pré-existente foi
+  enfraquecido — os reescritos documentam explicitamente por que a
+  asserção antiga ficou factualmente errada com a nova política.
+  Regressão completa: bucket RC+Suprimentos direto (107 testes), bucket
+  19.1/19.2/19.3 (156 testes), GED+Cronograma+PlanoSemanal+Lookahead e
+  TenantIsolationTest — zero regressão em toda a bateria.
+- **Não avançar pra Pedido/OC, Contrato, Entrega, Estoque, ou qualquer
+  outra fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta correção.
+
+## Pedido/Ordem de Compra + Contrato (Ciclo 19, Etapa 19.5)
+
+- **STOP-and-ask resolvido antes da migration**: o requisito original do
+  produto ("Pacote pega a data mais tarde das requisições e compara com
+  a necessidade") ficou genuinamente ambíguo com o domínio formal já
+  construído (RC tem `fimPrevisto()` do processo; Pedido teria sua
+  própria previsão de entrega). Decisão do usuário: **por RC**, usar a
+  MAIOR `data_prevista_entrega` entre os Pedidos `Emitido` dessa RC
+  (Pedido Rascunho nunca entra na conta); sem nenhum Pedido Emitido,
+  cair pra `RequisicaoCompra::fimPrevisto()` como fallback. **No
+  Pacote**, usar o MÁXIMO entre a data resultante de cada RC formal
+  (Emitida/Concluida). `folga = necessidade - data_projetada_atendimento`
+  — as duas datas (`fimPrevisto()` do processo × `data_prevista_entrega`
+  do Pedido, previsão comercial) continuam existindo separadamente,
+  nunca uma substitui/apaga a outra.
+- **Investigação (Seção 3 do pedido)**: grep global confirmou que
+  NENHUMA entidade Pedido/OrdemCompra/Contrato/Cotacao/Proposta já
+  existia no projeto — domínio 100% novo. `Fornecedor` (tenant+obra
+  scoped, `SoftDeletes`, sem alteração) foi reaproveitado sem
+  modificação.
+- **Cardinalidade**: 1 `RequisicaoCompra` → N `PedidoCompra` (nunca 1:1
+  — fracionamento por fornecedor/lote/prazo/negociação/complementação);
+  1 Pedido pertence a EXATAMENTE 1 RC (nunca cruza RCs, sem precedente
+  legado que exigisse diferente, já que o domínio é inteiramente novo).
+  Só é possível criar Pedido sobre uma RC que já deixou de ser Rascunho
+  (`Emitida`/`Concluida` — mesmo padrão de "só RP Emitida é alocável" da
+  19.3): a quantidade de `RequisicaoCompraItem` só é real/congelada a
+  partir da emissão da RC.
+- **Contrato — decisão do usuário (Seções 21/22)**: sem requisito
+  adicional confirmado além de número/data/fornecedor — `numero_contrato`/
+  `data_contrato` são campos OPCIONAIS diretamente em `pedidos_compra`,
+  nunca uma entidade própria (Fornecedor já é compartilhado com o
+  próprio Pedido).
+- **`pedidos_compra`/`pedido_compra_itens`** (2 tabelas novas, sem
+  `PedidoCompraEtapa` — Pedido não é um fluxo multi-etapa como RC, é um
+  compromisso comercial pontual): schema espelha `requisicoes_compra`/
+  `requisicao_compra_itens` (19.4) — mesmo fato documental
+  Rascunho→Emitido, mesma numeração via lock em linha estável (`Work`),
+  mesmo `UNIQUE(obra_id, numero)`. `status`: Rascunho|Emitido apenas
+  (`App\Enums\StatusPedidoCompra`) — sem Cancelado/Concluido nesta fase
+  (sem precedente/requisito confirmado, mesma decisão já tomada pra
+  `StatusGrd`/`StatusRequisicaoPlanejamento`/`StatusRequisicaoCompra` em
+  suas primeiras etapas).
+- **`PedidoCompraItem` nunca aponta direto a `ItemTakeOff`** — só a
+  `RequisicaoCompraItem` (cadeia histórica completa: PedidoItem → RCItem
+  → AlocacaoRequisicaoPacote → RPItem → ItemTakeOff → Lista → Revisão →
+  Documento). Colunas `*_snapshot` (nullable, vazias em Rascunho,
+  congeladas só na emissão do Pedido) são copiadas DIRETAMENTE dos
+  campos `*_snapshot` já congelados em `RequisicaoCompraItem` (nunca
+  reatravessa a cadeia inteira de novo até `ItemTakeOff` — item 38 do
+  pedido: "não depender de RCItem vivo pra descrição", satisfeito
+  copiando do que já está congelado, não do vivo).
+- **Saldo — mesma filosofia de 19.4.CORREÇÃO, replicada uma camada
+  acima**: `quantidade_da_rc_item − SUM(PedidoCompraItem.quantidade_pedida
+  WHERE Pedido.status = Emitido)` — Pedido Rascunho NUNCA consome saldo
+  oficial. Centralizado em
+  `RequisicaoCompraItem::quantidadeConsumidaOficialPorPedido()`/
+  `saldoOficialParaPedido()` (mesmo padrão de
+  `AlocacaoRequisicaoPacote::quantidadeConsumidaOficialPorRc()`).
+  Consequência deliberada, idêntica à da camada RC: múltiplos rascunhos
+  de Pedido podem reservar até o saldo oficial CHEIO cada um — só a
+  emissão revalida de verdade e serializa.
+- **Ordem de lock, nova extensão do mesmo princípio**: `PedidoCompra →
+  RequisicaoCompraItem` (mesmo papel de `RequisicaoCompra →
+  AlocacaoRequisicaoPacote` uma camada abaixo) — nunca compartilha
+  recurso com a cadeia `RequisicaoPlanejamentoItem → ItemSuprimento →
+  AlocacaoRequisicaoPacote` dentro da MESMA transação (Pedido nunca toca
+  `AlocacaoRequisicaoPacote` diretamente), então não há risco de
+  inversão entre as duas cadeias.
+- **Delete de RC/Pacote com Pedido — nenhum guard novo necessário**
+  (achado da investigação, não uma omissão): como Pedido só pode existir
+  sobre uma RC `Emitida`/`Concluida`, e essas já são PERMANENTEMENTE
+  imutáveis desde 19.4 (nunca voltam a Rascunho, nunca são excluídas), e
+  como o `ItemSuprimentoObserver` já bloqueia exclusão do Pacote com
+  QUALQUER RC (mesmo Rascunho) desde 19.4 — a cadeia inteira já está
+  transitivamente protegida sem precisar de nenhuma extensão nos
+  Observers existentes. Pelo mesmo motivo, "RCItem não pode reduzir
+  abaixo do Pedido Emitido" (item 33 do pedido) é uma condição
+  estruturalmente impossível de violar: `RequisicaoCompraItem` só pode
+  ser alterado enquanto a RC é Rascunho (guard já existente de 19.4), e
+  Pedido só existe depois da RC virar Emitida — por construção, nenhum
+  RCItem com Pedido associado jamais é editável.
+- **Delete de Pedido — mesma disciplina de 19.4.CORREÇÃO (RC)**:
+  `PedidoCompraObserver` (barreira semântica) + lock na Action/UI (`excluirPedidoRascunho()`
+  em `⚡suprimentos.blade.php`, header primeiro dispara o guard, itens
+  limpos depois) — nunca reaproveita objeto Livewire previamente
+  carregado, sempre reescopado por `obra_id`.
+- **Cross-obra — mesma disciplina de resolvers de 19.4.CORREÇÃO,
+  estendida desde o primeiro dia**: 5 resolvers novos
+  (`resolverRcItemDaObraAtual`/`resolverFornecedorDaObraAtual`/
+  `resolverPedidoDaObraAtual`/`resolverItemPedidoDaObraAtual`, mais o já
+  existente `resolverRcDaObraAtual`) usados em todos os pontos de
+  mutação/leitura de Pedido — nunca confia só em `garantirPermissao()`.
+  `CriarPedidoCompra` também valida no domínio que `Fornecedor.obra_id`
+  bate com `RequisicaoCompra.obra_id` (defesa em profundidade).
+- **UI**: seção "Pedidos / Ordens de Compra" dentro do detalhe da RC
+  (`⚡suprimentos.blade.php`, dentro do modal de RC, dentro do branch
+  Emitida/Concluída — nunca uma rota/área nova separada, mesma decisão
+  de manter tudo dentro da experiência única de Suprimentos já
+  estabelecida pra RC). Permissão reaproveitada: `suprimentos.mapa`
+  (`ver`/`criar`/`editar`/`excluir`) — nenhum slug novo.
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita): recebimento físico, estoque, baixa de estoque, medição,
+  Restrição automática, prontidão, integração financeira, pagamento,
+  Nota Fiscal, upload de documento/anexo do Pedido, cancelamento de
+  Pedido Emitido (delete nunca é usado como cancelamento — sem
+  requisito confirmado pra uma feature de cancelamento explícita ainda).
+- Testes: `tests/Feature/PedidoCompraTest.php` (36 testes — matriz A-AK
+  condensada: cardinalidade, criação sobre RC rascunho bloqueada,
+  itens/saldo/over-pedido/drafts sobrepostos/emissão stale, concorrência,
+  fornecedor + snapshot + soft-delete pós-emissão, numeração sequencial
+  por obra, snapshots congelados independentes do RCItem vivo,
+  imutabilidade, previsão de entrega/necessidade/folga positiva e
+  negativa/reprogramação não altera o Pedido já emitido, delete
+  Emitido bloqueado, delete Rascunho libera saldo, cross-obra/cross-
+  tenant, autorização, Pacote com várias RCs/Pedidos independentes, RC
+  sem Pedido nunca quebra, conciliação navegável pela cadeia completa,
+  performance O(1) por RC não O(N), zero Restricao/prontidão, legado
+  intocado) + 1 novo em `TenantIsolationTest.php` (as 2 tabelas novas).
+  Regressão: bucket RC+Pedido+Suprimentos legado (175 testes, 1 falha —
+  a mesma histórica e pré-existente de `ItemSuprimentoStatusTest`, sem
+  relação), GED+Cronograma+PlanoSemanal+Lookahead+TenantIsolationTest.
+- **Não avançar pra recebimento/estoque/baixa/medição/Restrição
+  automática/integração financeira ou qualquer outra fase sem validação
+  do usuário** (instrução explícita) — aguardando aprovação desta etapa.
+
+## Pedido/Ordem de Compra — hardening da emissão (Ciclo 19, Etapa 19.5.CORREÇÃO)
+
+- **Contexto**: a microauditoria adversarial da 19.5 confirmou
+  empiricamente um achado C — `EmitirPedidoCompra` resolvia o Fornecedor
+  via `$pedido->fornecedor()->first()`, uma relação que respeita o scope
+  global de `SoftDeletes` — com o Fornecedor soft-deletado entre o
+  rascunho e a emissão, isso retornava `null` **silenciosamente**, e o
+  Pedido era emitido mesmo assim (`status=Emitido`, `numero` atribuído)
+  com `fornecedor_nome_snapshot`/`_cnpj_snapshot` ambos `NULL` — um
+  compromisso comercial formal nascendo sem identidade histórica do
+  fornecedor. Esta correção fecha exclusivamente esse achado + formaliza
+  a obrigatoriedade de `data_prevista_entrega` na emissão (fechando a
+  ambiguidade D relacionada) — nada de Pedido/OC/Contrato foi alterado
+  além disso.
+- **Fornecedor SEMPRE revalidado FRESH na emissão, nunca via relação já
+  carregada, nunca `withTrashed()`**: `EmitirPedidoCompra::execute()`
+  agora roda `Fornecedor::query()->where('obra_id', $pedido->obra_id)
+  ->whereKey($pedido->fornecedor_id)->first()` — uma query NOVA, direta,
+  dentro da MESMA transação, ANTES de qualquer escrita. Ausência (soft-
+  deletado, OU de outra obra/tenant — defesa em profundidade, já que a
+  UI/domínio já bloqueiam isso na criação) lança
+  `App\Exceptions\FornecedorPedidoInvalidoException` — mensagem didática
+  ("O fornecedor selecionado não está mais disponível..."), nunca expõe
+  SQL/ID/`deleted_at`. **Decisão explícita do usuário**: NUNCA
+  `withTrashed()` pra "ressuscitar" o fornecedor silenciosamente — o
+  usuário precisa selecionar um fornecedor ativo de verdade antes de
+  emitir (não existe fluxo de "trocar fornecedor" num rascunho já
+  criado nesta etapa — o caminho real é criar um novo rascunho com o
+  fornecedor correto, comprovado por teste).
+- **Atomicidade preservada**: a checagem de fornecedor roda ANTES do
+  loop que trava/revalida `RequisicaoCompraItem` e ANTES de congelar
+  qualquer snapshot — uma falha de fornecedor nunca deixa
+  número/status/`emitido_em`/`emitido_por`/snapshot de item parcial.
+  Comprovado por teste dedicado inspecionando o estado completo do
+  Pedido (e de todos os seus itens) após a falha.
+- **Fornecedor soft-deletado DEPOIS da emissão — comportamento
+  intocado**: `fornecedor_nome_snapshot`/`_cnpj_snapshot` já congelados
+  continuam a única fonte de verdade pro histórico; a query fresh de
+  fornecedor só roda DURANTE a emissão, nunca depois — reafirmado por
+  teste (mesmo comportamento já validado na 19.5 original).
+- **`data_prevista_entrega` obrigatória na emissão, opcional em
+  Rascunho** (decisão de produto formalizada pelo usuário): Rascunho
+  pode ficar incompleto (sem essa data, ainda sendo montado);
+  `EmitirPedidoCompra` bloqueia com `PedidoCompraEmissaoInvalidaException`
+  ("Informe a data prevista de entrega...") se `data_prevista_entrega`
+  for nula — validado na Action, **nunca `NOT NULL` no banco** (a coluna
+  continua nullable, decisão deliberada: um Rascunho incompleto
+  continua sendo um estado legítimo). Isso elimina, por construção, a
+  ambiguidade D da 19.5 original: `RequisicaoCompra::
+  dataProjetadaAtendimento()` nunca mais silenciosamente ignora um
+  Pedido Emitido por falta de data — todo Pedido Emitido, sem exceção,
+  tem `data_prevista_entrega` preenchida.
+- **Regra por RC/Pacote — intocada, agora sem ambiguidade**: MAX(entrega
+  dos Pedidos `Emitido`) por RC, fallback `fimPrevisto()` só quando não
+  há Pedido Emitido; Pedido Rascunho nunca participa; Pacote usa MAX
+  entre as RCs formais. Reafirmado por teste dedicado com a nova
+  invariante.
+- **UI**: `⚡suprimentos.blade.php::emitirPedido()` passou a capturar
+  também `FornecedorPedidoInvalidoException`, mostrando toast amigável
+  (nunca 500) — comprovado por teste Livewire real (não só a Action
+  isolada).
+- **Mapa de Suprimentos (item D de UX da auditoria)**: avaliado e
+  **deliberadamente não implementado nesta correção** — exigiria eager-
+  load adicional (`requisicoesCompra.pedidos`/`.etapas`) na query
+  principal `itensFiltrados()`, já extensa e criticamente testada;
+  prioridade desta etapa era fechar o achado C, não redesenhar a
+  listagem principal. Permanece D documentado, não implementado.
+- **Achado 19 do pedido — comportamento real confirmado, não alterado**:
+  `fornecedor_id` já é `NOT NULL` no schema desde a 19.5 original — um
+  Pedido Rascunho SEMPRE tem um fornecedor selecionado desde a criação
+  (nunca fica "sem fornecedor" enquanto rascunho); só `data_prevista_entrega`
+  é o campo que pode ficar incompleto num rascunho.
+- Testes: `tests/Feature/PedidoCompraCorrecaoTest.php` (13 testes novos
+  — fornecedor ativo emite, soft-delete antes bloqueia sem efeito
+  parcial, trocar fornecedor num novo rascunho permite emitir com
+  snapshot correto, soft-delete depois preserva histórico, cross-obra e
+  cross-tenant do fornecedor bloqueados na emissão, data nula em
+  rascunho é permitida, data nula bloqueia emissão sem efeito parcial,
+  data preenchida emite normalmente, todo Pedido Emitido sempre tem
+  data, RC com múltiplos Pedidos usa MAX e draft nunca participa, UI
+  real com fornecedor stale mostra toast sem 500, zero efeito
+  colateral) + `PedidoCompraTest.php` (36 testes já existentes,
+  ajustados só na fixture de setup — 36 chamadas de `criarPedido->execute()`
+  que antes passavam `null` de data e emitiam em seguida passaram a
+  usar uma data válida fixa, já que a nova regra de negócio faz emitir
+  sem data ser um erro esperado; nenhuma asserção de teste foi
+  enfraquecida, só a fixture corrigida pra continuar representando um
+  cenário válido sob a nova regra).
+- **Não avançar pra recebimento/estoque/baixa/medição/Restrição
+  automática/integração financeira/Notification ou qualquer outra fase
+  sem validação do usuário** (instrução explícita) — aguardando
+  aprovação desta correção.
+
+## Programação e Recebimento Físico de Materiais (Ciclo 19, Etapa 19.6)
+
+- **Recebimento é evento físico, append-only, headerless** —
+  `App\Models\RecebimentoPedido` (tabela `recebimentos_pedido`) representa
+  "este PedidoCompraItem recebeu X unidades nesta data", nunca editado nem
+  apagado (`App\Observers\RecebimentoPedidoObserver::deleting()` bloqueia
+  incondicionalmente, mesmo padrão de `ListaEngenhariaObserver` — cobre
+  `delete()` E `forceDelete()`, já que `forceDelete()` sempre delega pra
+  `delete()`). **Sem cabeçalho de "evento de recebimento"** (decisão de
+  arquitetura, investigada antes da migration) — mesmo espírito exato de
+  `GrdRecolhimento`→`GrdDistribuicao` (Ciclo 18): nenhum requisito
+  funcional exige consultar "o que mais chegou na mesma remessa" como
+  entidade própria; um caminhão trazendo itens de vários Pedidos vira N
+  linhas independentes, criadas numa única ação de UI (conveniência de
+  tela, não requisito de schema) — isso elimina por completo a pergunta
+  "o cabeçalho pode cruzar Pedidos?".
+- **`PedidoCompraItem.quantidade_pedida` é o compromisso comercial
+  original e NUNCA é sobrescrita** — recebimento é sempre um fato
+  separado (`recebimentos()`), a soma acumulada é sempre DERIVADA em
+  tempo de leitura (`quantidadeRecebida()`), nunca uma coluna própria.
+- **Parciais são o caso normal**: `saldoAReceber()` = `quantidade_pedida -
+  quantidadeRecebida()`; `statusRecebimento()` (`App\Enums\
+  StatusRecebimentoItem`: NaoRecebido|ParcialmenteRecebido|Recebido) é
+  sempre derivado, nunca persistido. `situacaoEntrega()` (`App\Enums\
+  SituacaoEntregaPedido`: NaoIniciada|Parcial|Completa) é o equivalente
+  em nível de Pedido — **deliberadamente distinto de `PedidoCompra.status`**
+  (documental/comercial, Rascunho|Emitido) — os dois nunca são
+  confundidos nem sincronizados um com o outro.
+- **Over-recebimento bloqueado, sempre server-side**
+  (`App\Exceptions\SaldoPedidoInsuficienteException`), mesmo padrão
+  quantitativo de toda a cadeia do Ciclo 19 (TakeOff→RP→Pacote→RC→Pedido).
+  **Concorrência**: `App\Actions\Suprimentos\RegistrarRecebimentoPedido`
+  trava `PedidoCompraItem::lockForUpdate()` ANTES de somar
+  `RecebimentoPedido.quantidade_recebida` — mesmo mecanismo já usado em
+  toda a cadeia de saldo do ciclo (duas tentativas concorrentes disputam
+  o lock da MESMA linha; a segunda só prossegue depois que a primeira
+  commita, e já vê a soma atualizada). Só Pedido `Emitido` pode receber
+  (revalidado fresh na Action, nunca confiado só à UI) — Rascunho é
+  sempre bloqueado (`App\Exceptions\RecebimentoPedidoInvalidoException`).
+- **`data_prevista_entrega` (previsão comercial) ≠ `recebido_em` (fato
+  físico)** — nunca a mesma coisa, nunca uma bloqueia a outra: receber
+  antes da previsão é permitido sem aviso ("previsão não é janela de
+  autorização", decisão explícita do usuário); data retroativa também é
+  permitida sem bloqueio (sem precedente que justificasse impedir).
+- **Ordem operacional é SEMPRE a ordem de REGISTRO
+  (`created_at`/`id`), nunca `recebido_em`** — mesmo princípio já
+  documentado em `GrdDistribuicao::estado()` (18.5.1.HARDENING): a data
+  informada pelo usuário nunca decide qual evento "completou" o item.
+  `PedidoCompraItem::dataConclusaoRecebimento()` percorre os eventos
+  nessa ordem, acumulando quantidade, e retorna o `recebido_em` do
+  evento que efetivamente zerou o saldo — nunca um MAX/MIN bruto de
+  `recebido_em` (que poderia ser um evento fora de ordem de registro).
+  **Achado de implementação**: chamar `->orderBy()` em cima da relação
+  `recebimentos()` (que já embute `->orderByDesc(...)`) só ACRESCENTA
+  colunas de ordenação, nunca substitui as existentes — o DESC original
+  permanece dominante. `dataConclusaoRecebimento()` usa uma query NOVA e
+  independente (`RecebimentoPedido::where(...)`), nunca a relação
+  pré-ordenada, exatamente por isso.
+- **Atraso real, dois conceitos distintos, nunca confundidos**:
+  `PedidoCompra::diasAtrasoAtual()` (hoje já passou da previsão e ainda
+  há saldo em aberto) vs. `diasAtrasoFinal()` (entrega já completa, mas
+  terminou depois da previsão) — mutuamente exclusivos por construção
+  (um exige `situacaoEntrega() !== Completa`, o outro exige `===
+  Completa`). `dataEntregaCompleta()` nunca sobrescreve
+  `data_prevista_entrega` — as duas convivem sempre.
+- **Necessidade do cronograma continua 100% dinâmica**
+  (`ItemSuprimento::necessidade()`, intocada desde 19.3) — nenhuma data
+  é congelada nesta etapa. Reprogramar o cronograma ou arquivar uma
+  atividade (`fora_do_cronograma`) muda a necessidade imediatamente, sem
+  nenhum efeito sobre recebimentos já registrados (fato histórico
+  intocado) — provado por teste dedicado.
+- **`App\Support\Suprimentos\ConciliacaoRecebimento`** — mesma filosofia
+  100% derivada de `ConciliacaoAlocacao`/`ConciliacaoTakeOff`: toda
+  entrada aceita coleção já carregada, agregações em lote via `GROUP BY`
+  (nunca 1 SUM por linha em loop). `porPedidoItens()`/`porPedidoItem()`/
+  `porPedido()`/`porPacote()` (nunca soma quantidade entre unidades
+  incompatíveis — só contagem de itens não-recebidos/parciais/completos)
+  + `cadeiaCompletaPorItemTakeOff()` (cadeia quantitativa completa
+  TakeOff→RP→Pacote→RC→Pedido→Recebido pra 1 item, uso pontual de tela
+  de detalhe, nunca listagem em massa). **Achado de implementação**:
+  `porPacote()` precisou de `$pacote->loadMissing(['atividades',
+  'requisicoesCompra.pedidos'])` explícito — `ItemSuprimento::
+  dataProjetadaAtendimento()`/`folgaAtendimento()` (19.5) leem
+  `$this->requisicoesCompra` e, por dentro, `RequisicaoCompra::pedidos`;
+  sem o eager-load em lote, o acesso indireto a `pedidos` (dentro de um
+  `->map()`) violava `preventLazyLoading` mesmo com `requisicoesCompra`
+  já carregada superficialmente.
+- **UI — fecha o D pendente da 19.5**: `⚡suprimentos.blade.php` ganhou
+  (1) seção "Atendimento e Recebimento Físico" no detalhe do Pacote
+  (necessidade/atendimento projetado/folga/badge de risco/contagem de
+  itens não-recebidos-parciais-completos/alerta de atraso, tudo via
+  `ConciliacaoRecebimento::porPacote()`, zero regra nova na Blade); (2)
+  colunas Recebido/Saldo/Situação + botão "Registrar recebimento" na
+  tabela de itens de um Pedido Emitido, com formulário inline
+  (quantidade/data/local/observação) e histórico completo abaixo de cada
+  item (nunca só o estado final — cada evento aparece, com autor via
+  `first_name`/`last_name`, mesmo padrão "Usuário removido" já usado em
+  todo o projeto); (3) colunas Situação de entrega + badge de atraso na
+  listagem de Pedidos dentro do detalhe da RC (seção 34 — Planejamento só
+  LÊ, nunca muta recebimento). Permissão reaproveitada: `suprimentos.mapa`
+  (`editar`) — nenhum slug novo.
+- **Achado de implementação (bug real, pego pelo teste de UI antes de
+  produção)**: a primeira versão de `registrarRecebimento()` passava
+  `$this->recebimentoDataNova` (string crua do `wire:model`) direto pra
+  `RegistrarRecebimentoPedido::execute()`, que exige `\DateTimeInterface`
+  — `TypeError` em qualquer submissão real pela UI, nunca capturado pelos
+  testes de domínio (que sempre passavam `Carbon::parse(...)` já
+  convertido). Corrigido envolvendo em `\Carbon\Carbon::parse(...)` no
+  próprio método do componente — só encontrado porque o teste de UI
+  disparava o fluxo real via `Livewire::test()->call('registrarRecebimento',
+  ...)`, não só a Action isolada.
+- **Zero efeito colateral, reconfirmado por teste dedicado**: nenhuma
+  `Restricao`, `PlanoAcao` ou `InconsistenciaAvanco` é criada por
+  recebimento físico; `Atividade::estaPronta()` nunca muda por causa de
+  recebimento; `SincronizarRestricaoSuprimento`/`SuprimentoScheduler`
+  (mecanismo legado) permanecem 100% intocados e sem regressão — a
+  ponte automática de Restrição do domínio legado
+  (`SincronizarRestricaoSuprimento`) nunca foi estendida pro domínio
+  novo (RC/Pedido/Recebimento), decisão deliberada desta etapa.
+- **Fornecedor soft-deletado depois de já ter recebido material** —
+  histórico intacto: `fornecedor_nome_snapshot`/`_cnpj_snapshot`
+  (congelados desde 19.5.CORREÇÃO) continuam a única fonte de verdade,
+  `RecebimentoPedido` nunca depende do cadastro vivo do Fornecedor.
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita): estoque, movimentação de estoque, reserva para frente de
+  serviço, baixa/consumo, Nota Fiscal, financeiro/pagamento, Restrição
+  automática a partir de atraso de entrega, alteração de prontidão,
+  correção/estorno de um recebimento já registrado (dívida documentada —
+  fica pra uma etapa futura dedicada), auto-cancelamento de Pedido.
+- **Não avançar pra estoque, Restrição automática a partir de atraso de
+  entrega, alteração de prontidão, Notification, ou qualquer outra fase
+  sem validação do usuário** (instrução explícita) — aguardando
+  aprovação desta etapa.
+
+### 19.6.CORREÇÃO — imutabilidade real + cronologia física do recebimento
+
+- **Contexto**: a auditoria adversarial da 19.6 encontrou 2 achados C
+  confirmados empiricamente. Esta correção fecha os dois, sem tocar
+  Pedido/RC/Alocação/RP/TakeOff, sem iniciar 19.7/estoque/Restrição
+  automática/Notification/alteração de prontidão.
+- **C1 — `RecebimentoPedido` não era estruturalmente append-only**: a
+  versão original só bloqueava `deleting()` — `$evento->
+  quantidade_recebida = 999; $evento->save();` e `$evento->update([...])`
+  passavam SEM exceção, reescrevendo o fato físico sem trilha, apesar do
+  docblock já afirmar (incorretamente) "bloqueado incondicionalmente".
+  **Corrigido**: `App\Observers\RecebimentoPedidoObserver::updating()`
+  agora bloqueia SEMPRE, incondicionalmente, junto de `deleting()` — o
+  único writer autorizado continua sendo `App\Actions\Suprimentos\
+  RegistrarRecebimentoPedido::execute()` (via `RecebimentoPedido::create()`,
+  nunca `update()`). **Limitação estrutural residual, documentada e
+  aceita, não escondida**: um Observer Eloquent nunca intercepta
+  `DB::table('recebimentos_pedido')->update(...)` nem `RecebimentoPedido::
+  where(...)->update(...)` (mass update) — isso é uma limitação do
+  próprio framework. Grep exaustivo em `app/` confirmou **zero writer de
+  produção** usando qualquer uma das duas formas contra esta tabela — as
+  duas permanecem API PROIBIDA por convenção arquitetural, não por
+  trigger de banco (nenhum motivo real apareceu que justificasse essa
+  complexidade — nenhuma migration nova nesta correção).
+- **C2 — `dataConclusaoRecebimento()` usava ordem de REGISTRO em vez de
+  cronologia física**: a versão original ordenava por `created_at`/`id`
+  (copiado, incorretamente, do princípio de `GrdDistribuicao::estado()`,
+  que protege o ESTADO ATUAL contra reescrita retroativa — uma pergunta
+  diferente da que este método responde). Confirmado empiricamente que
+  isso produzia uma conclusão ERRADA sob backdating fora de ordem de
+  registro (10/10=40 registrado 1º, 12/10=30 registrado 2º, 11/10=30
+  backdatado registrado 3º — cronologia física conclui em 12/10, o código
+  antigo retornava 11/10), contaminando `dataEntregaCompleta()` e
+  `diasAtrasoFinal()`. **Corrigido**: `App\Models\PedidoCompraItem::
+  dataConclusaoRecebimento()` agora ordena por `recebido_em ASC`
+  (critério PRIMÁRIO — a cronologia física real), com `created_at ASC,
+  id ASC` só como DESEMPATE determinístico entre eventos do MESMO dia
+  (nunca decide a DATA de conclusão, provado por teste dedicado — 3
+  eventos no mesmo dia sempre concluem naquele dia, seja qual for a
+  ordem de registro entre eles). `primeiraEntregaEm()`/`ultimaEntregaEm()`
+  já usavam cronologia corretamente desde a 19.6 original — não
+  alterados, agora consistentes com `dataConclusaoRecebimento()`.
+- **D fechado — `recebido_em` futuro agora é BLOQUEADO (decisão de
+  produto formalizada)**: `RecebimentoPedido` representa um FATO já
+  ocorrido, nunca uma programação — `PedidoCompra.data_prevista_entrega`
+  já é o campo de programação/previsão, `recebido_em` não pode duplicar
+  esse papel. `App\Actions\Suprimentos\RegistrarRecebimentoPedido`
+  normaliza `recebido_em` pra `date` (`Carbon::parse(...)->startOfDay()`,
+  nunca comparação de string frágil) e lança
+  `RecebimentoPedidoInvalidoException` se maior que `Carbon::today()`,
+  ANTES de qualquer lock/escrita. Retroativo continua permitido sem
+  limite de quão antigo (lançamento de NF atrasada, entrada manual/
+  offline) — decisão explícita de não inventar uma janela arbitrária.
+  UI ganhou `max="{{ now()->toDateString() }}"` no campo de data (UX
+  defensiva, nunca a única proteção — a validação real é sempre
+  server-side na Action).
+- **Backdating nunca ignora saldo/over-recebimento**: a validação de
+  saldo (`SUM(quantidade_recebida) <= quantidade_pedida`) é totalmente
+  independente da cronologia de `recebido_em` — um evento retroativo
+  ainda é bloqueado se ultrapassar o saldo residual no momento do
+  registro, e um item já completo continua bloqueando qualquer
+  recebimento extra mesmo com data anterior a eventos já registrados.
+- **Achado de teste, não de produção**: as datas literais usadas nos
+  cenários de `RecebimentoPedidoTest`/`SuprimentosRecebimentoUiTest`
+  (out-dez/2026) foram escritas quando "hoje" era ~agosto/2026 —
+  legítimas na época, mas passaram a cair no FUTURO relativo ao relógio
+  real do ambiente conforme o tempo passou, o que a nova validação de
+  data futura corretamente rejeitava. Corrigido travando o relógio
+  (`Carbon::setTestNow(Carbon::parse('2026-12-15'))` em `setUp()` +
+  `Carbon::setTestNow()` em `tearDown()`) nos dois arquivos — mesmo
+  padrão já documentado no projeto pra fixture data-dependente, nunca
+  um ajuste de código de produção.
+- **Não tocado**: `PedidoCompra`/`PedidoCompraItem` (exceto o algoritmo
+  de `dataConclusaoRecebimento()`)/`RequisicaoCompra`/
+  `AlocacaoRequisicaoPacote`/`ItemTakeOff`/snapshots/fornecedor/status
+  comercial do Pedido, `ConciliacaoRecebimento` (a mudança de ordenação
+  vive inteiramente dentro de `PedidoCompraItem`, `ConciliacaoRecebimento`
+  só consome o resultado), concorrência (mecanismo de lock intocado, só
+  reconfirmado por teste), legado (`SuprimentoScheduler`/
+  `SincronizarRestricaoSuprimento`), prontidão, Restrição, Notification,
+  estoque. Migration: zero (confirmado — nenhum motivo real pra trigger/
+  schema apareceu).
+- Testes: `tests/Feature/RecebimentoPedidoCorrecaoTest.php` (25 testes
+  novos — A-Z do pedido de correção + caracterização documentada do
+  bypass de Query Builder). `RecebimentoPedidoTest.php`/
+  `SuprimentosRecebimentoUiTest.php` (os 42 testes já existentes,
+  ajustados só com relógio travado no `setUp()`/`tearDown()` — nenhuma
+  asserção enfraquecida, mesmo comportamento de negócio revalidado).
+- **Não avançar pra 19.7, estoque, Restrição automática, alteração de
+  prontidão, ou Notification sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta correção.
+
+## Estoque e Rastreabilidade de Materiais (Ciclo 20, Etapa 20.1 — Fundação)
+
+- **Contexto**: investigação prévia (Etapa 20.0, só leitura) confirmou 4
+  decisões de produto bloqueantes antes de qualquer schema — resolvidas
+  pelo usuário via `AskUserQuestion`: (1) criar catálogo mestre de
+  `Material`/SKU, desacoplado do Take Off; (2) `DestinacaoPlanejada`
+  será entidade própria numa fase futura, nunca um campo de quantidade
+  no pivô legado Pacote↔Atividade; (3) identidade de "frente de
+  aplicação" = `FrenteTrabalho` existente (não `Atividade` diretamente);
+  (4) catálogo de permissão `estoque.*` com múltiplos slugs futuros
+  (`movimentacao`/`reserva`/`conciliacao`/`inventario`), só
+  `estoque.movimentacao` implementado nesta etapa.
+- **Princípio central, já confirmado pela implementação**: movimentação
+  física é fato (`MovimentacaoEstoque`, append-only); saldo é sempre
+  DERIVADO (`App\Support\Estoque\SaldoEstoque`, agregação `GROUP BY`,
+  nunca coluna persistida) — mesma filosofia já validada em toda a
+  cadeia do Ciclo 19 (`ConciliacaoTakeOff`/`ConciliacaoAlocacao`/
+  `ConciliacaoRecebimento`).
+- **`Material` ≠ `ItemTakeOff`**: `ItemTakeOff` continua sendo só a
+  ocorrência documental de necessidade (LM-001/LM-002...), presa à sua
+  Lista/Revisão exata, nunca reescrita para virar identidade física.
+  `Material` é o catálogo mestre novo — tenant-scoped (mesmo escopo de
+  `FamiliaMaterial`/`UnidadeMedida`, catálogos irmãos do mesmo domínio;
+  o mesmo SKU pode ser comprado/aplicado em várias obras do tenant).
+  Identidade: `unique(tenant_id, codigo)`, `codigo` OBRIGATÓRIO
+  (diferente de `ItemTakeOff.codigo`, que é opcional) — Material é o
+  catálogo mestre, precisa de identidade estrutural real.
+  `unidade_medida_id` também é OBRIGATÓRIO e `restrictOnDelete()`
+  (diferente de `ItemTakeOff`, nullable) — todo o cálculo de saldo em
+  `MovimentacaoEstoque` depende de uma unidade estável.
+- **`ItemTakeOff.material_id`** (nova coluna, nullable, `restrictOnDelete()`
+  pra `materiais`): associação OPCIONAL e manual — nunca inferida por
+  descrição/texto, nunca backfill automático. Duas LMs diferentes (mesmo
+  Documento ou não) apontando pro MESMO `Material` consolidam saldo de
+  estoque automaticamente via `MovimentacaoEstoque.material_id`, sem que
+  o Take Off/histórico documental seja alterado — provado por teste
+  (`test_c_mesmo_material_em_dois_item_take_off`/
+  `test_ai_duas_lms_mesmo_material_consolidam_saldo`).
+  **Imutabilidade condicional** (decisão do usuário, investigação 20.0/
+  20.1): `material_id` é livremente editável ENQUANTO nunca foi usado
+  numa entrada de estoque real; uma vez que existe pelo menos uma
+  `MovimentacaoEstoque` originada deste `ItemTakeOff` (breadcrumb
+  denormalizado, ver abaixo), a associação fica permanentemente travada
+  — `App\Observers\ItemTakeOffObserver::garantirMaterialNaoReescritoAposUso()`
+  (`isDirty('material_id') && utilizadoEmEstoque()` → `App\Exceptions\
+  ItemTakeOffMaterialImutavelException`). Continua coexistindo com o
+  guard de vigência de lista já existente (19.1.HARDENING), sem
+  substituí-lo.
+- **`LocalEstoque`**: posição física/custódia dentro da obra — nunca
+  confundir com `FrenteTrabalho` (aplicação operacional, investigação
+  20.0 Seção 8). Obra-scoped, mesmo padrão exato de `FrenteTrabalho`/
+  `EquipeResponsavel`. `App\Enums\TipoLocalEstoque` (Almoxarifado/
+  Container/Pátio/Área Técnica) deliberadamente SEM o tipo "Terceiro" —
+  custódia em fornecedor (industrialização externa, fase futura) é
+  mudança de CUSTÓDIA, não uma localização física da própria obra;
+  misturar os dois geraria ambiguidade quando essa fase existir.
+- **`UnidadeEstoque`**: identidade opcional de uma unidade física
+  rastreável (bobina/lote/heat/serial) — uma única entidade suporta os
+  3 modos de `App\Enums\ModoRastreabilidadeMaterial` (Quantitativo/
+  Lote/Serializado), nunca 3 tabelas de estoque separadas. **Material em
+  modo Quantitativo NUNCA cria uma linha aqui** — a `MovimentacaoEstoque`
+  correspondente tem `unidade_estoque_id = null`, e o saldo é agregado
+  direto por `(material_id, local_estoque_id)`; só Lote/Serializado usam
+  esta tabela. `codigo_lote`: `unique(tenant_id, material_id, codigo_lote)`
+  quando não nulo — identidade dentro do MESMO Material, nunca por
+  local (uma bobina existe fisicamente em 1 lugar por vez; tentar dar
+  entrada da mesma bobina em local diferente do já registrado é
+  bloqueado com `EntradaEstoqueInvalidaException`, já que Transferência
+  não existe nesta fase). `serial_unico`: `unique(tenant_id, serial_unico)`
+  quando não nulo — único por tenant inteiro, cross-obra (um serial
+  físico não pode existir duas vezes no mesmo tenant).
+  `recebimento_pedido_id` (nullable, `restrictOnDelete()`) preserva a
+  origem histórica quando a unidade nasceu de uma entrada vinda de
+  Pedido/Recebimento — nunca `cascadeOnDelete()` (evidência histórica,
+  mesma lição de sempre).
+- **`MovimentacaoEstoque`**: ledger append-only do fato físico — mesmo
+  padrão exato de `RecebimentoPedido`/`GrdRecolhimento`
+  (`App\Observers\MovimentacaoEstoqueObserver` bloqueia `updating()`/
+  `deleting()` incondicionalmente; `const UPDATED_AT = null`; só
+  `App\Actions\Estoque\RegistrarEntradaEstoque` escreve aqui). **Só o
+  tipo `Entrada` existe nesta fase** (instrução explícita do pedido —
+  não antecipar Transferência/Saída/Industrialização) — `App\Enums\
+  TipoMovimentacaoEstoque` é uma coluna string, não um MySQL ENUM
+  físico, então o conjunto de valores cresce em fases futuras sem
+  migration. `obra_id` é DENORMALIZADO a partir de `local_estoque_id.obra_id`
+  no momento da criação (Material é tenant-scoped, mas toda
+  movimentação acontece numa obra concreta via o Local) — mesmo padrão
+  já usado em `ItemSuprimento.obra_id`. **`item_take_off_id` (nullable,
+  `restrictOnDelete()`) é um BREADCRUMB denormalizado**, resolvido uma
+  única vez no momento da entrada — existe só pra (1) o guard de
+  imutabilidade de `material_id` acima, sem precisar de join profundo a
+  cada validação, e (2) navegação/consolidação rápida "quais entradas
+  vieram deste ItemTakeOff" — nunca duplica a cadeia inteira
+  (`recebimento_pedido_id` já é suficiente pra navegar até
+  RequisicaoCompraItem/Alocacao/RPItem/Lista/Documento).
+- **`App\Support\Estoque\ResolverMaterialDaCadeia`**: navega a cadeia
+  histórica completa do Ciclo 19 (`RecebimentoPedido` → `PedidoCompraItem`
+  → `RequisicaoCompraItem` → `AlocacaoRequisicaoPacote` →
+  `RequisicaoPlanejamentoItem` → `ItemTakeOff`) sempre via queries
+  explícitas encadeadas (`::find()`), nunca travessia de relação — os
+  models aqui nunca vêm eager-loaded quando chamados de dentro de uma
+  Action/transação, e lazy loading está bloqueado fora de produção
+  (mesmo cuidado já documentado em `EmitirPedidoCompra`/
+  `RegistrarRecebimentoPedido`, Ciclo 19).
+- **`App\Actions\Estoque\RegistrarEntradaEstoque`** — o único ponto de
+  escrita de `MovimentacaoEstoque`. **Cardinalidade**: 1 `RecebimentoPedido`
+  pode gerar N entradas (ex.: 1000m recebidos viram 2 bobinas de 500m em
+  locais/lotes distintos) — nunca um cabeçalho de "evento de entrada"
+  intermediário, mesmo padrão headless já usado em
+  `grd_recolhimentos`/`recebimentos_pedido`. **Material obrigatório
+  (CRÍTICO, investigação 20.0 Seção 23)**: se a cadeia não resolve um
+  `ItemTakeOff.material_id`, a entrada é bloqueada com mensagem
+  didática ("Associe este item a um Material/SKU antes de incorporá-lo
+  ao estoque") — nunca inventa/infere um Material, nunca altera o
+  histórico comercial. **Over-entrada bloqueada**: a soma das entradas já
+  incorporadas a partir de um `RecebimentoPedido` nunca pode superar
+  `quantidade_recebida` — `RecebimentoPedido::lockForUpdate()` adquirido
+  ANTES do SUM, mesmo mecanismo de toda a cadeia de saldo do Ciclo 19
+  (prova estrutural de ordem de lock via `DB::listen()`,
+  `test_r_ordem_de_lock_estrutural`). **Disponibilidade (Seção 18 da
+  investigação)**: como não existe domínio de qualidade/inspeção/
+  quarentena nesta fase, toda entrada é considerada fisicamente
+  disponível no instante em que é registrada — simplificação EXPLÍCITA
+  desta etapa, nunca chamada de "aprovado pela qualidade" em nenhum
+  texto de UI/código. **Data**: `ocorrido_em` representa o FATO da
+  incorporação — retroativa é sempre permitida, futura é BLOQUEADA
+  (`Carbon::today()`), mesmo padrão exato de `RecebimentoPedido.recebido_em`
+  (Ciclo 19, 19.6.CORREÇÃO).
+- **Permissão**: `estoque.movimentacao` (novo slug, `ESCOPO_OBRA`, seção
+  "Estoque" — `App\Support\CatalogoFuncionalidades`), limiar em
+  `Perfil::REGRAS_ESCRITA` igual a `suprimentos.mapa` (criar=Encarregado,
+  editar=Engenheiro, excluir=GerentePlanejamento — página irmã mais
+  próxima em espírito, sem Papel legado dedicado a "Almoxarifado").
+  **Decisão tomada durante a implementação (Seção 31 da investigação)**:
+  Material/Local não ganharam um slug `estoque.cadastros` separado
+  (não pré-aprovado) — `editar`/`excluir` de `estoque.movimentacao`
+  cobrem tanto a operação (registrar entrada) quanto o cadastro
+  (criar/inativar Material e Local), reaproveitando a mesma arquitetura
+  uniforme de 4 ações já usada em todo o catálogo. Reavaliar se, numa
+  fase futura, a separação de responsabilidade Almoxarifado/Cadastro
+  precisar de granularidade mais fina.
+- **UI** (`radar.estoque`, mesmo padrão obra-scoped de `radar.suprimentos`
+  — `public Work $obra` injetado via middleware `obra.context`,
+  `garantirPermissao()` inline, sem Policy dedicada): 4 abas — Materiais
+  (catálogo + saldo consolidado via `SaldoEstoque::porMateriais()` em
+  lote, nunca 1 query por linha), Locais de Estoque, Recebimentos
+  Pendentes de Incorporação (lista `RecebimentoPedido` com saldo
+  pendente > 0, botão "Dar entrada" com campos condicionais por modo de
+  rastreabilidade do Material resolvido), Movimentações (histórico
+  somente-leitura, últimas 200). Nenhuma Reserva/Saída/Aplicação/
+  Industrialização/Inventário nesta etapa.
+- **Inativação, não exclusão física** (Seções 25/27/28 da investigação):
+  `Material`/`LocalEstoque` usam `ativo` boolean como mecanismo
+  operacional real (bloqueia só NOVA entrada, histórico permanece
+  navegável) — a UI só expõe "Inativar/Reativar", nunca delete. As duas
+  tabelas também têm `SoftDeletes` no schema (paridade defensiva com o
+  resto do domínio de Take Off), mas nenhuma Action/UI desta etapa o
+  aciona — reavaliar se uma futura tela de "limpeza de cadastro nunca
+  usado" precisar dele. `restrictOnDelete()` em toda FK que referencia
+  `materiais`/`locais_estoque` já impede `forceDelete()` físico enquanto
+  houver `ItemTakeOff`/`UnidadeEstoque`/`MovimentacaoEstoque` associado.
+- **Achado real durante a implementação**: `App\Support\Concerns\
+  ExecutaComTransacaoSegura::transacaoSegura(Closure $callback, string
+  $mensagemErro = '...')` — o SEGUNDO parâmetro é a mensagem de ERRO
+  (mostrada só se o closure lançar uma exceção não tratada), NUNCA uma
+  mensagem de sucesso. A primeira versão desta tela passava uma
+  mensagem de sucesso nesse parâmetro (ex.: "Material salvo com
+  sucesso.") — funcionaria silenciosamente errado (nunca mostraria nada
+  em caso de sucesso real, e mostraria "sucesso" como texto de um toast
+  de ERRO se algo desse errado). Corrigido antes de rodar os testes:
+  mensagem de erro real no 2º parâmetro + `$this->dispatch('show-toast',
+  message: '...', type: 'success')` explícito depois, só quando
+  `! $this->transacaoSeguraFalhou()`. Registrado aqui porque é um erro
+  fácil de repetir — o nome do parâmetro (`$mensagemErro`) só aparece na
+  assinatura do método, não no ponto de chamada.
+- **Achado de ambiente, não de código** (mesma classe de incidente já
+  documentada no projeto): duas invocações concorrentes de `php artisan
+  test` contra o mesmo banco `testing` compartilhado (engano desta
+  sessão, não um padrão a repetir) deixaram o schema da base `testing`
+  num estado parcialmente migrado após um `kill -9`. Corrigido com
+  `DROP DATABASE testing; CREATE DATABASE testing ...` — banco 100%
+  disposable, recriado do zero pelo próprio `RefreshDatabase` a cada
+  execução seguinte; nenhuma relação com o banco de desenvolvimento
+  real (`dcf_eng`), que não foi tocado.
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita da 20.1): `DestinacaoPlanejada`/Reserva, Saída física para
+  campo, Aplicação/conciliação por Frente, desvio entre frentes/déficit,
+  industrialização externa, inventário, devolução, ajuste de estoque,
+  Restrição de estoque, Notification, alteração de prontidão, código de
+  barras 1D (QR já suportável via `bacon/bacon-qr-code`, já vendorizado
+  desde o GRD/18.5.9 — não usado ainda nesta etapa), fluxo completo de
+  scanning.
+- Testes: `tests/Feature/EstoqueFundacaoTest.php` (42 testes — Material
+  A-G, LocalEstoque H-L, Entrada M-X incluindo prova estrutural de lock
+  e append-only, Rastreabilidade Y-AG nos 3 modos, Cadeia AH-AJ
+  incluindo imutabilidade de `material_id`, delete bloqueado de
+  Material/Local referenciados, performance sem N+1 em saldo agregado
+  e em volume de movimentações, zero regressão em Restrição/prontidão)
+  + `tests/Feature/EstoquePageTest.php` (9 testes — render, CRUD via UI,
+  autorização AK/AL, cross-obra AM, cross-tenant AN) + 1 novo em
+  `TenantIsolationTest.php` (as 4 tabelas novas). Regressão direcionada
+  (191+172+162 testes across RecebimentoPedido/PedidoCompra/
+  RequisicaoCompra/TakeOff/ListaEngenharia/SincronizarCadeiaSuprimento/
+  AlertaCadeiaSuprimento/Conciliacao*/RequisicaoPlanejamento/Suprimentos*):
+  zero regressão. Suíte completa: **2994 passed / 6 skipped / 3 failed /
+  8018 assertions** (de 2942/6/3 antes desta etapa — delta exato de +52
+  testes, batendo com os 42+9+1 novos. As mesmas 3 falhas pré-existentes
+  e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra Reserva, DestinacaoPlanejada, Saída, Aplicação,
+  desvio entre frentes, industrialização, inventário, ou qualquer outra
+  fase sem validação do usuário** (instrução explícita) — aguardando
+  aprovação desta etapa antes de continuar pra 20.2.
+
+
+### Etapa 20.1.CORREÇÃO — associação Material↔ItemTakeOff, imutabilidade e hardening
+
+- **Contexto**: a auditoria adversarial da 20.1 (Etapa 20.1.AUDITORIA)
+  encontrou 3 achados C confirmados empiricamente — C1: nenhum writer
+  oficial existia pra associar `Material` a um `ItemTakeOff` já criado
+  (só na criação manual/importação — um item de Take Off sem `material_id`
+  ficava PRESO assim pra sempre); C2: mesmo quando associado à mão via
+  `$item->update(['material_id' => ...])`, nada impedia trocar o Material
+  depois que o item já tinha Pedido de Compra Emitido (ou até Recebimento)
+  — quebrando a garantia implícita de rastreabilidade; C3: nenhuma
+  proteção real contra mass-update (`ItemTakeOff::where(...)->update(...)`
+  /`DB::table('itens_take_off')->update(...)`) contornando qualquer
+  Observer — limitação estrutural do Eloquent, nunca fechável por
+  Observer sozinho. Mais 2 achados B: `Material`/`LocalEstoque` sem
+  hardening de SoftDelete (nenhum Observer bloqueava excluir um Material/
+  Local já referenciado por histórico); `SaldoEstoque` somava
+  `SUM(quantidade)` cru, sem abstração de sinal por tipo de movimentação
+  — funcionava hoje (só existe `Entrada`), mas quebraria silenciosamente
+  no dia em que `Saída`/`Ajuste`/`Estorno` fossem adicionados.
+- **`App\Support\Estoque\PoliticaAssociacaoMaterial`** (novo, serviço de
+  domínio único — nenhuma regra duplicada em Observer/Action/UI):
+  `podeAlterarMaterial(ItemTakeOff $item): bool` é a ÚNICA fonte de
+  verdade. **Primeira associação (material_id atualmente `null`) é
+  SEMPRE permitida**, qualquer que seja o estágio da cadeia comercial —
+  decisão deliberada: sem essa exceção, a correção continuaria
+  quebrando o fluxo real, já que o cenário mais comum é descobrir que um
+  item de Take Off nunca teve Material justamente na hora de processar
+  um Recebimento/Entrada (que só existe DEPOIS de RP/RC/Pedido já
+  emitidos). Só TROCAR um `material_id` já preenchido é que fica sujeito
+  ao corte. **Corte de imutabilidade = Pedido de Compra Emitido**
+  (`possuiComprometimentoFormal()`), não "primeira entrada em estoque"
+  (o corte original da 20.1, provado insuficiente pelo Achado C2) —
+  como `RegistrarRecebimentoPedido` já exige `$pedido->estaEmitido()` e
+  `MovimentacaoEstoque` sempre nasce de um Recebimento, checar "existe
+  Pedido Emitido alcançável na cadeia" cobre transitivamente os 2 estágios
+  posteriores sem precisar verificar cada um separado. RP Emitida e RC
+  Emitida SOZINHAS (sem nenhum Pedido ainda Emitido) NÃO congelam o
+  Material — só Pedido Emitido congela.
+- **`App\Actions\Estoque\AssociarMaterialAoItemTakeOff`** (novo, a ÚNICA
+  API oficial de escrita): trava o `ItemTakeOff` (`lockForUpdate()`
+  dentro de `DB::transaction()`), valida tenant do Material (cross-tenant
+  bloqueado), valida `Material.ativo` (Material inativo não pode ser
+  associado — precisa ser reativado primeiro), consulta
+  `PoliticaAssociacaoMaterial::podeAlterarMaterial()` sobre o registro já
+  travado (nunca um valor stale) e só então grava. Erros viram
+  `AssociacaoMaterialInvalidaException`/`ItemTakeOffMaterialImutavelException`
+  didáticas, nunca SQL cru.
+- **`App\Observers\ItemTakeOffObserver::garantirMaterialNaoReescritoAposCorte()`**:
+  intercepta qualquer `save()`/`update()` de INSTÂNCIA que altere
+  `material_id` (`isDirty('material_id')`) e delega 100% pra
+  `PoliticaAssociacaoMaterial` — cobre a Action oficial, qualquer chamada
+  direta (`$item->material_id = ...; $item->save();`) e qualquer código
+  futuro que toque o campo por essa via. **Mass-update via Query Builder
+  continua sendo API PROIBIDA por convenção arquitetural, nunca fechada
+  por trigger de banco** — Observer Eloquent estruturalmente nunca
+  intercepta `ItemTakeOff::where(...)->update(...)` nem
+  `DB::table('itens_take_off')->update(...)`; mitigado por um teste de
+  arquitetura permanente (`test_k_zero_writer_de_producao...`, varre
+  `app/**/*.php` procurando qualquer um dos 2 padrões fora da Action
+  oficial) — nenhum writer de produção usa essa forma hoje, e o teste
+  falha a suíte se um dia alguém introduzir um.
+- **`App\Observers\MaterialObserver`/`LocalEstoqueObserver`** (novos,
+  mesmo padrão de `ItemTakeOffObserver`/`GrdObserver`): bloqueiam
+  `delete()`/`forceDelete()` de um Material/LocalEstoque com histórico
+  vinculado (`ItemTakeOff.material_id`, `UnidadeEstoque`,
+  `MovimentacaoEstoque`) — `MaterialReferenciadoException`/
+  `LocalEstoqueReferenciadoException`, mensagem sempre sugerindo
+  **inativar** (`ativo = false`) em vez de excluir. Inativar um
+  Material/Local **preserva histórico intacto** — `MovimentacaoEstoque`
+  continua resolvendo a relação normalmente, `SaldoEstoque::porMaterial()`
+  continua contando o saldo já movimentado, mesmo depois da inativação.
+  Sem referência nenhuma, exclusão continua livre (comportamento legado
+  intocado).
+- **`SaldoEstoque` — sinal contábil sempre centralizado, nunca `SUM`
+  cru**: `TipoMovimentacaoEstoque::fatorSaldo(): int` (hoje só `Entrada
+  => 1`) é a única fonte de verdade de "como cada tipo afeta o saldo".
+  `SaldoEstoque::expressaoSaldoSql()` (privado) constrói dinamicamente um
+  `CASE tipo WHEN '...' THEN quantidade * fator ... END` a partir de
+  `TipoMovimentacaoEstoque::cases()` — usado por TODOS os métodos
+  (`porUnidade`/`porMaterialLocal`/`porMaterial`/`porMateriais`/
+  `incorporadoDeRecebimento`), sempre em SQL (nunca somando em PHP —
+  performance, `porMateriais()` continua 1 query pra N materiais). Uma
+  fase futura que adicionar `Saída`/`Ajuste`/`Estorno` só precisa tocar
+  `fatorSaldo()` — nenhum método de `SaldoEstoque` é alterado.
+  `quantidade` em si permanece SEMPRE positiva (regra de
+  `RegistrarEntradaEstoque`, intocada) — é o `tipo` que carrega o sinal
+  contábil, nunca o valor armazenado.
+- **Transferência futura (nota de arquitetura, não implementada)**:
+  quando existir, deve ser modelada como DOIS fatos independentes (uma
+  saída do local de origem + uma entrada no local de destino, cada um
+  com seu próprio `tipo`/`fatorSaldo()`), nunca uma única linha com
+  "local origem/destino" — mantém `MovimentacaoEstoque` como razão
+  append-only de fatos simples, sem precisar de um conceito de
+  "movimentação composta".
+- **UI** (`⚡estoque.blade.php`, aba Recebimentos Pendentes): botão
+  "Associar Material" quando o item não tem nenhum ainda; badge com o
+  código do Material + link "Trocar" quando `PoliticaAssociacaoMaterial::
+  podeAlterarMaterial()` permite; ícone de cadeado + mensagem amigável
+  quando já está congelado (Pedido Emitido) — nunca deixa o usuário
+  tentar uma ação que o backend vai rejeitar sem explicação. Permissão
+  reaproveitada: `estoque.movimentacao|editar` (nenhum slug novo) — zero
+  duplicação na tela de Take Off (a associação vive só no Estoque, onde
+  o vínculo passa a ser efetivamente usado).
+- **Zero efeito colateral reconfirmado**: nenhuma `Restricao`/prontidão/
+  `ItemSuprimento` (mecanismo legado de Suprimentos) é tocada por
+  associação, troca ou bloqueio de Material — teste dedicado
+  (`test_ad_zero_alteracao_semantica_em_prontidao_e_restricao`) percorre
+  o fluxo completo (RP→Alocação→RC→Pedido→Recebimento→Entrada) e
+  confirma `restricoes` com contagem zero.
+- **Achados de teste, não de produção**: (1) o teste de arquitetura
+  `test_k` inicialmente também sinalizava `ItemTakeOffObserver.php` como
+  "ofensor" — seu PRÓPRIO docblock documenta em prosa o padrão exato
+  proibido (ex.: `ItemTakeOff::where(...)->update([...])`) como exemplo
+  do que a checagem procura, e a regex casava com o comentário — corrigido
+  excluindo esse arquivo do scan (mesmo tratamento já dado à Action
+  oficial); (2) o teste que confirma "o importador nunca autoassocia
+  Material" fazia uma checagem crua por `material_id`, que também casava
+  com `familia_material_id` (campo legítimo do Ciclo 19) — corrigido pra
+  checar as chaves quotadas exatas (`'material_id'`/`->material_id`); (3)
+  `EstoqueFundacaoTest::test_aj2_material_id_editavel_antes_do_uso` (da
+  20.1 original) afirmava que trocar o Material continuava livre logo
+  depois de `recebimentoPronto()` — mas esse helper já EMITE o Pedido de
+  Compra, exatamente o novo corte de imutabilidade (Achado C2 sendo
+  corrigido aqui). Renomeado e reescrito pra
+  `test_aj2_material_id_imutavel_apos_pedido_emitido_mesmo_sem_entrada`,
+  agora afirmando o comportamento correto (bloqueado, mesmo sem nenhuma
+  Entrada registrada) — não é enfraquecimento de teste, é a correção do
+  próprio bug que este ciclo existe pra fechar.
+- **Não tocado**: `HealthCheckEngine`/36 regras, `ScoreCalculator`,
+  `PlanoAcao`, `SincronizarRestricaoCadeiaSuprimento`/
+  `AlertaCadeiaSuprimento` (Ciclo 19.7), `RegistrarEntradaEstoque`
+  (validação de over-entrada/concorrência/data futura intocada),
+  `ResolverMaterialDaCadeia`, nenhuma migration existente, mecanismo
+  legado de Suprimentos (`ItemSuprimento`/`FluxoSuprimento`).
+- Testes: `tests/Feature/EstoqueFundacaoCorrecaoTest.php` (34 testes
+  novos — A-AD: associação inicial sempre permitida, Material inativo/
+  cross-tenant bloqueiam associação, troca livre antes do corte (D) e
+  nos 3 estágios que NÃO congelam sozinhos (E1 RP Emitida, E2 RC Emitida,
+  E3 Pedido Rascunho), Pedido Emitido É o corte mesmo sem Recebimento
+  (F), cenário completo do C2 bloqueado (G) com a Entrada usando
+  corretamente o Material original (G2), Entrada bloqueia troca (H),
+  Action nunca contornável direto (I), snapshot histórico sobrevive a
+  tentativa bloqueada (J), teste de arquitetura zero-mass-update (K),
+  SoftDelete hardening de Material (L/L2/M/N/O) e LocalEstoque (P/Q/R)
+  com preservação de histórico na inativação, `SaldoEstoque` sempre via
+  `CASE`/nunca `SUM` cru com prova de SQL real (S-Y, incluindo saldo em
+  lote sem N+1), UI real via Livewire (Z/AA/AB), importador nunca
+  autoassocia (AC), zero alteração semântica em prontidão/Restrição
+  (AD)) + 1 teste editado em `EstoqueFundacaoTest.php` (test_aj2,
+  documentado acima). Regressão direcionada: Bucket 1 — Estoque/
+  TenantIsolation/ItemTakeOff/ListaEngenharia/RecebimentoPedido/
+  PedidoCompra/RequisicaoCompra/Alocacao/RequisicaoPlanejamento
+  (**414/414 passed**); Bucket 2 — SincronizarCadeiaSuprimento/
+  AlertaCadeiaSuprimento/Restricao/CentralProntidao/Lookahead/
+  Cronograma/DocumentoEngenharia/Grd/RevisaoLiberacao/PlanoSemanal/
+  PlanoAcao/HealthCheck (**1326/1326 passed**). Suíte completa: **3028
+  passed / 6 skipped / 3 failed / 8060 assertions** (de 2994/6/3/8018
+  antes desta correção — delta exato de +34 testes/+42 assertions,
+  batendo com os 34 testes novos de `EstoqueFundacaoCorrecaoTest.php`.
+  As mesmas 3 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra 20.2, Reserva, Saída, Transferência, Inventário,
+  Industrialização, ou qualquer alteração em prontidão/Restrição sem
+  validação do usuário** (instrução explícita) — aguardando aprovação
+  desta correção.
+
+### Etapa 20.2 — Destinação Planejada + Reserva de Estoque
+
+- **Duas camadas independentes, nunca confundidas**: **Destinação
+  Planejada** é lógica — quanto da demanda formal de um Material dentro
+  de um Pacote de Compra está planejado pra cada `FrenteTrabalho`.
+  **Reserva de Estoque** é física — quanto do saldo físico
+  (`App\Support\Estoque\SaldoEstoque`, Ciclo 20.1, intocado) foi
+  efetivamente comprometido. As duas têm tetos DIFERENTES e
+  independentes: Destinação nunca pode superar a demanda formal
+  (`AlocacaoRequisicaoPacote.quantidade_alocada` somada); Reserva nunca
+  pode superar o saldo físico disponível — reservar SEM nenhuma
+  Destinação vinculada é um estado válido (Seção 25), e uma Destinação
+  sem nenhuma Reserva também é válida (Seção 24).
+- **`FrenteTrabalho` confirmada como identidade logística de aplicação**
+  (já documentado desde 20.1 no docblock de `LocalEstoque` — "nunca
+  FrenteTrabalho, que é aplicação operacional") — tenant+obra scoped,
+  `SoftDeletes` (sem coluna `ativo` própria — "indisponível" = soft-
+  deletado, nunca um status inventado), 1 Frente → N Atividades. Nova
+  criação de Destinação/Reserva contra uma Frente arquivada é bloqueada;
+  histórico já existente aponta pra ela normalmente, sem nenhuma
+  reclassificação retroativa.
+- **Origem quantitativa formal (Seção 5, resolvida sem ambiguidade)**:
+  `App\Support\Estoque\ConciliacaoDestinacao::quantidadeFormal()` = SUM
+  de `AlocacaoRequisicaoPacote.quantidade_alocada` cujo
+  `requisicaoItem.itemTakeOff.material_id` bate com o Material — nunca
+  uma quantidade nova e independente da cadeia RPItem→Alocação→Pacote já
+  existente desde o Ciclo 19. Um Pacote (`ItemSuprimento`) nunca teve
+  Material próprio — é um coordenador de workflow que pode agregar
+  alocações de materiais DIFERENTES; por isso a demanda formal é sempre
+  calculada POR PAR Pacote+Material, nunca por Pacote sozinho.
+- **`destinacoes_planejadas_material`**: `unique(tenant_id,
+  item_suprimento_id, material_id, frente_trabalho_id)` —
+  `frente_trabalho_id` é **NOT NULL de propósito** (Seção 26: nunca criar
+  Frente "A definir" fake) — a quantidade AINDA sem rateio (Seção 13) é
+  sempre a diferença DERIVADA entre formal e a soma das linhas aqui,
+  nunca uma linha materializada com Frente nula (evita a armadilha
+  clássica do MySQL de múltiplos NULL "iguais" num unique, já evitada em
+  outras tabelas do projeto). Sem `SoftDeletes` — editável/excluível
+  livremente enquanto nenhuma Reserva a referencia (Seção 11); depois,
+  reduzir abaixo do reservado Ativo é bloqueado
+  (`DestinacaoPlanejadaImutavelException`) e excluir com QUALQUER Reserva
+  vinculada (Ativa ou já Liberada — liberada continua sendo evidência
+  histórica) também é bloqueado, com a FK `restrictOnDelete()` como
+  defesa final.
+- **`reservas_estoque`**: `material_id` + `local_estoque_id` sempre
+  presentes; `unidade_estoque_id` **nullable** — null pro modo
+  Quantitativo (saldo por Material+Local), preenchido pros modos Lote/
+  Serializado (saldo por bobina/serial específico) — mesma tripla
+  denormalizada já usada por `MovimentacaoEstoque` (Seção 16: uma única
+  estrutura cobre os 3 modos, nunca 3 schemas separados).
+  `destinacao_planejada_material_id` é **nullable** (Seção 25: reserva
+  "sem Frente definida" é permitida e nunca inventa uma Frente fake) —
+  quando presente, é só RÓTULO de finalidade, nunca teto (o teto de
+  Reserva é sempre físico, independente de qualquer Destinação). Reserva
+  **nunca cria `MovimentacaoEstoque`** (Seção 15/21, testado
+  explicitamente) — saldo físico permanece inalterado; só o saldo
+  DISPONÍVEL (`App\Support\Estoque\SaldoReserva`) reduz.
+- **`App\Support\Estoque\SaldoReserva`**: fonte canônica de saldo
+  reservado/disponível (Seção 19) — reservado = SUM de `ReservaEstoque`
+  Ativa (nunca persistido); disponível = físico (`SaldoEstoque`,
+  intocado) − reservado. Nenhum dos 3 saldos é gravado em coluna própria.
+- **Liberação de Reserva é transição de domínio, nunca DELETE** (Seção
+  22) — `App\Actions\Estoque\LiberarReservaEstoque` faz um `UPDATE`
+  condicional atômico (`WHERE status = 'ativa'`, mesmo idioma de
+  `TratarInconsistenciaAvanco`) pra `status=liberada` +
+  `liberado_em`/`liberado_por`/`motivo_liberacao` — nunca reabertura
+  (enxuto de propósito, `App\Enums\StatusReservaEstoque` só tem
+  Ativa|Liberada, "Parcialmente Consumida"/"Consumida" pertencem à
+  Saída física do Ciclo 20.3, não antecipadas). `App\Observers\
+  ReservaEstoqueObserver` bloqueia `delete()`/`forceDelete()`
+  incondicionalmente (mesmo padrão de `ListaEngenhariaObserver`) —
+  histórico de reserva nunca desaparece.
+- **Concorrência — decisão documentada, sem linha física dedicada pra
+  travar** (Seção 20): pra o modo Quantitativo, não existe uma linha
+  única representando "saldo de Material X no Local Y" — o recurso
+  travado é o próprio `LocalEstoque` (custo aceito: serializa reservas de
+  MATERIAIS DIFERENTES no mesmo Local desnecessariamente, mas nunca
+  permite over-reserva do par real). Pra Lote/Serializado, trava a
+  própria `UnidadeEstoque` — granularidade fina, mesmo padrão de
+  `RegistrarEntradaEstoque`. **`AtualizarDestinacaoPlanejada` estende o
+  total order de lock já estabelecido no Ciclo 19**
+  (`RequisicaoPlanejamentoItem → ItemSuprimento → AlocacaoRequisicaoPacote`,
+  19.3.CORREÇÃO/19.4.CORREÇÃO) travando `ItemSuprimento` (Pacote) SEMPRE
+  primeiro, na MESMA posição 2 — é esse lock compartilhado que serializa
+  "reduzir uma Alocação" contra "criar/aumentar uma Destinação", ambos
+  lendo o mesmo total formal derivado.
+- **3º consumidor da Alocação**: `AlocarRequisicaoAoPacote::
+  alterarQuantidade()/remover()` ganharam um guard irmão
+  (`garantirDestinacaoNaoInvalidada()`, ao lado do já existente pra
+  `RequisicaoCompraItem`) — reduzir/remover uma alocação nunca pode
+  deixar a demanda formal do par Pacote+Material abaixo do que já está
+  planejado em Destinação (`AlocacaoConsumidaPorDestinacaoPlanejadaException`).
+- **Serial — 2 guards distintos, não 1**: quantidade de uma reserva sobre
+  Material Serializado precisa ser EXATAMENTE 1 (checagem explícita,
+  `garantirQuantidadeSerialUnitaria()` — 0.5 nunca ultrapassaria o
+  disponível de 1, então não seria pego pelo guard geral de over-reserva
+  sozinho); já a PROIBIÇÃO de reservar a MESMA unidade serial duas vezes
+  é consequência natural do saldo disponível chegar a zero (1 reserva
+  Ativa de quantidade 1 já esgota o disponível) — nenhuma checagem
+  duplicada precisou ser escrita pra esse segundo caso.
+- **Permissão — `estoque.reserva` ativado** (já previsto desde 20.0/20.1)
+  — cobre TANTO Destinação QUANTO Reserva sob o mesmo guarda-chuva
+  "Planejamento/Reserva" (decisão do pedido, Seção 36) — nunca reaproveita
+  `estoque.movimentacao` (responsabilidade operacional distinta, entrada
+  física bruta). Só `'editar'` cadastrado em `Perfil::REGRAS_ESCRITA`
+  (mesmo padrão de `planejamento.requisicoes` — sem granularidade de
+  criar/excluir separada), limiar `GerentePlanejamento` — revisável no
+  futuro se o uso operacional do dia a dia pedir um nível mais baixo pra
+  reservar fisicamente.
+- **UI — evolução de `⚡estoque.blade.php`**, nova aba "Planejamento /
+  Reservas" (nunca uma página nova): demanda por Pacote+Material
+  (formal/destinado/pendente), lista de Destinações (com Reservado
+  Ativo agregado em lote, nunca 1 SUM por linha), lista de Reservas
+  (com ação de Liberar). Zero regra de negócio na Blade — tudo delega
+  pras Actions/Support já testados isoladamente.
+- **Achado real de implementação, corrigido nesta etapa (bug
+  pré-existente da 20.1, não introduzido aqui)**: `⚡estoque.blade.php::
+  materiais()` nunca fazia eager-load de `unidadeMedida`/
+  `familiaMaterial` — nunca disparado antes porque nenhum teste prévio
+  renderizava a aba Materiais (default) com Materiais já cadastrados no
+  banco (a maioria criava Material DEPOIS de já ter trocado de aba, ou
+  testava contra uma listagem vazia). Exposto pelo teste de performance
+  desta etapa (100 Materiais) — corrigido com `->with(['unidadeMedida',
+  'familiaMaterial'])`.
+- **Zero efeito colateral reconfirmado**: nenhuma `Restricao`/prontidão/
+  `MovimentacaoEstoque` de tipo diferente de Entrada é criada por
+  Destinação/Reserva/Liberação — teste dedicado percorre o fluxo
+  completo (Destinação→Reserva→Liberação) e confirma `restricoes` com
+  contagem zero. Grep de arquitetura permanente confirma ausência de
+  `case Saida`/`Divergencia`/`Industrializacao`/`Inventario` em
+  qualquer arquivo do domínio de Estoque.
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita): Saída física para campo, Aplicação real, conciliação
+  pós-saída, desvio entre frentes, Transferência (documentada como nota
+  de arquitetura — quando existir, deve ser DOIS fatos independentes,
+  uma saída de origem + uma entrada de destino, nunca uma linha
+  composta), Inventário, Industrialização externa, Restrição/Notification
+  derivadas de Destinação/Reserva, alteração de prontidão.
+- Testes: `tests/Feature/EstoqueDestinacaoReservaTest.php` (51 testes —
+  A-N Destinação, O-Z Reserva incluindo prova estrutural de ordem de
+  lock via `DB::listen`, AA-AH os 3 modos de rastreabilidade, AI-AN
+  reserva/destinação sem Frente, AO-AU UI/permissão/cross-obra via
+  `Livewire::test()`, AV-AW performance com 100 pares/1000 reservas sem
+  N+1, zero-Saída e zero-efeito-colateral) + 2 novos em
+  `TenantIsolationTest.php` (as 2 tabelas novas). Regressão direcionada:
+  Bucket 1 — Estoque/TenantIsolation/ItemTakeOff/ListaEngenharia/
+  RecebimentoPedido/PedidoCompra/RequisicaoCompra/Alocacao/
+  RequisicaoPlanejamento (**465/465 passed**); Bucket 2 —
+  SincronizarCadeiaSuprimento/AlertaCadeiaSuprimento/Restricao/
+  CentralProntidao/Lookahead/Cronograma/DocumentoEngenharia/Grd/
+  RevisaoLiberacao/PlanoSemanal/PlanoAcao/HealthCheck (**1327/1327
+  passed**). Suíte completa: **3081 passed / 6 skipped / 3 failed / 8214
+  assertions** (de 3028/6/3/8060 antes desta etapa — delta exato de +53
+  testes/+154 assertions, batendo com os 51+2 novos. As mesmas 3 falhas
+  pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra 20.3, Saída, Aplicação, Divergência,
+  Industrialização, Inventário, ou qualquer alteração em prontidão/
+  Restrição sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+### Etapa 20.2.CORREÇÃO — imutabilidade de Destinação/Reserva + consistência de Material
+
+- **Contexto**: a auditoria adversarial da 20.2 (Etapa 20.2.AUDITORIA,
+  só leitura/probes descartáveis, nenhuma correção) confirmou
+  empiricamente 3 Achados C (bloqueantes) e registrou 3 Achados B
+  (fragilidades arquiteturais, não exploráveis no fluxo real de UI, mas
+  defesas incompletas). Esta etapa fecha os 3 C + 2 dos 3 B (B1 e B2);
+  B3 (lock conservador do `LocalEstoque` serializando materiais
+  diferentes) é um trade-off já documentado desde a 20.2 original e
+  permanece deliberadamente **não corrigido** — instrução explícita do
+  pedido.
+- **C1 — Frente da Destinação reinterpretável via `update()` mesmo com
+  Reserva Ativa vinculada**: `DestinacaoPlanejadaMaterial` não tinha
+  nenhum Observer/guard de `updating()` — `$destinacao->update(['frente_trabalho_id'
+  => $outraFrente->id])` sucedia silenciosamente mesmo com Reservas já
+  apontando pra ela, corrompendo a semântica "quanto foi planejado pra
+  ESTA Frente" sem nenhum rastro. **Corrigido** com
+  `App\Observers\DestinacaoPlanejadaMaterialObserver::updating()` —
+  bloqueia incondicionalmente qualquer alteração nos campos de
+  IDENTIDADE (`item_suprimento_id`/`material_id`/`frente_trabalho_id`/
+  `tenant_id`/`obra_id`), sempre, mesmo sem nenhuma Reserva vinculada
+  ainda — decisão deliberadamente mais estrita que "só bloquear se
+  houver Reserva": a identidade de uma Destinação nunca deveria ser
+  reinterpretada depois de criada, é o mesmo princípio já usado em
+  `ItemTakeOffObserver`/`RequisicaoCompraEtapa` pra campos de identidade.
+  Corrigir a quantidade (`quantidade_planejada`) continua permitido — só
+  os campos de identidade são congelados. Criar uma NOVA Destinação (com
+  a Frente correta) continua sendo o caminho pra corrigir um erro de
+  cadastro, nunca reinterpretar a existente.
+- **C2 — `ReservaEstoque` sem NENHUM guard de `update()`**: qualquer
+  campo (`quantidade`/`status`/`local_estoque_id`/etc.) podia ser
+  reescrito silenciosamente — apesar do docblock da 20.2 original já
+  afirmar "Reserva é um fato imutável". **Corrigido** com
+  `ReservaEstoqueObserver::updating()` bloqueando TODA alteração,
+  incondicionalmente (`ReservaEstoqueInvalidaException`) — ao lado do
+  `deleting()` já existente (bloqueio incondicional desde a 20.2
+  original). **Mecanismo de imunidade da Liberação, sem nenhum
+  caso-especial/flag**: `LiberarReservaEstoque` continua funcionando
+  porque faz um `ReservaEstoque::where('id', $id)->where('status',
+  'ativa')->update([...])` — um mass-update via Query Builder, que o
+  Eloquent estruturalmente NUNCA dispara como evento `updating()` (só
+  `$model->save()`/`$model->update()` chamado sobre uma INSTÂNCIA já
+  hidratada dispara eventos). O guard do Observer é, portanto, imune por
+  CONSTRUÇÃO ao único writer legítimo de transição de status — nenhuma
+  exceção, nenhuma flag "permitir esta vez" precisou ser criada. Esse
+  mesmo mecanismo é a razão de `Model::where(...)->update()`/
+  `DB::table(...)->update()` continuarem sendo **API PROIBIDA por
+  convenção arquitetural, nunca por trigger de banco** — um Observer
+  Eloquent jamais intercepta essas duas formas; grep exaustivo confirma
+  zero writer de produção usando qualquer uma das duas contra
+  `reservas_estoque`/`destinacoes_planejadas_material` fora do único
+  caminho oficial (`LiberarReservaEstoque`).
+- **C3 — trocar o Material de um `ItemTakeOff` órfão de saldo formal
+  (mas com Destinação já criada pra outro `ItemTakeOff` do mesmo
+  Pacote+Material) orfanava a Destinação**: `PoliticaAssociacaoMaterial::
+  podeAlterarMaterial()` (20.1.CORREÇÃO) só checava comprometimento
+  físico (Pedido emitido/entrada em estoque) — nunca sabia da existência
+  de `DestinacaoPlanejadaMaterial`. **Corrigido** com um segundo método,
+  `possuiDestinacaoPlanejadaVinculada(ItemTakeOff $item): bool`, que
+  resolve todos os Pacotes (`AlocacaoRequisicaoPacote.item_suprimento_id`)
+  aos quais esse item já contribuiu via `RequisicaoPlanejamentoItem`, e
+  verifica se existe QUALQUER `DestinacaoPlanejadaMaterial` desses
+  Pacotes pro Material atual do item — se sim, o Material fica congelado.
+  **Decisão de política conservadora (Opção A, seção 17 do pedido)**:
+  o congelamento é por PARTICIPAÇÃO no Pacote, nunca por saldo aritmético
+  — trocar o Material de um `ItemTakeOff` que, isoladamente, ainda
+  deixaria saldo formal suficiente pra sustentar a Destinação existente
+  (ex.: Pacote com I1=60+I2=40=100 formal, Destinação=50; trocar I2
+  isoladamente ainda deixaria I1=60≥50) é BLOQUEADO mesmo assim — o
+  Pacote inteiro fica congelado pra aquele Material assim que qualquer
+  Destinação existe sobre o par, nunca um cálculo per-item mais
+  permissivo. Mensagem de erro (compartilhada entre `ItemTakeOffObserver`
+  e `AssociarMaterialAoItemTakeOff`) atualizada pra mencionar
+  explicitamente esse terceiro motivo de congelamento, ao lado dos 2 já
+  existentes (Pedido emitido / entrada em estoque).
+  - **Achado real durante a implementação, não presumido**: a primeira
+    versão de `possuiDestinacaoPlanejadaVinculada()` lia `$item->material_id`
+    dentro do próprio evento `updating()` — mas no momento em que
+    `updating()` dispara, o atributo já reflete o valor NOVO (dirty),
+    nunca o antigo. Isso fazia a checagem sempre procurar Destinação do
+    Material NOVO (que nunca tem uma ainda), sempre retornando `false` e
+    permitindo exatamente a troca que deveria ser bloqueada — um bug real
+    que teria anulado silenciosamente todo o C3. Detectado só pelos
+    testes da correção falhando (`ItemTakeOffMaterialImutavelException`
+    esperada e não lançada), nunca por revisão estática — corrigido
+    usando `$item->getOriginal('material_id')`, mesmo idioma já usado em
+    `podeAlterarMaterial()` desde a 20.1.CORREÇÃO (que eu não tinha
+    propagado pro método irmão novo). Lição registrada: dentro de
+    `updating()`, `$model->campo` é sempre o valor NOVO — `getOriginal()`
+    é obrigatório pra comparar contra o valor anterior.
+- **B1 — Reserva sem referência ao Pacote de origem**: investigado antes
+  de qualquer mudança de schema (STOP explícito do pedido) — apresentadas
+  3 alternativas ao usuário via `AskUserQuestion`; decisão aprovada:
+  adicionar `item_suprimento_id` a `ReservaEstoque` como coluna
+  OBRIGATÓRIA (migration incremental, `reservas_estoque` tinha 0 linhas
+  no banco de dev, confirmado antes de aplicar — sem backfill
+  necessário). **Semântica aprovada, implementada literalmente**: toda
+  `ReservaEstoque` pertence obrigatoriamente a um `ItemSuprimento`
+  (Pacote), `restrictOnDelete()` (mesma lição de evidência histórica de
+  sempre); `destinacao_planejada_material_id` continua OPCIONAL —
+  ausência significa "Pacote conhecido, Frente ainda não detalhada",
+  nunca "sem Pacote"; quando a Destinação está presente, validação
+  rigorosa nova em `CriarReservaEstoque::garantirDestinacaoCompativel()`
+  garante que ela pertence ao MESMO `item_suprimento_id`+`material_id`
+  passados — nunca uma Destinação de outro Pacote/Material sendo
+  vinculada por engano. **Nunca cria Frente fake** — uma Reserva
+  genérica (sem Destinação) nunca é forçada a apontar pra uma Frente
+  "A definir"; o próprio pedido já registra que Reservas genéricas
+  poderão no futuro ser atendidas por saídas parciais pra VÁRIAS Frentes
+  — o desenho atual (Reserva 1:1 opcional com Destinação, nunca N:N)
+  já é compatível com isso sem mudança de schema.
+  `CriarReservaEstoque::execute()` ganhou `ItemSuprimento $pacote` como
+  primeiro parâmetro OBRIGATÓRIO (quebra de assinatura deliberada — sem
+  nenhum caller de produção anterior a esta correção, confirmado por
+  grep) + `garantirPacoteCompativel()` (cross-obra Pacote×Local).
+- **B2 — Frente soft-deletada retornava relação `null` sem
+  `withTrashed()` explícito**: `DestinacaoPlanejadaMaterial::frenteTrabalho()`
+  agora é `belongsTo(FrenteTrabalho::class, 'frente_trabalho_id')->
+  withTrashed()` — o `withTrashed()` vive na DEFINIÇÃO da relação, nunca
+  precisa ser lembrado por call-site (a UI tinha 2 pontos com um closure
+  manual `->withTrashed()` no eager-load, ambos simplificados/removidos
+  já que a relação resolve isso sozinha agora, inclusive em eager-load).
+  Uma Destinação histórica sobre uma Frente arquivada continua exibindo
+  o nome da Frente normalmente, nunca "Frente não encontrada".
+- **B3 — lock conservador do `LocalEstoque` (não corrigido, por
+  instrução explícita)**: permanece serializando reservas de materiais
+  DIFERENTES no mesmo Local desnecessariamente — trade-off já aceito
+  desde a 20.2 original (nunca permite over-reserva do par real, só
+  reduz paralelismo). Registrado aqui de novo pra não ser confundido com
+  um achado ainda pendente.
+- **UI**: `⚡estoque.blade.php` ganhou `$reservaPacoteId` (novo estado) —
+  o modal de Reserva agora sempre exibe Pacote e Material como campos
+  travados/somente-leitura (nunca mais um `<select>` de Material solto),
+  resolvidos a partir de qual botão disparou a abertura: "Reservar" na
+  linha de Demanda (Pacote+Material sem Destinação) ou "Reservar" numa
+  Destinação já existente (Pacote+Material+Frente, todos pré-preenchidos).
+  O botão avulso "Nova Reserva" no cabeçalho do card foi removido —
+  reservar sempre parte de um contexto de Demanda/Destinação já
+  conhecido, nunca de um formulário em branco. Tabela de Reservas ganhou
+  coluna "Pacote".
+- **Não implementado nesta correção, por instrução explícita**: 20.3,
+  Saída física, Aplicação real, Divergência A→B, Industrialização,
+  Inventário, qualquer alteração em Restrição/prontidão, correção de B3.
+- Testes: `tests/Feature/EstoqueDestinacaoReservaCorrecaoTest.php` (27
+  testes novos, A-Z — os 3 Achados C isolados e via update cru/mass-
+  update, prova de imunidade estrutural da Liberação, múltiplos
+  `ItemTakeOff` do mesmo Material com congelamento conservador por
+  Pacote — seção 17, cross-tenant/cross-obra, Frente soft-deletada
+  resolvendo normalmente, Reserva com/sem Destinação sempre exigindo
+  Pacote, Destinação incompatível rejeitada na criação da Reserva) +
+  `tests/Feature/EstoqueDestinacaoReservaTest.php` (os 51 testes da 20.2
+  original, migrados pra nova assinatura obrigatória de
+  `CriarReservaEstoque::execute()` sem nenhuma asserção enfraquecida) +
+  1 atualizado em `TenantIsolationTest.php` (fixture de
+  `ReservaEstoque` passou a incluir `item_suprimento_id`). Regressão
+  direcionada: Bucket 1 — Estoque/TenantIsolation/ItemTakeOff/
+  ListaEngenharia/RecebimentoPedido/PedidoCompra/RequisicaoCompra/
+  Alocacao/RequisicaoPlanejamento (**334/334 passed**); Bucket 2 —
+  SincronizarCadeiaSuprimento/AlertaCadeiaSuprimento/Restricao/
+  CentralProntidao/Lookahead/Cronograma/DocumentoEngenharia/Grd/
+  RevisaoLiberacao/PlanoSemanal/PlanoAcao/HealthCheck (**1327/1327
+  passed**). Suíte completa: **3108 passed / 6 skipped / 3 failed / 8372
+  assertions** (de 3081/6/3/8214 antes desta correção — delta exato de
+  +27 testes/+158 assertions, batendo com os 27 testes novos de
+  `EstoqueDestinacaoReservaCorrecaoTest.php` — os 51 testes migrados da
+  20.2 original são substituição de assinatura, não adição líquida. As
+  mesmas 3 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`).
+- **Não avançar pra 20.3, Saída, Aplicação, Divergência,
+  Industrialização, Inventário, ou qualquer alteração em prontidão/
+  Restrição sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta correção.
+
+### Etapa 20.3 — Saída física do estoque / retirada para campo
+
+- **Contexto**: implementa o FATO FÍSICO da retirada de material —
+  `App\Enums\TipoMovimentacaoEstoque::Saida` (`fatorSaldo() = -1`,
+  confirmando exatamente o que o comentário da 20.1.CORREÇÃO já previa:
+  nenhum método de `App\Support\Estoque\SaldoEstoque` precisou ser
+  tocado). `MovimentacaoEstoque` continua sendo a ÚNICA entidade de fato
+  físico (Entrada e Saída) — nenhuma `SaidaEstoque` paralela foi criada
+  (investigação confirmou os campos atuais insuficientes só por
+  ausência, nunca por incompatibilidade — resolvido com migration
+  aditiva de 5 colunas nullable).
+- **Saída física ≠ Aplicação definitiva**: `App\Actions\Estoque\
+  RegistrarSaidaEstoque` só registra "o material saiu do controle físico
+  do estoque" — nunca calcula desvio, nunca concilia contra a Frente
+  informada, nunca cria Restrição/Notification. Isso é responsabilidade
+  de uma fase futura (20.4), que lerá esta Saída sem nunca reescrevê-la
+  (append-only, `App\Observers\MovimentacaoEstoqueObserver` já bloqueava
+  `updating()`/`deleting()` incondicionalmente desde a 20.1, revalidado
+  aqui pra Saída também).
+- **4 decisões de STOP resolvidas pelo usuário antes de qualquer
+  migration** (itens 6/9/11/15 do pedido, todos com `AskUserQuestion`):
+  1. **Cardinalidade Saída→Reserva**: FK simples
+     (`movimentacoes_estoque.reserva_estoque_id`, nullable,
+     `restrictOnDelete()`) — cada Saída consome NO MÁXIMO 1 Reserva.
+     Uma retirada que precise consumir várias Reservas gera N chamadas à
+     Action, dentro da MESMA transação do chamador (UI) — nunca uma
+     entidade de cabeçalho/agrupamento nem um algoritmo automático de
+     rateio nesta fase.
+  2. **Saída sem Reserva × saldo reservado**: valida SEMPRE contra o
+     saldo FÍSICO total (`SaldoEstoque`, intocado) — NUNCA contra o
+     saldo disponível não-reservado (`SaldoReserva::disponivel*()`).
+     Consumir estoque fisicamente reservado para outra demanda é
+     permitido (cenário real de emergência/desvio de frente) — a
+     `ReservaEstoque` original NUNCA é tocada/reduzida/liberada
+     automaticamente por essa saída livre; o eventual déficit
+     (`físico < reservado`) fica derivável para a 20.4 tratar, nunca
+     escolhido automaticamente aqui qual Reserva foi prejudicada. A
+     advertência "isso vai consumir estoque reservado" é responsabilidade
+     da UI (mostra e pede confirmação via `confirmarAcao()`, o modal
+     genérico já usado em todo o projeto) — NUNCA um bloqueio da Action;
+     o único bloqueio duro é sobre o saldo FÍSICO (nunca permite saldo
+     físico negativo).
+  3. **Pacote/demanda (`item_suprimento_id`) opcional sem Reserva**:
+     quando a Saída consome uma Reserva, é sempre DERIVADO dela — se o
+     chamador também passar `$pacote` explicitamente, precisa bater
+     exatamente (nunca reinterpreta a demanda de uma Reserva). Sem
+     Reserva, é totalmente opcional — ausência nunca bloqueia a saída
+     (`null` = "demanda ainda não conciliada", nunca um Pacote inventado
+     como fallback). A UI mostra "Demanda/Pacote pendente de
+     conciliação" nesse caso — nunca inventa um Pacote "A definir".
+  4. **`retirado_por`/`retirado_por_externo`**: mesmo par já usado em
+     `Restricao.responsavel_id`/`responsavel_externo` — cobre tanto
+     usuário cadastrado quanto pessoa de campo sem login. Os dois nunca
+     coexistem na mesma Saída (`RegistrarSaidaEstoque::
+     garantirRetiradoPorNaoDuplicado()`). `registrado_por` (já existente
+     desde a 20.1) continua significando exclusivamente "quem lançou no
+     sistema" — nunca reaproveitado como retirante. Sem
+     `autorizado_por` nesta fase (decisão do usuário — só introduzir se
+     houver requisito próprio de autorização formal).
+- **Frente informada na retirada (`frente_trabalho_id`, nullable)**: o
+  destino dito pelo operador NAQUELE INSTANTE — nunca a aplicação final
+  conciliada (isso é 20.4), pode divergir livremente da Frente da
+  Destinação/Reserva original (nunca bloqueado — testado explicitamente:
+  Reserva com Destinação pra Frente A, Saída informando Frente B, ambas
+  preservadas sem nenhuma alteração na Destinação original) e pode ser
+  omitida (saída "pendente de conciliação" — nunca uma Frente inventada
+  como fallback).
+- **Consumo parcial de Reserva é sempre DERIVADO, nunca persistido**:
+  `App\Support\Estoque\SaldoReserva` ganhou `consumidoPorSaidas()`/
+  `saldoPendenteConsumo()`/`consumidoPorReservas()` (batch, 1 query pra
+  N reservas — nunca 1 SUM por linha) — soma `MovimentacaoEstoque` tipo
+  Saída vinculada via `reserva_estoque_id`. `reservas_estoque.quantidade`
+  NUNCA é decrementada; `status` continua só `Ativa`/`Liberada`
+  (administrativo) — sem "ParcialmenteConsumida"/"Consumida" antecipados,
+  decisão já tomada na 20.2 e reconfirmada aqui. Reserva com saldo
+  pendente zerado bloqueia nova Saída vinculada a ela
+  (`SaidaEstoqueInvalidaException`), mas continua existindo como
+  histórico — nunca apagada/reescrita.
+- **Granularidade física — mesma resolução de `RegistrarEntradaEstoque`/
+  `CriarReservaEstoque`**: modo Quantitativo nunca aceita `$unidade`;
+  Lote/Serializado sempre exigem uma `UnidadeEstoque` JÁ EXISTENTE — a
+  Saída NUNCA cria uma unidade nova (diferente da Entrada). Bobina
+  fracionável (1000m → saída 120 → saída 80 → saldo 800, mesmo
+  identificador físico, nunca uma nova bobina por retirada) e dois lotes
+  do mesmo Material permanecem saldos independentes. Serial exige
+  quantidade exatamente 1 (`garantirQuantidadeSerialUnitaria()`, mesma
+  regra já usada em Entrada/Reserva) — segunda saída do mesmo serial
+  bloqueada pelo guard geral de saldo físico (saldo já em 0).
+- **Concorrência — mesmo total order já usado por `CriarReservaEstoque`**:
+  o recurso físico (`LocalEstoque` ou `UnidadeEstoque`, conforme o modo)
+  é travado SEMPRE PRIMEIRO, antes de qualquer SUM de saldo — se a
+  Saída consome uma Reserva, `ReservaEstoque` é travada EM SEGUIDA
+  (recurso físico antes do recurso lógico que o consome), provado por
+  teste via `DB::listen()` capturando a ordem real das queries `FOR
+  UPDATE`. Duas Saídas concorrentes no mesmo recurso nunca formalizam
+  mais que o saldo físico (ambas disputam o mesmo lock).
+- **Validações de compatibilidade com a Reserva** (Material/Local/
+  Unidade/Pacote/obra/status Ativa) — uma Saída vinculada a uma Reserva
+  precisa usar exatamente o mesmo Material/Local/obra da Reserva, e a
+  mesma Unidade quando a Reserva fixou uma (Lote/Serializado); "Reserva
+  quantitativa não fixa lote" (item 28 do pedido) já é coberto
+  naturalmente pela condição `$reserva->unidade_estoque_id`, sem
+  checagem especial — só Lote/Serializado fixam unidade na criação da
+  Reserva. Frente informada na Saída NUNCA precisa bater com a Frente da
+  Destinação (item 32 — requisito central, testado).
+- **Autorização**: reaproveita `estoque.movimentacao|criar` — mesmo slug
+  que já registra Entrada, nenhum slug novo. Perfil padrão `Encarregado`
+  já tinha `criar` nesse slug desde a 20.1 (Almoxarife implícito), sem
+  necessidade de alterar `Perfil::REGRAS_ESCRITA`.
+- **UI**: nova aba "Saída / Retirada" em `⚡estoque.blade.php` — modal com
+  Material/Local (independentes, travados quando uma Reserva é
+  selecionada), Unidade (só Lote/Serializado, com saldo físico > 0),
+  Reserva Ativa opcional (lista filtrada pelo Material, mostrando
+  Pacote/Frente planejada/saldo pendente — ao selecionar, auto-preenche
+  e trava Local/Unidade/Pacote a partir dela), Pacote opcional (livre
+  quando sem Reserva), Frente informada opcional, quantidade, data,
+  retirado por (usuário do sistema OU texto livre externo), observação.
+  Botão de confirmação vira `confirmarAcao()` (aviso "vai consumir
+  estoque reservado para outra demanda, confirma?") só quando a
+  quantidade excede o saldo NÃO reservado e não há Reserva selecionada —
+  nunca um bloqueio, sempre uma confirmação extra. Aba "Movimentações"
+  ganhou colunas Pacote/Frente informada/Retirado por e sinal visual
+  (+/-) por tipo.
+- **Achados de implementação, não de produção**: (1) o docblock original
+  de `RegistrarSaidaEstoque` usava a frase 'Pacote "A definir"'/'Frente
+  "A definir" inventada' pra explicar a decisão de NUNCA criar
+  Pacote/Frente fake — mas a substring "a definir" colidia (case-
+  insensitive) com o guard permanente `test_al_nunca_cria_frente_fake`
+  (`EstoqueDestinacaoReservaTest.php`, 20.2), que varre
+  `app/Actions/Estoque/*.php`/`app/Support/Estoque/*.php` procurando
+  exatamente essa string — reescrito pra "Pacote/Frente inventado(a)
+  como fallback", mesmo sentido, sem colidir; (2) dois guards
+  permanentes de regressão pré-existentes (`test_zero_saida_criada`
+  em `EstoqueDestinacaoReservaTest.php` e `test_z_zero_saida_criada_pos_correcao`
+  em `EstoqueDestinacaoReservaCorrecaoTest.php`, ambos das etapas 20.2/
+  20.2.CORREÇÃO) afirmavam explicitamente "zero Saída criada ainda" —
+  agora obsoletos por DESIGN, já que esta é exatamente a etapa que
+  implementa Saída. Renomeados para `test_zero_conceitos_de_20_4_criados`/
+  `test_z_zero_conceitos_de_20_4_criados_pos_correcao`, removendo só o
+  padrão `case Saida`/`'tipo' => 'saida'` da lista de proibidos e
+  atualizando a asserção final pra `['Entrada', 'Saida']` — o guard real
+  (nunca antecipar Transferência/Ajuste/Divergência/Industrialização/
+  Devolução/Estorno/Inventário, conceitos da 20.4+) permanece 100%
+  intacto e sem nenhum enfraquecimento.
+- **Não implementado nesta fase** (fora de escopo, por instrução
+  explícita): conciliação detalhada posterior da aplicação, divisão de
+  uma Saída entre várias Frentes, cálculo definitivo de desvio A→B,
+  déficit/recomposição da Frente original, industrialização externa,
+  transferência entre almoxarifados, inventário, ajuste, Restrição nova,
+  Notification, alteração de prontidão.
+- Testes: `tests/Feature/EstoqueSaidaTest.php` (52 testes — A-J Saída
+  básica, K-R Reserva incluindo prova de que Reserva nunca é reescrita,
+  S-X modos de rastreabilidade, Y-AB concorrência com prova estrutural
+  de ordem de lock via `DB::listen()`, AC-AG isolamento cross-obra/
+  cross-tenant/Material-Local-Pacote errados, AH-AN UI via
+  `Livewire::test()`, AO-AQ performance por DELTA (mesma técnica já
+  estabelecida no projeto — o render completo do Livewire avalia todos
+  os computeds do Blade, então um teto absoluto de queries seria
+  frágil), AR grep de arquitetura permanente confirmando zero conceito
+  de Saída física real gerando Restrição/prontidão. Regressão
+  direcionada: Bucket 1 — Estoque completo/TenantIsolation/ItemTakeOff/
+  ListaEngenharia/RecebimentoPedido/PedidoCompra/RequisicaoCompra/
+  Alocacao/RequisicaoPlanejamento (**526/526 passed**); Bucket 2 —
+  SincronizarCadeiaSuprimento/AlertaCadeiaSuprimento/Restricoes/
+  CentralProntidao/Lookahead/Cronograma/DocumentoEngenharia/Grd/
+  RevisaoLiberacao/PlanoSemanal/PlanoAcao (**520/520 passed**). Full
+  suite solo: **3157 passed / 6 skipped / 6 failed / 8461 assertions**
+  (de 3108/6/3/8372 antes desta etapa — delta exato de +49 passed/+3
+  failed/+89 assertions, batendo exatamente com os 52 testes novos de
+  `EstoqueSaidaTest.php` menos as 3 falhas novas abaixo).
+- **Achado — 3 falhas NOVAS na full suite, investigadas e confirmadas
+  SEM relação com esta etapa**: `tests/Feature/
+  SincronizarRestricaoSuprimentoTest.php` (`test_resolve_automaticamente_
+  quando_item_normaliza`/`test_reabre_restricao_ja_resolvida_se_item_
+  piora_de_novo`/`test_registra_restricao_acao_so_quando_ha_usuario`)
+  passa a falhar mesmo em ISOLAMENTO total (sem nenhuma outra suíte
+  rodando antes) — descarta contaminação de estado global entre testes.
+  Mesma classe exata de bug já documentada e aceita pra
+  `ItemSuprimentoStatusTest` (uma das 3 falhas históricas): fixture com
+  data absoluta próxima do calendário real (`Carbon::parse('2026-08-20')`
+  simulando "Realizado dentro do prazo" contra uma necessidade de
+  `'2026-09-01'`, sem NENHUM `Carbon::setTestNow()` no `setUp()`) — real
+  "hoje" avançou pra 2026-08-28 e ultrapassou o marco fixo de 20/08,
+  invertendo a semântica pretendida do fixture. Confirmado via `git diff`
+  que **zero arquivo** de `ItemSuprimento`/`SuprimentoScheduler`/
+  `SincronizarRestricaoSuprimento`/`Restricao` foi tocado nesta etapa —
+  domínio completamente alheio ao Estoque/Saída. **Não corrigido nesta
+  etapa** (fora de escopo do pedido, que é especificamente sobre Saída
+  de Estoque — mesma prudência já diversas vezes documentada no projeto
+  de não expandir escopo pra um domínio legado sem autorização
+  explícita), registrado aqui como nova entrada na mesma categoria de
+  dívida externa já aceita (`DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`) — agora
+  **4 falhas históricas conhecidas e sem relação**, todas do mesmo
+  padrão "fixture com data absoluta perto do calendário real".
+- **Não avançar pra 20.4, Aplicação real, conciliação, divergência/
+  déficit, Industrialização, Inventário, ou qualquer alteração em
+  Restrição/prontidão sem validação do usuário** (instrução explícita)
+  — aguardando aprovação desta etapa.
+
+### Etapa 20.3.CORREÇÃO — hardening da Saída física (retirante + N+1)
+
+- **Contexto**: fecha 3 achados da auditoria adversarial da 20.3 — o
+  Achado C1 (retirante cross-tenant aceito estruturalmente), a Decisão D2
+  transformada em regra de produto (Saída não pode ser anônima), e o
+  Achado B de N+1 real em `recebimentosPendentes()`. Os demais achados B
+  da auditoria (mass-update/delete via Query Builder, assimetria de lock
+  Entrada×Saída, referências vivas de Material/Frente/Pacote, ausência de
+  barcode dedicado) foram **apenas documentados**, por instrução
+  explícita — nenhum deles foi alterado.
+- **Retirante — regra final**: toda Saída precisa de EXATAMENTE UM
+  retirante — `retirado_por` (usuário cadastrado) OU `retirado_por_externo`
+  (pessoa sem login, texto livre com `trim()` — string vazia/só espaço
+  conta como ausência), nunca os dois, nunca nenhum.
+  `App\Actions\Estoque\RegistrarSaidaEstoque::garantirRetiradoPorValido()`
+  é o único ponto de validação — substitui o antigo
+  `garantirRetiradoPorNaoDuplicado()` (que só bloqueava "ambos
+  preenchidos", nunca "ambos ausentes"). `registrado_por` continua
+  significando exclusivamente "quem lançou no sistema" — a Action nunca
+  usa `$usuarioRegistro` como fallback de retirante quando o operador não
+  informa (isso seria inventar um fato, não registrar um informado).
+- **Retirante interno — tenant e obra, ambos exigidos**: quando
+  `retirado_por` é um usuário cadastrado, a Action valida diretamente
+  (`$retiradoPor->tenant_id !== $local->tenant_id`, nunca delegado só à
+  UI) que ele pertence ao MESMO tenant, e (`HasObraPapel::
+  temAcessoAObra()`, já existente e reaproveitado — nenhum mecanismo
+  novo) que está vinculado à MESMA obra — decisão do usuário (investigação
+  confirmou `Work::users()`/`temAcessoAObra()` como relação estrutural
+  sem ambiguidade, nenhum STOP necessário). Um usuário do tenant certo
+  mas de outra obra NÃO pode ser retirante interno de uma Saída.
+- **Texto externo permanece 100% texto operacional**: nenhum cadastro de
+  trabalhador/terceiro foi criado — `retirado_por_externo` continua
+  string livre, só normalizada com `trim()`.
+- **UI — toggle explícito**: modal de Saída (`⚡estoque.blade.php`) ganhou
+  `$saidaTipoRetirante` ('interno'|'externo', radio) — trocar o tipo
+  limpa o campo do OUTRO tipo (`updatedSaidaTipoRetirante()`), evitando
+  os dois "vazando" preenchidos ao mesmo tempo. `confirmarSaida()` valida
+  o campo do tipo ativo antes de chamar a Action — UX, nunca a garantia
+  real (a Action valida de novo, sempre). Payload manipulado
+  (ex.: forçar um `saidaRetiradoPorId` de outro tenant via Livewire)
+  resulta em toast amigável via `saidaGeral`, nunca 500.
+- **N+1 real corrigido em `recebimentosPendentes()`**: a auditoria mediu
+  ~166 queries pra renderizar com 20 materiais (badge da navbar, presente
+  em toda troca de aba). Duas fontes batizadas e batchadas, cada uma como
+  método NOVO e SEPARADO do já existente (nenhum método de 1 linha foi
+  alterado — continuam servindo `RegistrarEntradaEstoque`/
+  `AssociarMaterialAoItemTakeOff`/`ItemTakeOffObserver`, uso pontual de 1
+  linha, onde poucas queries são aceitáveis):
+  - `App\Support\Estoque\ResolverMaterialDaCadeia::itemTakeOffEmLote()` —
+    mesma cadeia de 5 hops (`RecebimentoPedido → PedidoCompraItem →
+    RequisicaoCompraItem → AlocacaoRequisicaoPacote →
+    RequisicaoPlanejamentoItem → ItemTakeOff`) via `whereIn` em cada hop
+    — 5 queries TOTAIS, nunca 5×N.
+  - `App\Support\Estoque\SaldoEstoque::incorporadoDeRecebimentos()` —
+    mesma agregação de `incorporadoDeRecebimento()` (mesmo `CASE` de
+    sinal central, `fatorSaldo()`), em lote via `GROUP BY`.
+  - `App\Support\Estoque\PoliticaAssociacaoMaterial::
+    podeAlterarMaterialEmLote()` — achado durante a própria correção: a
+    resolução da cadeia sozinha não bastava, `podeAlterarMaterial()`
+    (chamada 1x por linha dentro do MESMO `->map()`) ainda contribuía
+    1-2 queries por linha (medido: 34 queries pra 21 recebimentos mesmo
+    após as duas primeiras correções). Reaproveita as MESMAS relações e
+    a MESMA regra de negócio do método de 1 item (nunca uma política
+    paralela) — só resolve em lote via `whereIn`+eager-load nos 3
+    conjuntos de dados que o método original consulta por item
+    (MovimentacaoEstoque, Pedido Emitido na cadeia, Destinação vinculada
+    ao Pacote).
+  - **Resultado medido**: 21 queries TOTAIS pra renderizar
+    `recebimentosPendentes()`, **idêntico para 5 ou 100 recebimentos**
+    (prova por delta) — de escala linear (~166 pra 20) pra número fixo.
+- **Mass update/delete — reafirmado, não corrigido**: grep de produção
+  confirma zero writer usando `MovimentacaoEstoque::where(...)->update()`/
+  `->delete()` ou `DB::table('movimentacoes_estoque')->update/delete` —
+  continuam API PROIBIDA por convenção arquitetural, nunca por trigger de
+  banco (mesma limitação estrutural já aceita em `RecebimentoPedido`/
+  `ReservaEstoque` desde o Ciclo 19/20.2).
+- **Lock Entrada×Saída — reafirmado como trade-off consciente, não
+  alterado**: `RegistrarEntradaEstoque` trava `RecebimentoPedido`;
+  `RegistrarSaidaEstoque` trava `LocalEstoque`/`UnidadeEstoque` — recursos
+  diferentes. Nenhum estado inseguro foi reproduzido na auditoria (Entrada
+  é aditiva e nunca condiciona sobre o saldo físico compartilhado; o
+  ledger é append-only, sem contador compartilhado sujeito a "lost
+  update"). Registrado como trade-off conhecido — nenhum lock extra
+  criado por estética.
+- **Snapshots — reafirmado como decisão consciente, não alterado**:
+  `MovimentacaoEstoque` continua sem campos `_snapshot` de Material/
+  Frente/Pacote — são relações vivas (FK imutável, texto descritivo pode
+  mudar se o cadastro mudar depois). Diferente do padrão GRD (que resolve
+  ambiguidade de vigência) — aqui não há essa ambiguidade, é o mesmo
+  estilo de referência de dado mestre já usado no resto do projeto.
+- **Barcode — reafirmado, não implementado**: identidade física atual
+  (`codigo_lote`/`serial_unico`/`identificador_logistico`) já é suficiente
+  pra uma etapa futura de scanner.
+- **`SincronizarRestricaoSuprimentoTest` — não corrigido, por instrução
+  explícita**: as mesmas 3 falhas de calendar drift (já provadas
+  conclusivamente na auditoria 20.3 — isolado 5x estável, Carbon
+  congelado em 2026-07-15 → verde, ambas as ordens sem interação)
+  continuam presentes e foram incluídas DELIBERADAMENTE no Bucket 2 desta
+  correção, pra manter visibilidade da dívida — nunca mascaradas.
+- **Não implementado nesta correção** (fora de escopo, por instrução
+  explícita): Aplicação, Conciliação, cálculo de Desvio/Déficit,
+  Industrialização, qualquer alteração em Restrição/prontidão.
+- Testes: `tests/Feature/EstoqueSaidaCorrecaoTest.php` (26 testes, A-Y +
+  1 de zero-efeito-colateral — 1 deliberadamente `markTestSkipped()`
+  documentando que o baseline "antes" já está registrado no relatório da
+  auditoria, já que o código corrigido está deployado no momento do
+  teste). `tests/Feature/EstoqueSaidaTest.php` (52 testes já existentes,
+  todos os `registrarSaida->execute()` sem retirante explícito
+  atualizados pra incluir `retiradoPor`/vínculo de obra necessário à
+  nova regra — nenhuma asserção de negócio enfraquecida, só adaptação à
+  regra que esta correção introduziu). Regressão: Bucket 1 — Estoque
+  completo/TenantIsolation (**274 passed / 1 skipped**); Bucket 2 —
+  TakeOff/RP/RC/Pedido/Recebimento/Restrições/Cronograma/GED/
+  PlanoSemanal/Lookahead/Central + `SincronizarRestricaoSuprimentoTest`
+  incluído deliberadamente (**779 passed / 3 failed**, as mesmas 3
+  falhas de calendar drift, sem nenhuma nova). Full suite solo: **3182
+  passed / 7 skipped / 6 failed / 8501 assertions** (de 3157/6/6/8461
+  antes desta correção — delta exato de +25 passed/+1 skipped/+40
+  assertions, batendo exatamente com os 26 testes novos de
+  `EstoqueSaidaCorrecaoTest.php`, 25 passed + 1 skipped deliberado.
+  Falhas continuam em 6 — as mesmas 3 históricas
+  (`DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`) + as mesmas 3 de
+  `SincronizarRestricaoSuprimentoTest` — zero 7ª falha).
+- **Não avançar pra 20.4, Aplicação, Conciliação, Desvio, Déficit,
+  Industrialização, ou qualquer alteração em prontidão/Restrição sem
+  validação do usuário** (instrução explícita) — aguardando aprovação
+  desta correção.
+
+## Conciliação da Aplicação Real + Desvio entre Frentes + Déficit/Recomposição (Ciclo 20, Etapa 20.4)
+
+- **Quatro fatos distintos, nenhum substitui o anterior** (investigação
+  fresh confirmou nenhuma entidade equivalente já existia — grep global
+  por `aplicacao`/`apropriacao`/`desvio`/`deficit`/`reposicao` só
+  encontrou conceitos sem relação, ex.: `PlanoAcaoReconciliador`): (A)
+  **Destinação Planejada** (`DestinacaoPlanejadaMaterial`, 20.2) — pra
+  qual Frente o planejamento pretendia atender; (B) **Reserva**
+  (`ReservaEstoque`, 20.2) — qual estoque físico foi comprometido; (C)
+  **Saída Física** (`MovimentacaoEstoque` tipo Saida, 20.3) — o que
+  efetivamente deixou o estoque; (D) **Aplicação Real**
+  (`AplicacaoMaterialEstoque`, esta etapa) — onde o material foi
+  EFETIVAMENTE utilizado. `movimentacoes_estoque.frente_trabalho_id`
+  continua sendo só a Frente INFORMADA no instante da retirada (pista
+  operacional, nunca prova definitiva) — a Aplicação é a única fonte de
+  verdade de "onde foi aplicado de fato".
+- **Zero alteração dos 3 fatos já congelados**: `MovimentacaoEstoque`
+  (ledger append-only desde 20.1, Observer já bloqueia
+  `updating()`/`deleting()` incondicionalmente), `ReservaEstoque`
+  (imutável desde 20.2.CORREÇÃO) e `DestinacaoPlanejadaMaterial` nunca
+  são escritos por esta camada — confirmado por teste dedicado
+  percorrendo o fluxo completo.
+- **`App\Models\AplicacaoMaterialEstoque`**: sempre referencia uma
+  `MovimentacaoEstoque` do tipo Saida (`movimentacao_estoque_id`
+  obrigatório, `restrictOnDelete()`, guard `garantirEhSaida()` na Action
+  — nunca criada direto contra Material/Reserva/Pedido/TakeOff).
+  `frente_trabalho_id` é **NOT NULL, sempre uma Frente real** — sem
+  Frente conhecida, a linha simplesmente não é criada (a Saída fica com
+  `pendente > 0`); relação usa `withTrashed()` na definição (mesmo
+  padrão de `DestinacaoPlanejadaMaterial`/`MovimentacaoEstoque`) —
+  histórico sobrevive a uma Frente arquivada depois, mas uma Frente já
+  arquivada bloqueia CRIAR uma aplicação nova contra ela.
+- **Pacote por LINHA, decisão do usuário (resolve as Seções 17-19 da
+  investigação)**: `item_suprimento_id` é nullable e **independente por
+  Aplicação**, nunca herdado silenciosamente de forma imutável — quando
+  a Saída já tem Pacote fixo (`movimentacoes_estoque.item_suprimento_id`
+  não-nulo), toda Aplicação dela é FORÇADA a usar exatamente esse mesmo
+  Pacote (omitir o parâmetro herda automaticamente; informar um
+  DIFERENTE é bloqueado, `AplicacaoConciliacaoInvalidaException`).
+  Quando a Saída não tem Pacote (`null` — "demanda ainda não
+  conciliada"), cada linha de Aplicação define o seu, **inclusive
+  Pacotes DIFERENTES entre linhas da MESMA Saída** (ex.: 500m retirados
+  numa única Saída, depois conciliados 300m pro Pacote Elétrica + 200m
+  pro Pacote Instrumentação) — nunca inventa um Pacote fake, `null`
+  continua sendo um valor válido por linha quando a demanda ainda não
+  foi identificada.
+- **Rateio nunca obrigatório**: Saída de 500 sem nenhuma Aplicação é
+  estado válido (`pendente = 500`); completar aos poucos (200, depois
+  mais 100...) é o fluxo normal — a obra não para porque ainda não
+  conhece a distribuição detalhada.
+- **Pendência sempre DERIVADA** (`App\Support\Estoque\
+  PoliticaConciliacaoAplicacao`, única fonte de verdade, reaproveitada
+  pelas 3 Actions E pelo Observer): `pendente = quantidade_saida -
+  SUM(aplicacoes)`, nunca persistida em coluna própria. Over-aplicação
+  sempre bloqueada, com o mesmo total order de lock já usado em toda a
+  cadeia do Ciclo 19/20 — a `MovimentacaoEstoque` (Saída) é travada
+  SEMPRE PRIMEIRO, antes de qualquer SUM, serializando tentativas
+  concorrentes contra a MESMA Saída.
+- **Correção — editável enquanto aberta, congela em 100% (decisão do
+  usuário, Seção 12)**: `saidaEstaFechada() = SUM(aplicações) >=
+  quantidade`, também 100% derivado, nunca uma coluna de status.
+  Enquanto `pendente > 0`, criar/editar/excluir uma linha é livre
+  (sempre revalidado sob o mesmo lock). Assim que fecha, **NENHUMA**
+  Aplicação daquela Saída pode ser criada/editada/excluída — nem mesmo
+  pra "corrigir" um erro (excluir uma linha só pra reabrir uma
+  conciliação já fechada é proibido, decisão explícita) — correção de
+  uma conciliação já fechada fica fora de escopo desta etapa, futura
+  fase de estorno/reclassificação auditável. `App\Observers\
+  AplicacaoMaterialEstoqueObserver` é a barreira SEMÂNTICA (bloqueia
+  mesmo um write direto bypassando a Action); a atomicidade de verdade
+  vem do lock na Action, mesma disciplina já documentada pra todo o
+  domínio de Estoque/Suprimentos.
+- **Cronologia — `aplicado_em`, nunca `created_at`**: retroativo (dias
+  depois) é sempre permitido; futuro é bloqueado
+  (`Carbon::today()`, mesmo padrão de `RecebimentoPedido`/
+  `RegistrarSaidaEstoque`); **anterior à própria Saída é logicamente
+  inválido e bloqueado sem exceção** (investigação não encontrou nenhum
+  caso real de retroatividade que justificasse aplicar antes de retirar
+  — o mesmo dia da Saída é sempre permitido, só dia estritamente
+  anterior é rejeitado).
+- **Planejado × Real, nunca causalidade** (`App\Support\Estoque\
+  ConciliacaoAplicacao::porPacoteMaterialFrente()`): compara, por
+  Pacote+Material+Frente, `planejado` (soma de
+  `DestinacaoPlanejadaMaterial`) × `aplicado` (soma acumulada de TODAS
+  as Aplicações históricas, nunca só a mais recente) — `delta` é pura
+  aritmética. **Uma Aplicação em excesso numa Frente B nunca é afirmada
+  como "vinda de" uma Frente A** só por A estar com delta negativo —
+  isso seria inventar causalidade (Seção 21).
+- **Desvio DIRETAMENTE rastreável, único caso com causalidade real**
+  (`App\Support\Estoque\DesviosAplicacao`): só existe quando a PRÓPRIA
+  Saída consome uma Reserva ligada a uma Destinação com Frente planejada
+  — nesse caso, comparar a Frente das Aplicações da MESMA Saída contra a
+  Frente planejada da Reserva é auditável (`aderente` = aplicado na
+  Frente planejada, `desviado_por_frente` = aplicado em qualquer outra).
+  Reserva sem Frente planejada (genérica) não tem "planejado" pra
+  comparar — retorna sem aderente/desviado, nunca um valor inventado.
+  Saída sem Reserva nenhuma: `DesviosAplicacao::porSaida()` retorna
+  `null` — não é calculável, nunca `0` forçado.
+- **Déficit agregado, NUNCA atribuído automaticamente — Opção F,
+  decisão explícita do usuário (Seção 25/26)** (`App\Support\Estoque\
+  CoberturaReservas`): `deficit = max(0, reservado_ativo - físico)`,
+  sempre respeitando a MESMA granularidade física da Reserva
+  (Material+Local pra Reserva Quantitativa, Unidade específica pra
+  Lote/Serializado — nunca comparar reservas incompatíveis
+  fisicamente). Quando uma Saída LIVRE (sem Reserva) invade cobertura
+  reservada, o sistema sabe com certeza o TAMANHO do problema, mas
+  **nunca escolhe sozinho** qual Reserva/Frente foi prejudicada — sem
+  FIFO, sem proporcionalidade, sem prioridade temporal, sem nenhuma
+  heurística. `ReservaEstoque`/`DestinacaoPlanejadaMaterial` nunca são
+  alteradas pelo cálculo de déficit (só leitura + agregação).
+- **Recomposição/reposição necessária = o próprio déficit** (Seção 29,
+  não uma entidade nova) — mesmo número, rótulo diferente na exibição.
+  Nunca cria `MovimentacaoEstoque` fake — uma nova Entrada física reduz
+  o déficit automaticamente na PRÓXIMA leitura (100% derivado, Seção
+  30), sem nenhuma ação manual.
+- **Autorização — slug PRÓPRIO, `estoque.conciliacao`** (decisão do
+  usuário: Encarregado pra `criar`/`editar`) — nunca reaproveita
+  `estoque.movimentacao` (Almoxarifado registra a Saída física) nem
+  `estoque.reserva` (Planejamento decide destinação) — Seção 40 do
+  pedido: Almoxarifado/Produção-Campo/Planejamento são
+  responsabilidades deliberadamente separadas. Sem workflow de
+  aprovação nesta etapa. **`excluir` = GerentePlanejamento, nunca
+  Encarregado** — achado real de regressão nesta etapa: a primeira
+  versão desta correção também dava `excluir` pro Encarregado (só
+  copiando o padrão de 3 ações do resto do catálogo), o que quebrou
+  `MigracaoPerfisPadraoTest::test_encarregado_nao_tem_nenhuma_permissao_de_excluir`
+  — invariante já estabelecida e testada do projeto: Encarregado NUNCA
+  recebe `excluir` em NENHUM slug do catálogo, sem exceção. A decisão
+  do usuário só cobria `criar`/`editar` — `excluir` foi corrigido pra
+  `GerentePlanejamento` (mesmo padrão de 3 tiers já usado em
+  `estoque.movimentacao`).
+- **UI**: nova aba "Conciliação / Aplicação" em `⚡estoque.blade.php` —
+  listagem de Saídas com pendência (badge de contagem na aba, mesmo
+  padrão de "Recebimentos Pendentes") + modal de detalhe (histórico de
+  Aplicações, badge de cadeado quando 100% conciliada, painel de
+  "Desvio diretamente rastreável" quando aplicável, formulário de nova
+  linha) + card de "Cobertura de Reservas / Reposição Necessária"
+  (déficit agregado por Material+Local, nunca somando unidades
+  incompatíveis).
+- **Performance**: 3 métodos batch novos
+  (`PoliticaConciliacaoAplicacao::totalAplicadoEmLote()`,
+  `DesviosAplicacao::porSaidasEmLote()`, `SaldoEstoque::
+  porMateriaisNoLocal()` — este último novo, usado por
+  `CoberturaReservas::porPares()`) — nenhuma listagem faz 1 query por
+  linha; medido empiricamente por DELTA (mesma metodologia já
+  estabelecida no projeto desde o Ciclo 20.3.CORREÇÃO): custo marginal
+  de N Saídas/Aplicações/Reservas não escala linearmente.
+- **Achado de regressão, corrigido nesta etapa**: 2 testes de
+  arquitetura já existentes (`EstoqueSaidaTest::
+  test_ar_zero_conceito_de_20_4_no_codigo_de_producao`/
+  `EstoqueSaidaCorrecaoTest::test_y_zero_conceito_de_20_4`, ambos criados
+  na 20.3/20.3.CORREÇÃO como guarda contra antecipar conceitos da 20.4)
+  proibiam nomes ESPECULATIVOS (`ConciliacaoAplicacao` entre eles) que
+  não coincidem com os nomes reais escolhidos aqui
+  (`AplicacaoMaterialEstoque`/`DesviosAplicacao`/`CoberturaReservas`/
+  `PoliticaConciliacaoAplicacao`) — mas `ConciliacaoAplicacao` colidiu
+  por coincidência de nome. Renomeados pra
+  `test_ar_zero_conceito_pos_20_4_no_codigo_de_producao`/
+  `test_y_zero_conceito_pos_20_4`, removendo da lista de proibidos só os
+  5 termos agora legitimamente implementados — o guard real (nunca
+  antecipar Industrialização/Inventário/Transferência/Ajuste, conceitos
+  de fases futuras) permanece 100% intacto, agora com 2 termos a mais
+  (`Transferencia`/`Ajuste`) por precaução.
+- **Não implementado nesta fase, por instrução explícita**: estoque
+  contábil, transferência entre locais, inventário, ajuste/estorno
+  físico, industrialização externa, código de barras 1D, integração
+  financeira, alteração de prontidão, Restrição automática nova,
+  Notification nova.
+- Testes: `tests/Feature/EstoqueConciliacaoAplicacaoTest.php` (49 testes
+  — A-AG do pedido: Aplicação básica/histórico-correção/guards de
+  Frente-data-tipo, Planejado×Real, Reserva/Desvio direto, Déficit,
+  Pacote/Demanda + isolamento) + `tests/Feature/
+  EstoqueConciliacaoAplicacaoUiTest.php` (10 testes — AH-AQ: UI +
+  performance por DELTA) + 1 novo em `TenantIsolationTest.php` = 60
+  testes novos. Suíte completa (full suite solo): **3242 passed / 7
+  skipped / 6 failed / 8702 assertions** (de 3182/7/6/8501 antes desta
+  etapa — delta exato de +60 passed/+201 assertions, batendo com os 60
+  testes novos. As mesmas 6 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  — zero 7ª falha, confirmado em 2 rodadas completas).
+- **Não avançar pra estoque contábil, Transferência, Inventário,
+  Industrialização, ou qualquer alteração em Restrição/prontidão sem
+  validação do usuário** (instrução explícita) — aguardando aprovação
+  desta etapa.
+
+## Industrialização em Terceiros (Ciclo 20, Etapa 20.5)
+
+- **Remessa ao terceiro ≠ consumo/aplicação** (princípio central) —
+  material enviado pra fabricação externa nunca desaparece do
+  patrimônio/rastreabilidade; ele só muda de CUSTÓDIA. Quatro conceitos
+  distintos, nenhum falsificado como o outro: matéria-prima enviada,
+  matéria-prima consumida/transformada, produto fabricado, produto
+  entregue.
+- **Custódia em terceiro — Opção A confirmada pelo usuário**: reaproveita
+  100% de `LocalEstoque`/`MovimentacaoEstoque` já construídos desde
+  20.1, nunca uma entidade paralela de custódia nem um tipo novo em
+  `TipoMovimentacaoEstoque` (que continua só `Entrada`/`Saida`).
+  `App\Enums\TipoLocalEstoque` ganhou o case `Terceiro` (docblock já
+  reservava essa decisão desde 20.1); um Local tipo Terceiro SEMPRE tem
+  `fornecedor_id` preenchido (`App\Observers\LocalEstoqueObserver`
+  garante a coerência e CONGELA tipo/fornecedor assim que o Local já
+  tem qualquer movimentação — reinterpretar um Local já usado
+  reescreveria silenciosamente a semântica do histórico físico nele).
+  "Saldo na obra" / "saldo em terceiro" / "total sob custódia" são só 3
+  chamadas já existentes de `SaldoEstoque::porMaterialLocal()`/
+  `porMaterial()` — nenhum serviço novo precisou ser criado pra isso.
+- **Local Terceiro nunca disponível pra fluxo de campo**: `RegistrarSaidaEstoque`/
+  `CriarReservaEstoque`/`RegistrarEntradaEstoque` (via Recebimento de
+  Pedido) agora REJEITAM explicitamente um Local tipo Terceiro — são
+  fluxos de uso distintos (retirada pra campo / reserva pra demanda /
+  entrada via compra), nenhum deles é remessa de industrialização.
+- **`App\Models\OrdemIndustrializacao`**: o processo/contrato com UM
+  Fornecedor. `fornecedor_id`+`local_terceiro_id` (validado como
+  pertencente ao MESMO Fornecedor) + `item_suprimento_id` (Pacote,
+  sempre opcional, mesmo padrão de toda a cadeia do Ciclo 19/20).
+  `numero` segue EXATAMENTE o padrão já usado em RC/Pedido/GRD (lock em
+  `Work`, `MAX(numero)+1`, `UNIQUE(obra_id, numero)`, nullable em
+  Rascunho). `status` (`App\Enums\StatusOrdemIndustrializacao`:
+  Rascunho|Emitida|Concluida) — só Rascunho→Emitida implementado nesta
+  fase (transição pra Concluida derivada de entregas completas fica pra
+  quando houver uso real que a exija). Fornecedor/Local/Pacote
+  congelam assim que a Ordem deixa de ser Rascunho
+  (`App\Observers\OrdemIndustrializacaoObserver`) — excluir também é
+  bloqueado a partir daí.
+- **1 Ordem → N Produtos previstos** (decisão já aprovada, Seção 3) —
+  `App\Models\ProdutoIndustrializado.material_id` OBRIGATÓRIO: decisão
+  do usuário (Opção B, identidade Material/SKU) — o produto é sempre a
+  FAMÍLIA/TIPO de peça (o Material mestre, ex. "Spool SP-001"); cada
+  unidade física fabricada é uma `UnidadeEstoque` (serial/lote) desse
+  mesmo Material, nunca um Material novo por peça única — reaproveita
+  100% do `ModoRastreabilidadeMaterial`/`UnidadeEstoque` já construído,
+  nunca um segundo sistema de lote/serial. `documento_engenharia_revisao_id`
+  (nullable, `restrictOnDelete()`) congela a revisão EXATA usada na
+  fabricação — R2 nascer depois nunca reescreve um Produto já criado com
+  R1. Produtos só podem ser criados/editados/excluídos enquanto a Ordem
+  dona é Rascunho (`App\Observers\ProdutoIndustrializadoObserver`).
+- **`App\Models\RemessaIndustrializacao`**: evento FÍSICO append-only —
+  a "identidade de operação" pedida pelo usuário pra nunca ter Saida+
+  Entrada desconectadas. `direcao` (`App\Enums\DirecaoRemessaIndustrializacao`:
+  Envio|RetornoSobra) decide qual ponta é Saida e qual é Entrada — Envio:
+  Saida no Local próprio + Entrada no Local Terceiro; RetornoSobra: o
+  inverso (sobra nunca consumida volta fisicamente à obra). As duas
+  Movimentações SEMPRE nascem na MESMA transação, correlacionadas por
+  esta própria linha (`movimentacao_saida_id`/`movimentacao_entrada_id`,
+  ambas `restrictOnDelete()`). 1 Ordem pode ter N remessas — nunca
+  assume 1 Ordem=1 remessa. **Transferência mínima de `UnidadeEstoque`,
+  escopada SÓ a este fluxo** (nunca uma Transferência genérica, fora de
+  escopo pra 20.6+): quando a remessa envolve Lote/Serial,
+  `UnidadeEstoque.local_estoque_id` é atualizado pro Local de destino
+  como parte da mesma transação — sem isso a unidade ficaria presa no
+  Local de origem mesmo já tendo sido fisicamente movida.
+- **Consumo de matéria-prima — genealogia quantitativa N:N, decisão do
+  usuário confirmada**: `App\Models\ProdutoIndustrializadoConsumo`
+  (pivot com `quantidade_consumida`) liga um `ProdutoIndustrializado` a
+  UMA `RemessaIndustrializacao` de direção Envio específica — permite
+  responder exatamente "qual matéria-prima formou qual produto", nunca
+  só "a Ordem recebeu A/B/C e produziu X/Y/Z" sem vínculo quantitativo.
+  **Reduz de verdade o saldo físico** — cria uma `MovimentacaoEstoque::Saida`
+  LIVRE (sem destino, mesmo idioma já usado pra "saída sem Reserva" na
+  obra) no Local Terceiro, representando a transformação física (a
+  matéria-prima deixa de existir como tal). Over-consumo sempre
+  bloqueado: `SUM(quantidade_consumida)` de UMA Remessa nunca ultrapassa
+  sua própria `quantidade` — lock na Remessa antes do SUM. Só remessas
+  de direção Envio podem ser consumidas, nunca RetornoSobra.
+- **Sobra/perda — decisão explícita de NÃO classificar automaticamente**
+  (Seção 23): `App\Support\Industrializacao\SaldoMateriaPrimaIndustrializacao::
+  porOrdemMaterial()` calcula `diferenca_nao_classificada = enviado -
+  consumido - devolvido` — puramente derivada, NUNCA rotulada
+  automaticamente como "perda" ou "sucata" (nenhuma semântica clara
+  pra distinguir as duas nesta fase — registrado como pendência
+  futura, nunca inventado). Zero inventário/ajuste contábil.
+- **Produção — "produzido" ≠ "entregue"** (Seção 17, dois eventos
+  distintos, nunca confundidos): `App\Models\ProducaoIndustrializada`
+  (o produto passa a existir fisicamente, em custódia do terceiro —
+  cria uma `Entrada` técnica no Local Terceiro sobre o Material do
+  Produto, criando a `UnidadeEstoque` quando Lote/Serial, mesma
+  resolução de `RegistrarEntradaEstoque` mas sem `recebimento_pedido_id`
+  — a unidade nasce de fabricação, nunca de Pedido) × `App\Models\
+  EntregaProdutoIndustrializado` (o produto sai do terceiro rumo a um
+  destino). **Sem limite de over-produção** (decisão de implementação,
+  documentada na migration — nenhum requisito claro no pedido; UI só
+  exibe divergência entre previsto e produzido, nunca bloqueia).
+  "Produzido"/"entregue"/"saldo pronto no terceiro" são sempre
+  DERIVADOS (`App\Support\Industrializacao\SaldoProdutoIndustrializado`),
+  nunca colunas em `produtos_industrializados`.
+- **Entrega — as duas modalidades SEMPRE geram Entrada técnica no Local
+  próprio da obra** (decisão do usuário confirmada, Opção A): `App\Enums\
+  ModalidadeEntregaProduto` (RetornoEstoqueObra|EntregaDiretaCampo) — "a
+  Entrada é técnica/patrimonial, não uma afirmação de que o material foi
+  fisicamente estocado no almoxarifado". Quando `EntregaDiretaCampo`, uma
+  3ª Movimentação reaproveita `App\Actions\Estoque\RegistrarSaidaEstoque`
+  DE VERDADE (mesma transação, mesmo fluxo de retirado_por/Frente/
+  Pacote/Aplicação-Conciliação já existente desde 20.3/20.4 — zero
+  código novo pra essa perna). Guard de saldo:
+  `quantidade <= produzido - entregue`, sob lock do `ProdutoIndustrializado`
+  (recurso lógico compartilhado por entregas concorrentes do mesmo
+  produto). 1 Produto pode ter N entregas parciais — histórico
+  append-only, nunca substituído.
+- **Genealogia bidirecional** (`App\Support\Industrializacao\
+  GenealogiaIndustrializacao`): "matéria-prima → produtos que ela
+  gerou" (`produtosDaRemessa()`) e "produto → matéria-prima que o
+  formou" (`materiaPrimaDoProduto()`) — ambas leem só o que já foi
+  explicitamente registrado via `RegistrarConsumoIndustrializacao`,
+  nunca inferem distribuição automática.
+- **Autorização — slug PRÓPRIO, `estoque.industrializacao`**: criar=
+  Encarregado (registrar remessa/retorno/produção/entrega físicos,
+  mesmo nível de `estoque.movimentacao`/`estoque.conciliacao`), editar=
+  Engenheiro (criar Ordem, vincular Documento de fabricação, declarar
+  Produtos previstos), excluir=GerentePlanejamento (nunca Encarregado —
+  mesma invariante já corrigida na 20.4:
+  `MigracaoPerfisPadraoTest::test_encarregado_nao_tem_nenhuma_permissao_de_excluir`).
+- **UI**: nova aba "Industrialização em Terceiros" em
+  `⚡estoque.blade.php` — listagem de Ordens + detalhe (produtos com
+  saldo produzido/entregue/pronto, remessas, dashboard de matéria-prima
+  em custódia do terceiro por Material) + modais de criação/emissão/
+  remessa/produção/consumo/entrega, tudo delegando pras Actions/Services
+  já testados isoladamente.
+- **Não implementado nesta fase, por instrução explícita**: estoque
+  contábil, Transferência interna genérica, Inventário, código de
+  barras 1D, integração financeira, Notification/Restrição automática,
+  alteração de prontidão, classificação automática de sucata/perda,
+  transição Emitida→Concluida derivada (fica pra quando houver
+  requisito real), reuso de sobra entre Ordens diferentes.
+- Testes: `tests/Feature/EstoqueIndustrializacaoTest.php` (60 testes —
+  A-AT do pedido: Ordem/Remessa/Produção/Consumo/Entrega/Genealogia/
+  Custódia + isolamento) + `tests/Feature/EstoqueIndustrializacaoUiTest.php`
+  (9 testes — AU-AZ + fluxo completo via UI + performance por DELTA) +
+  1 novo em `TenantIsolationTest.php` (as 6 tabelas novas) = 70 testes
+  novos. Suíte completa (full suite solo): **3312 passed / 7 skipped /
+  6 failed / 8919 assertions** (de 3242/7/6/8702 antes desta etapa —
+  delta exato de +70 passed/+217 assertions, batendo com os 70 testes
+  novos. As mesmas 6 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  — zero 7ª falha).
+- **Não avançar pra estoque contábil, Transferência genérica,
+  Inventário, código de barras, ou qualquer alteração em Restrição/
+  prontidão sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+## Industrialização em Terceiros — split físico de lote/bobina + hardening UI (Ciclo 20, Etapa 20.5.CORREÇÃO)
+
+- **Contexto**: fecha os 2 achados C confirmados pela auditoria adversarial
+  da 20.5 (Etapa 20.5.AUDITORIA, só investigação, nenhuma correção de
+  produção) — C1 (crítico/estrutural): uma bobina/lote parcialmente
+  remetida a um Terceiro deixava o restante fisicamente inacessível na
+  obra; C2 (UI): payload cross-obra manipulado em 3 métodos do componente
+  de Estoque disparava `TypeError` cru em vez de erro amigável. O achado
+  B1 (ausência de chave de idempotência em entrega/retorno) foi
+  **deliberadamente NÃO corrigido** — instrução explícita do pedido, só
+  documentado aqui.
+- **STOP-and-ask cumprido antes de qualquer migration** (Seções 2/21 do
+  pedido): 4 alternativas foram apresentadas ao usuário — A (split em
+  `UnidadeEstoque` filha com `unidade_origem_id`/`unidade_raiz_id`), B
+  (pivot `UnidadeEstoqueLocal` desacoplando local da identidade), C
+  (variante de A sem hierarquia complexa), D (ledger como autoridade de
+  localização, achado da própria investigação). **Escolhida a Alternativa
+  D**, com **zero migration** — `unidades_estoque.local_estoque_id` já
+  existia e só precisava mudar de SEMÂNTICA, nunca de schema. Banco de dev
+  confirmado com **zero linhas** em `unidades_estoque` antes da correção
+  (verificado via `SELECT COUNT(*)` direto no MySQL) — nenhuma estratégia
+  de backfill foi necessária.
+- **Causa raiz confirmada por leitura fresh**: `SaldoEstoque` (Ciclo 20.1)
+  já é 100% ledger-based pra saldo POR MATERIAL+LOCAL — nunca lê
+  `UnidadeEstoque.local_estoque_id` pra agregar. O bug estava
+  inteiramente isolado nos GUARDS de "esta unidade está neste Local?"
+  (`garantirUnidadeCompativel()` em `RegistrarSaidaEstoque`/
+  `CriarReservaEstoque`/`RegistrarRemessaIndustrializacao`) e na própria
+  `RegistrarRemessaIndustrializacao`, que MUTAVA
+  `UnidadeEstoque.local_estoque_id` pro Local de destino a cada remessa —
+  tratando uma identidade física ÚNICA como se só pudesse existir num
+  único Local por vez, mesmo quando só uma FRAÇÃO da quantidade se movia.
+- **`UnidadeEstoque.local_estoque_id` vira "local de criação/origem",
+  IMUTÁVEL e informativo** — nunca mais reescrito por remessa/retorno.
+  "Onde esta unidade está e quanto tem em cada Local" é sempre derivado
+  do ledger (`MovimentacaoEstoque`), nunca da coluna. Os 2 usos
+  LEGÍTIMOS do campo (checagem de duplicidade de lote/serial em
+  `RegistrarEntradaEstoque::resolverUnidadeLote()`/
+  `RegistrarProducaoIndustrializada::resolverUnidadeLote()` — "esta bobina
+  já registrada nasceu em OUTRO Local?") permanecem intocados, porque
+  continuam sendo perguntas sobre ORIGEM, nunca sobre localização atual.
+- **`App\Support\Estoque\SaldoEstoque` ganhou 2 métodos novos** (única
+  fonte de verdade, mesma filosofia de `expressaoSaldoSql()` central já
+  documentada desde 20.1.CORREÇÃO):
+  - **`porUnidadeLocal(UnidadeEstoque $unidade, LocalEstoque $local): float`**
+    — saldo físico de UMA unidade NUM Local específico, via o mesmo
+    `CASE` de sinal central — nunca um `SUM` cru.
+  - **`unidadesComPresencaNoLocal(Material $material, LocalEstoque $local): Collection`**
+    — unidades de um Material com QUALQUER saldo > 0 num Local
+    específico, 2 queries totais (1 `GROUP BY` pra achar quais unidades
+    têm presença + 1 pra buscar os models) — substitui
+    `UnidadeEstoque::where('local_estoque_id', ...)` (que assumia
+    localização única) nas 3 telas de seleção de unidade.
+- **3 guards corrigidos** (`RegistrarSaidaEstoque::garantirUnidadeCompativel()`,
+  `CriarReservaEstoque::garantirUnidadeCompativel()`,
+  `RegistrarRemessaIndustrializacao::garantirUnidadeCompativel()`) —
+  trocam `$unidade->local_estoque_id !== $local->id` por uma checagem de
+  PRESENÇA via `SaldoEstoque::porUnidadeLocal()`. **Refinamento
+  importante, achado durante os próprios testes desta correção**: o
+  guard só dispara "não está neste Local" quando a unidade TEM saldo em
+  OUTRO Local (`SaldoEstoque::porUnidade($unidade) > 0.0005`, relocação
+  genuína) — uma unidade sem saldo em NENHUM Local (ex.: um serial já
+  totalmente consumido por uma Saída anterior, sem nenhuma remessa
+  envolvida) cai no guard de saldo insuficiente de cada Action
+  (`SaldoFisicoInsuficienteException`/mensagem própria de cada
+  exceção), mais específico e didático, em vez de soar "está em outro
+  lugar" quando na verdade simplesmente acabou. Os 2 testes
+  pré-existentes que essa nuance quebrou
+  (`EstoqueSaidaTest::test_w_serial_segunda_saida_bloqueada`/
+  `EstoqueSaidaCorrecaoTest::test_w_serial_continua_correto...`)
+  continuam verdes sem nenhuma mudança — a exceção esperada
+  (`SaldoFisicoInsuficienteException`) já era exatamente essa.
+- **`RegistrarSaidaEstoque`/`RegistrarRemessaIndustrializacao` também
+  passaram a ESCOPAR o cálculo de saldo pro Local relevante** (antes,
+  quando uma `$unidade` era informada, ambos liam `SaldoEstoque::porUnidade()`
+  — GLOBAL — em vez do saldo NAQUELE Local; um lote com 700 na obra + 300
+  no Terceiro deixava a obra "achar" que tinha 1000 disponíveis).
+  `CriarReservaEstoque` combina os dois limites com `min()`: nunca
+  reserva além do disponível GLOBAL (reservas contra a mesma unidade em
+  qualquer Local, comportamento intocado desde 20.2) **e** nunca além do
+  saldo FÍSICO daquele Local especificamente (fecha C1).
+- **`RegistrarRemessaIndustrializacao` nunca mais atualiza
+  `UnidadeEstoque.local_estoque_id`** — a Saida (origem) + Entrada
+  (destino) já criadas nas duas pontas da remessa são suficientes pro
+  ledger responder corretamente "quanto esta unidade tem em cada Local",
+  mesmo com a remessa sendo PARCIAL e a mesma identidade física passando
+  a ter saldo simultâneo em origem e destino. Zero linha de
+  `MovimentacaoEstoque` histórica é reescrita — só o comportamento de uma
+  ação NOVA muda.
+- **3 telas de seleção de unidade corrigidas**
+  (`⚡estoque.blade.php::unidadesDisponiveisParaReserva/Saida/Remessa`,
+  usadas pelos modais de Reserva/Saída/Remessa Industrialização) —
+  trocam `UnidadeEstoque::where('local_estoque_id', ...)` (que também
+  exibia o saldo GLOBAL errado como "disponível", um segundo bug
+  composto no mesmo padrão) por `SaldoEstoque::unidadesComPresencaNoLocal()`
+  + saldo sempre escopado ao Local (`porUnidadeLocal()`, ou combinado com
+  `SaldoReserva::disponivelPorUnidade()` via `min()` na tela de Reserva).
+- **Cenário completo validado ponta a ponta** (Seções 9-14 do pedido,
+  teste obrigatório da Seção 13 confirmado): bobina de 1000m → remessa
+  300 (obra 700/terceiro 300) → segunda remessa 200 (obra 500/terceiro
+  500) → retorno 150 (obra 650/terceiro 350) → consumo 100 no terceiro
+  (terceiro 250, obra intocada) → **reserva de 300 e saída de 100 sobre
+  os 650 remanescentes na obra, ambas antes bloqueadas pelo bug, agora
+  funcionando normalmente**. Genealogia sempre trivial (mesma
+  `UnidadeEstoque.id` em todo o histórico, nunca uma segunda identidade
+  criada) — "estes 700m e estes 300m vieram da mesma bobina B001?" é
+  sempre verdade por construção, sem precisar reconstruir árvore
+  nenhuma. Saldo consolidado (`SaldoEstoque::porUnidade()`) nunca
+  ultrapassa o total original em nenhum ponto do cenário. Serializado
+  permanece indivisível (quantidade sempre 1, remessa move o único 1 —
+  segunda remessa do mesmo serial já sem saldo na origem é bloqueada
+  pelo guard de presença). Material Quantitativo inteiramente inafetado
+  (nunca usa `UnidadeEstoque`). Ordem de lock reafirmada por teste
+  (`DB::listen()`): `LocalEstoque` sempre travado ANTES de
+  `UnidadeEstoque`, mesma disciplina já estabelecida desde 20.5.
+- **Barcode futuro — nota de arquitetura, não implementado**: escanear a
+  bobina resolve SEMPRE a mesma `UnidadeEstoque` (nunca uma segunda
+  identidade por Local) — uma tela futura de "onde está e quanto tem
+  cada portão" seria só `SaldoEstoque::porUnidadeLocal()` aplicado a cada
+  Local candidato, sem nenhuma mudança de schema.
+- **Achado C2 — TypeError não tratado em payload cross-obra**: 3 métodos
+  do componente (`confirmarAdicionarProdutoIndustr`,
+  `confirmarEmitirOrdemIndustr`, `confirmarRemessaIndustr`) resolviam
+  `$ordem = $this->ordemIndustrDetalhe;` (computed já obra-scoped,
+  `OrdemIndustrializacao::where('obra_id', $this->obra->id)->find(...)`,
+  retorna `null` pra um ID de outra obra) e passavam `$ordem` DIRETO pra
+  uma Action com parâmetro estritamente tipado
+  (`OrdemIndustrializacao $ordem`, não-nullable) — um `null` gerava
+  `TypeError` cru, nunca capturado pelos blocos `catch` existentes
+  (que só pegavam as exceções de domínio, ex.:
+  `OrdemIndustrializacaoInvalidaException`). Os outros 4 métodos do
+  mesmo componente (`confirmarCriarOrdemIndustr`/`confirmarProducaoIndustr`/
+  `confirmarConsumoIndustr`/`confirmarEntregaIndustr`) já eram seguros
+  (resolvem via `Model::where('obra_id', ...)->findOrFail(...)`, que
+  lança `ModelNotFoundException` — gentilmente convertida em 404 pelo
+  Laravel numa requisição HTTP real; propaga crua só dentro do harness
+  de `Livewire::test()`, achado de teste já documentado no projeto).
+- **Correção**: guard explícito logo após resolver `$ordem`
+  (`if (! $ordem) { $this->addError('<bag>', 'Ordem não encontrada ou
+  você não tem mais acesso a ela.'); return; }`) nos 3 métodos —
+  mensagem amigável, zero write, zero exceção não tratada. Nenhuma
+  mudança de assinatura de Action, nenhuma mudança nos 4 métodos já
+  seguros (só reafirmados por teste).
+- **Achado B1 — NÃO corrigido, só documentado**: `RegistrarEntregaProdutoIndustrializado`/
+  `RegistrarRemessaIndustrializacao` (retorno) não têm nenhuma chave de
+  idempotência — 2 chamadas idênticas em sequência (ex.: duplo-clique,
+  retry de rede) criam 2 eventos físicos distintos, cada um válido
+  isoladamente. Diferente do padrão já estabelecido em GRD (Ciclo 18,
+  `grd_alerta_entregas`, `UNIQUE(evento_usuario_id, canal)`), nenhum
+  mecanismo equivalente existe aqui — decisão explícita do usuário de
+  não introduzir essa complexidade nesta correção, fica pra uma fase
+  futura caso o risco se confirme relevante na prática.
+- **Achados de teste, não de produção**: (1) 2 asserções da 20.5 original
+  (`EstoqueIndustrializacaoTest::test_k_remessa_lote`/
+  `test_l_remessa_serial`) codificavam o comportamento ANTIGO e
+  incorreto (`assertSame($localTerceiro->id, $unidade->fresh()->local_estoque_id)`)
+  — corrigidas para refletir a semântica nova (`local_estoque_id`
+  permanece na origem; saldo por Local via `porUnidadeLocal()`); (2) meu
+  próprio teste `test_h` desta correção tinha uma aritmética errada
+  (esperava 650 em vez de 550 após uma Saída de 100 sobre um saldo de
+  650); (3) meu teste `test_v` esperava um error-bag gracioso pra um
+  método (`confirmarProducaoIndustr`) que já era seguro ANTES desta
+  correção — mas via `ModelNotFoundException` propagada crua pelo
+  harness de teste (não convertida em erro de formulário), não um erro
+  gracioso — corrigido pra `expectException(ModelNotFoundException::class)`,
+  mesma técnica já estabelecida no projeto.
+- **Não implementado nesta correção, por instrução explícita**: 20.6,
+  Transferência genérica entre Locais (nota de arquitetura já registrada
+  desde 20.5: quando existir, deve ser 2 fatos independentes — Saída de
+  origem + Entrada de destino — nunca uma linha composta), Inventário,
+  código de barras 1D real, correção do Achado B1 (idempotência),
+  qualquer alteração em Restrição/prontidão.
+- Testes: `tests/Feature/EstoqueIndustrializacaoCorrecaoTest.php` (28
+  testes novos — A-R cobertura completa do cenário de bobina fracionada
+  incluindo o cenário obrigatório da Seção 13, garantias de proteção
+  contra over-split/concorrência/serial/quantitativo, cross-obra/
+  cross-tenant reafirmados; S-AA cobertura do Achado C2 — os 3 métodos
+  corrigidos nunca mais geram TypeError, zero write em qualquer
+  tentativa cross-obra, mensagem sempre amigável, e os 4 métodos já
+  seguros reafirmados intocados) + 2 testes existentes corrigidos em
+  `EstoqueIndustrializacaoTest.php` (semântica nova de
+  `local_estoque_id`, mesma cobertura de negócio, nenhuma asserção
+  enfraquecida). Regressão: Bucket 1 — Estoque completo (Fundação/
+  Correção, Destinação/Reserva/Correção, Saída/Correção, Conciliação
+  Aplicação/UI, Industrialização/UI/Correção) + TenantIsolationTest:
+  **423 passed / 1 skipped / 0 failed** (1104 assertions). Bucket 2 —
+  Suprimentos legado, GED, Cronograma, Restrições, Central de
+  Prontidão, Lookahead, Plano Semanal, Plano de Ação, Health Check:
+  **609 passed / 3 failed / 0 novas falhas** (1622 assertions) — as 3
+  falhas são as mesmas 3 já documentadas e pré-existentes em
+  `SincronizarRestricaoSuprimentoTest` (fixture com data absoluta
+  `2026-08-20` sem `Carbon::setTestNow()`, mesma classe de dívida já
+  descrita desde o Ciclo 20.3.CORREÇÃO), zero relação com esta correção.
+  Suíte completa (full suite solo): **3340 passed / 7 skipped / 6 failed / 8992 assertions** (de
+  3312/7/6/8919 antes desta correção — delta esperado de +28 testes,
+  batendo com os 28 testes novos de `EstoqueIndustrializacaoCorrecaoTest.php`.
+  As mesmas 6 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (3 testes) — zero 7ª falha).
+- **Não avançar pra 20.6, Transferência genérica, Inventário, código de
+  barras, correção do Achado B1, ou qualquer alteração em Restrição/
+  prontidão sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta correção.
+
+
+## Transferência entre Locais de Estoque (Ciclo 20, Etapa 20.6)
+
+- **Contexto**: permite mover material fisicamente entre dois Locais de
+  Estoque PRÓPRIOS da mesma obra (ex.: Almoxarifado Central → Pátio,
+  Pátio → Container) — muda localização/custódia dentro do estoque
+  rastreado, nunca é consumo/aplicação. Nunca gera `FrenteTrabalho`
+  informada nem `App\Models\AplicacaoMaterialEstoque` — essa é a
+  diferença central em relação a uma Saída física pra campo (Ciclo
+  20.3).
+- **Zero migration de schema alterando algo já existente** — só a
+  tabela nova `transferencias_estoque`. Reafirma e reaproveita 100% do
+  princípio já estabelecido desde 20.5.CORREÇÃO: `MovimentacaoEstoque`/
+  ledger é a autoridade de saldo e localização quantitativa;
+  `UnidadeEstoque.local_estoque_id` continua sendo só o Local de
+  criação/origem, IMUTÁVEL — uma Transferência NUNCA o atualiza, mesmo
+  quando a transferência é PARCIAL (a mesma bobina/lote passa a ter
+  saldo simultâneo em origem e destino, exatamente como já acontece
+  desde a correção da Remessa de Industrialização).
+- **`App\Models\TransferenciaEstoque`**: a "identidade de operação" da
+  Transferência (item 4 do pedido) — mesmo padrão exato já usado por
+  `RemessaIndustrializacao` (Ciclo 20.5): correlaciona
+  `movimentacao_saida_id`+`movimentacao_entrada_id` (ambas
+  `restrictOnDelete()`, sempre criadas na MESMA transação) como um
+  único fato de negócio append-only
+  (`App\Observers\TransferenciaEstoqueObserver` bloqueia
+  `updating()`/`deleting()` incondicionalmente — correção futura de uma
+  Transferência já registrada é uma NOVA Transferência de estorno,
+  nunca um update/delete desta linha, item 17 do pedido).
+- **`App\Actions\Estoque\RegistrarTransferenciaEstoque`**: cria Saida
+  (origem) + Entrada (destino) + `TransferenciaEstoque` sempre juntas,
+  na mesma transação — nunca meia-transferência (item 3). Guards, na
+  ordem: quantidade > 0; data não futura; origem ≠ destino (item 5);
+  mesma obra (cross-obra bloqueado, item 20); Material ativo; os dois
+  Locais PRÓPRIOS e ativos (item 15/14); trava os 2 Locais em ordem
+  DETERMINÍSTICA por `id` (nunca pela ordem origem/destino informada
+  pelo chamador — mesmo mecanismo já usado por
+  `RegistrarRemessaIndustrializacao`) ANTES de qualquer SUM — é isso que
+  garante, por construção, que duas transferências concorrentes e
+  opostas (A→B e B→A) travam os mesmos 2 Locais na MESMA ordem, nunca
+  causando deadlock (itens 18/19, provado por teste estrutural
+  verificando que a query de lock sempre contém `ORDER BY id`); guard de
+  granularidade física (Quantitativo nunca aceita Unidade; Lote/Serial
+  sempre exigem uma Unidade já existente, com presença física ainda no
+  Local de origem — mesmo refinamento "só dispara 'está em outro Local'
+  quando a unidade TEM saldo em outro lugar" já estabelecido em
+  20.5.CORREÇÃO); serial exige quantidade exatamente 1; saldo da origem
+  validado ANTES de mover.
+- **Local Terceiro NUNCA envolvido nesta etapa (item 14, decisão do
+  usuário)** — Transferência genérica só aceita Próprio↔Próprio; um
+  Local tipo Terceiro em qualquer ponta é bloqueado com mensagem
+  explicando que o fluxo Próprio↔Terceiro já existe via Ordem de
+  Industrialização (Ciclo 20.5). Permitir os dois caminhos ao mesmo
+  tempo criaria uma segunda rota pra mover material de/para um
+  Terceiro SEM nenhum vínculo com uma Ordem, quebrando a rastreabilidade
+  que a Industrialização já garante — por isso a migration documenta
+  essa decisão explicitamente, não é um detalhe de implementação.
+- **Reservas (item 12, CRÍTICO — decisão do usuário via `AskUserQuestion`,
+  Opção B)**: o saldo da origem é validado SEMPRE contra o FÍSICO total,
+  nunca contra o disponível não-reservado (`App\Support\Estoque\
+  SaldoReserva`) — mesma filosofia já documentada em
+  `RegistrarSaidaEstoque` pra saída de emergência/desvio de frente. Uma
+  `ReservaEstoque` ativa na origem NUNCA é tocada/reduzida/liberada
+  automaticamente por esta Action — fica "descoberta" (o déficit já é
+  derivável via `SaldoReserva::disponivelPorMaterialLocal()`/
+  `CoberturaReservas`, mesmo mecanismo da 20.4), e a Action nunca
+  escolhe sozinha qual Reserva foi prejudicada. **Diferença real em
+  relação à Saída, reconhecida explicitamente na pergunta feita ao
+  usuário**: ao contrário da Saída (material sai do sistema rastreado
+  de vez), na Transferência o material CONTINUA rastreado, só em outro
+  Local — a Reserva original (presa ao Local de origem, imutável) fica
+  sem cobertura física lá, e ninguém a move automaticamente pro Local
+  de destino.
+- **Concorrência (item 18)**: prova por teste real — duas transferências
+  sequenciais competindo pelo mesmo saldo físico de origem (A→B seguida
+  de A→C, ambas de 70 sobre um físico de 100) nunca formalizam mais que
+  o físico disponível, porque o lock do Local de origem (adquirido
+  ANTES do SUM) serializa as duas tentativas.
+- **UI** (`⚡estoque.blade.php`): nova aba "Transferir" — reaproveita
+  `estoque.movimentacao` (nenhum slug novo, decisão do usuário confirmada
+  na investigação: "Transferência é operação física de Almoxarifado",
+  mesmo slug que já cobre Entrada/Saída) — `criar` já era do
+  `Encarregado` desde 20.1. Modal com Material/Local de origem/Local de
+  destino/Lote-Serial (quando aplicável)/Quantidade/Data/Observação,
+  sempre mostrando o saldo físico da ORIGEM antes de confirmar (item
+  23). Histórico dedicado — 1 linha por Transferência (identidade de
+  operação), nunca as 2 `MovimentacaoEstoque` cruas separadas (item 25).
+- **QR/barcode readiness (item 24, não implementado)**: escanear uma
+  bobina continua resolvendo sempre a MESMA `UnidadeEstoque` — uma
+  futura leitura "unidade → saldo por Local → transferência" já é
+  possível hoje via `SaldoEstoque::porUnidadeLocal()`, sem nenhuma
+  mudança de schema.
+- **Performance**: medição por DELTA (mesma metodologia já estabelecida
+  desde 20.3.CORREÇÃO/20.5.CORREÇÃO — chamar o computed ISOLADO
+  `transferenciasEstoque`, nunca um render completo da página, que
+  avaliaria dezenas de outros computeds de todas as abas e tornaria a
+  comparação inútil) — 100 vs. 1000 transferências já existentes, custo
+  de renderizar o histórico não escala proporcionalmente.
+- **Não implementado nesta etapa, por instrução explícita**: Inventário,
+  código de barras 1D real, Ajuste/Estorno (uma correção futura é uma
+  NOVA Transferência com origem/destino invertidos, nunca update),
+  Notification/Restrição automática, alteração de prontidão, Local
+  Terceiro em Transferência genérica.
+- Testes: `tests/Feature/EstoqueTransferenciaTest.php` (27 testes — A-D
+  quantitativo/conservação, E-H bobina/serial, I-L guards estruturais,
+  M-N atomicidade/rollback, O-P concorrência/ordem de lock determinística,
+  Q-R cross-obra/cross-tenant, S comportamento de Reserva conforme
+  decisão do usuário, T Local Terceiro bloqueado nos dois sentidos,
+  U-V UI autorizada/sem permissão, W histórico, X performance por delta,
+  Y zero alteração de Aplicação/Prontidão/Restrição) + 1 novo em
+  `TenantIsolationTest.php`. Regressão: Bucket 1 — Estoque completo
+  (Fundação/Correção, Destinação/Reserva/Correção, Saída/Correção,
+  Conciliação Aplicação/UI, Industrialização/UI/Correção, Transferência)
+  + TenantIsolationTest: **450 passed / 1 skipped / 0 failed** (1186
+  assertions) + TenantIsolationTest isolado com o teste novo: **37
+  passed / 0 failed** (71 assertions, confirmando
+  `test_transferencia_estoque_e_escopada_ao_tenant_autenticado`).
+  Bucket 2 — Suprimentos legado, GED, Cronograma, Restrições, Central de
+  Prontidão, Lookahead, Plano Semanal, Plano de Ação, Health Check:
+  **609 passed / 3 failed / 0 novas falhas** (1622 assertions) — as 3
+  falhas são as mesmas 3 já documentadas e pré-existentes em
+  `SincronizarRestricaoSuprimentoTest` (fixture com data absoluta
+  `2026-08-20` sem `Carbon::setTestNow()`, mesma classe de dívida já
+  descrita desde o Ciclo 20.3.CORREÇÃO), zero relação com esta etapa.
+  Suíte completa (full suite solo): **3368 passed / 7 skipped / 6 failed / 9075 assertions** (de
+  3340/7/6/8992 antes desta etapa — delta esperado de +28 testes
+  (27 EstoqueTransferenciaTest + 1 TenantIsolationTest), batendo com os
+  testes novos. As mesmas 6 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (3 testes) — zero 7ª falha).
+- **Achado registrado durante esta etapa, corrigido separadamente**: a
+  Seção "Saída de Estoque" do popup de Saída (`⚡estoque.blade.php::
+  saldoFisicoPreviewSaida()`) ainda usava `SaldoEstoque::porUnidade()`
+  (saldo GLOBAL) em vez de `porUnidadeLocal()` pra mostrar o "saldo
+  físico" quando um lote/serial específico é selecionado — um resíduo
+  da 20.5.CORREÇÃO que corrigiu a Action real mas não essa prévia visual
+  específica. Fora de escopo desta etapa (não é Transferência); sinalizado
+  como tarefa separada, não corrigido de passagem aqui.
+- **Não avançar pra Inventário, código de barras, Ajuste/Estorno,
+  Transferência envolvendo Local Terceiro, Notification/Restrição, ou
+  qualquer alteração em prontidão sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta etapa.
+
+
+## Estoque — prévias por Local (Ciclo 20, Etapa 20.6.CORREÇÃO)
+
+- **Contexto**: fecha o único resíduo conhecido registrado no fechamento
+  da 20.6 — `saldoFisicoPreviewSaida()` (ramo de lote/serial, modal de
+  Saída) ainda usava `SaldoEstoque::porUnidade()` (saldo GLOBAL da
+  Unidade) em vez do saldo físico NO LOCAL selecionado. Desde a
+  20.5.CORREÇÃO, `UnidadeEstoque.local_estoque_id` deixou de ser "onde a
+  unidade está" (virou só local de criação/origem, imutável) — o ledger
+  (`MovimentacaoEstoque`) é a ÚNICA autoridade de localização
+  quantitativa. Uma bobina fracionada entre dois Locais (ex.: B001 com
+  300m no Almoxarifado A e 700m no Pátio B) fazia essa prévia mostrar
+  1000m em qualquer um dos dois Locais — uma quantidade que na prática
+  não estava disponível ali.
+- **Regra canônica, reafirmada**: para qualquer operação/prévia cujo
+  contexto já é um Local específico, o saldo exibido é sempre
+  `SaldoEstoque::porMaterialLocal()`/`porUnidadeLocal()` — nunca
+  `porMaterial()`/`porUnidade()` (global). Consolidados globais (ex.:
+  aba "Materiais", saldo total por SKU) continuam legitimamente usando
+  as versões globais — a regra é sobre CONTEXTO, não sobre banir os
+  métodos globais do código.
+- **Auditoria (grep global) encontrou 2 previews IRMÃS com a MESMA causa
+  raiz, no mesmo arquivo**, corrigidas junto (mesma causa raiz — nenhuma
+  regra de negócio nova, só a extensão mecânica do mesmo padrão já usado
+  em toda a Etapa 20):
+  - `saldoNaoReservadoPreviewSaida()` (modal de Saída, ramo lote/serial)
+    usava `SaldoReserva::disponivelPorUnidade()` (global) — uma Reserva
+    registrada no Local B não deveria reduzir o "não reservado" exibido
+    numa Saída acontecendo no Local A, mesmo apontando pra mesma
+    Unidade. Corrigido com 2 métodos novos e irmãos em
+    `App\Support\Estoque\SaldoReserva`: `porUnidadeLocal(Unidade, Local)`
+    (reservado ativo desta Unidade NESTE Local) e
+    `disponivelPorUnidadeLocal(Unidade, Local)` (físico-no-local menos
+    reservado-no-local) — mesma forma de `SaldoEstoque::porUnidadeLocal()`,
+    nenhuma regra duplicada.
+  - `saldoDisponivelPreviewReserva()` (modal de Reserva, ramo lote/
+    serial) usava só `SaldoReserva::disponivelPorUnidade()` isolado — o
+    próprio docblock do método já prometia "mesma fonte que a Action usa
+    pra validar de verdade", mas a Action real
+    (`App\Actions\Estoque\CriarReservaEstoque`) e o computed irmão
+    `unidadesDisponiveisParaReserva()` (2 linhas acima no mesmo arquivo)
+    já combinam `min(disponível GLOBAL, físico NESTE Local)` desde a
+    20.2.CORREÇÃO — a prévia nunca replicava essa combinação. Corrigido
+    reaproveitando exatamente essa mesma expressão `min(...)`, sem
+    nenhum método novo.
+  - `saldoOrigemPreviewTransferencia()` (Transferência, 20.6) e
+    `unidadesDisponiveisParaRemessa()` (Industrialização, 20.5.CORREÇÃO)
+    já estavam corretas desde que nasceram — confirmado por grep global,
+    zero alteração nelas.
+- **Zero migration** — os 2 métodos novos em `SaldoReserva` são cálculo
+  puro sobre `reservas_estoque` (tabela já existente desde 20.2), sem
+  nenhuma coluna/tabela nova. `UnidadeEstoque.local_estoque_id` continua
+  intocado, nunca reescrito.
+- **Bobina fracionada entre Locais, comportamento confirmado por
+  teste**: `unidadesComPresencaNoLocal()` (20.5.CORREÇÃO, intocado) já
+  filtrava corretamente as opções de seleção — o bug estava só na
+  PRÉVIA numérica mostrada depois de uma unidade já selecionada.
+- **Reserva não é afetada por esta correção**: continua imutavelmente
+  amarrada a um `local_estoque_id` desde a criação (20.2.CORREÇÃO);
+  transferir a Unidade reservada pra outro Local nunca move/altera a
+  Reserva original, que segue "descoberta" no Local de origem (mesma
+  filosofia já documentada na 20.6, Reserva Opção B) — só a exibição do
+  saldo não-reservado/disponível passou a refletir corretamente o Local
+  de cada operação.
+- **UI**: só os 3 computeds acima tocados — nenhum redesenho de tela,
+  nenhuma mudança de texto ("Saldo físico disponível" continua
+  significando exatamente isso, agora corretamente escopado ao Local
+  selecionado).
+- Testes: `tests/Feature/EstoquePreviewLocalTest.php` (14 testes — A-L:
+  bobina dividida com preview correto nos dois Locais, quantitativo,
+  serial sem presença física bloqueado, Transferência refletindo
+  imediatamente sem update de `local_estoque_id`, saldo global
+  reconfirmado intacto, Reserva não alterada + os 2 previews irmãos
+  corrigidos, cross-obra/cross-tenant, zero mutação de domínio, grep de
+  arquitetura permanente confirmando zero conceito de fase futura).
+  Regressão: Bucket 1 (Estoque completo + TenantIsolation) — **415
+  passed / 1 skipped / 0 failed** (1115 assertions); Bucket 2
+  (Suprimentos/GED/Cronograma/Restrições/Central/Lookahead/Plano
+  Semanal/Plano de Ação/Health Check, incluindo
+  `SincronizarRestricaoSuprimentoTest` por visibilidade) — **1326
+  passed / 3 failed** (3591 assertions), as mesmas 3 falhas de
+  calendar-drift já documentadas desde a 20.3.CORREÇÃO, sem relação com
+  esta correção. Suíte completa (full suite solo): **3382 passed / 7 skipped / 6 failed / 9099 assertions**
+  (de 3368/7/6/9075 antes desta etapa — delta esperado de +14 testes,
+  batendo com os 14 testes novos de `EstoquePreviewLocalTest.php`. As
+  mesmas 6 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (3 testes) — zero 7ª falha).
+- **Não avançar pra Inventário, código de barras, Ajuste/Estorno,
+  Notification/Restrição, ou qualquer alteração em prontidão sem
+  validação do usuário** (instrução explícita) — aguardando aprovação
+  desta etapa.
+
+## Inventário Físico + Divergências + Ajuste Formal de Estoque (Ciclo 20, Etapa 20.7)
+
+- **Princípio central**: Inventário NÃO sobrescreve saldo. O ledger de
+  `MovimentacaoEstoque` continua sendo a fonte da verdade — Inventário
+  observa e registra o físico encontrado; Ajuste, quando autorizado,
+  gera movimentação formal NOVA no ledger. Nunca `saldo = quantidade_contada`,
+  nunca `UPDATE` de movimentação histórica/snapshot.
+- **6 decisões arquiteturais via STOP-and-ask** (Seção 32 do pedido,
+  todas confirmadas pelo usuário antes de qualquer migration/código):
+  1. **Movimentação durante o inventário**: NUNCA bloqueada — travar o
+     almoxarifado de uma obra EPC é inviável. O snapshot de cada item
+     (`quantidade_sistema_snapshot`) fica congelado no instante de
+     `IniciarInventarioEstoque`, imutável pra sempre ("o sistema dizia
+     100 quando contamos 97", mesmo que o saldo hoje seja outro). A
+     APROVAÇÃO de um Ajuste sempre revalida o saldo FRESCO sob lock no
+     momento de aprovar (nunca o snapshot antigo) — um ajuste negativo
+     que produziria saldo fisicamente impossível é recusado
+     (`SaldoFisicoInsuficienteException`), nunca aprovado cegamente.
+  2. **Tipo do Ajuste no ledger**: `TipoMovimentacaoEstoque` NUNCA ganhou
+     `AjusteEntrada`/`AjusteSaida` — reaproveita `Entrada`/`Saida`
+     comuns, mesmo padrão já comprovado em `RegistrarTransferenciaEstoque`
+     (20.6) e `RegistrarRemessaIndustrializacao` (20.5): a movimentação
+     em si não populam `reserva_estoque_id`/`item_suprimento_id`/
+     `frente_trabalho_id`/`retirado_por`, e a rastreabilidade vive numa
+     entidade correlata separada — `App\Models\InventarioAjuste`
+     (`movimentacao_estoque_id`, `restrictOnDelete()`).
+  3. **Aprovação — dupla autorização**: novo slug `estoque.inventario`
+     (`criar`=Encarregado abre/conta, `editar`=Engenheiro move pra
+     Análise/conclui, `excluir`=GerentePlanejamento cancela). Aprovar um
+     Ajuste exige ADICIONALMENTE `estoque.movimentacao|editar` — mesmo
+     padrão de dupla autorização já usado em
+     `PlanoAcao::transformarEmRestricoes()` (Ciclo 11): quem administra
+     o Inventário não tem, por si só, autoridade sobre o ledger físico
+     que o Ajuste altera. Checado só no Livewire (`garantirPermissaoAprovarAjusteInventario()`),
+     nunca dentro da Action — sem estágio "Proposto" persistido, análise
+     + justificativa + aprovação acontecem numa única ação/transação.
+  4. **Serial inesperado**: um serial físico encontrado que o sistema
+     NÃO esperava naquele Local vira `App\Models\InventarioItem` com
+     `serial_texto_inesperado` (texto livre) e `unidade_estoque_id`
+     SEMPRE `null` — NUNCA cria uma `UnidadeEstoque` nova (evitaria
+     inventar identidade física sem origem comercial rastreável, mesma
+     filosofia "nunca invente Material/Frente/Pacote fake" já
+     documentada em todo o Ciclo 19/20). Restrito a Material Serializado
+     (um lote/bobina inesperado já tem `UnidadeEstoque` existente em
+     algum Local, resolvível por Transferência normal).
+     `AprovarAjusteInventario` recusa gerar Ajuste automático pra um
+     item nessa condição — resolver de verdade é sempre manual.
+  5. **Recontagem**: `App\Models\ContagemInventario` append-only (mesmo
+     padrão de `RecebimentoPedido`/`GrdRecolhimento`) — 1 `InventarioItem`
+     → N `ContagemInventario`, a MAIS RECENTE (`created_at DESC, id
+     DESC`, mesma ordem de registro canônica de `GrdDistribuicao::estado()`,
+     nunca `contado_em`) é a "contagem adotada", derivada em
+     `InventarioItem::ultimaContagem()`/`diferenca()`, nunca uma coluna
+     persistida.
+  6. **Local Terceiro**: bloqueado nesta etapa — Inventário só em Locais
+     PRÓPRIOS, mesma decisão já tomada pra Transferência genérica (20.6).
+     Custódia em fornecedor já tem semântica própria via Industrialização.
+- **Escopo**: sempre Obra + LocalEstoque. Snapshot usa
+  `SaldoEstoque::porMaterialLocal()`/`porUnidadeLocal()` (nunca saldo
+  global) — bobina fracionada entre 2 Locais (20.5.CORREÇÃO) gera 2
+  snapshots INDEPENDENTES, cada um só com o saldo daquele Local
+  específico, nunca o total global da unidade.
+- **`SaldoEstoque::posicoesNoLocal(LocalEstoque)`** (novo, único método
+  adicionado à classe existente): enumera TODAS as posições (Material,
+  ou Material+UnidadeEstoque) com saldo físico > 0 num Local, 1 query
+  `GROUP BY (material_id, unidade_estoque_id)` — usado por
+  `IniciarInventarioEstoque` pra popular `inventario_itens` em LOTE
+  (insert em chunks de 500, nunca 1 insert por posição — medido
+  empiricamente: 8 queries fixas pra iniciar com 10 OU 100 posições).
+- **4 tabelas novas**: `inventarios_estoque` (numeração sequencial por
+  obra via lock+MAX+1, mesmo padrão exato já usado 5x no projeto —
+  Grd/RP/RC/Pedido/OrdemIndustrializacao; `status` — Rascunho/EmContagem/
+  EmAnalise/Concluido/Cancelado, nomes do próprio pedido, sem convenção
+  melhor já existente pra um workflow de 5 estágios com aprovação),
+  `inventario_itens` (snapshot congelado, `unique(inventario, material,
+  unidade)`), `contagens_inventario` (append-only), `inventario_ajustes`
+  (correlator append-only, `unique(inventario_item_id)` — no máximo 1
+  Ajuste por item).
+- **Contagem cega** (Seção 9): `contagem_cega` boolean por sessão de
+  Inventário (não configuração global) — quando `true`, a UI omite a
+  coluna "Sistema" da tabela de itens ENQUANTO o status é EmContagem
+  (some assim que move pra Análise) — o backend sempre calcula a
+  diferença real, "cega" é só instrução de apresentação, nunca uma
+  limitação de dado gravado.
+- **Imutabilidade estrutural, não só UI**: 4 Observers novos —
+  `InventarioEstoqueObserver` (bloqueia `deleting()` incondicionalmente,
+  cancelamento é SEMPRE status nunca DELETE; bloqueia `updating()` só
+  quando o status ORIGINAL já é Concluido/Cancelado — as próprias
+  transições de status usam `update()`, então o guard olha o status
+  ANTES da mudança, nunca o novo), `InventarioItemObserver`
+  (`updating()`/`deleting()` sempre bloqueados — item nasce completo e
+  nunca é reescrito), `ContagemInventarioObserver` e
+  `InventarioAjusteObserver` (idem, append-only puro).
+- **`InventarioEstoque` NÃO usa SoftDeletes** — cancelamento já é o
+  mecanismo de "desativação"; não existe conceito de exclusão nem
+  sequência a recalcular sobre registros soft-deletados (diferente de
+  Grd/RC/RP/Pedido, que usam `SoftDeletes` porque um Rascunho pode ser
+  excluído de verdade — aqui nem o Rascunho é excluível, só cancelável).
+- **Concorrência (Seção 22)**: `AprovarAjusteInventario` trava, nessa
+  ordem, o `InventarioItem` → `InventarioEstoque` → recurso físico
+  (`UnidadeEstoque` ou `LocalEstoque`) — ANTES de revalidar o saldo
+  fresco (mesmo total order de lock já usado em toda a Etapa 20).
+  Segunda tentativa de aprovar o mesmo item falha (`unique` +
+  checagem explícita); um ajuste negativo cujo saldo já foi consumido
+  por uma Transferência/Saída no meio do caminho é recusado, nunca
+  aprovado sobre o snapshot antigo.
+- **Reservas (Seção 17)**: Inventário/Ajuste NUNCA tocam `ReservaEstoque`
+  — permanece exatamente como estava, mesmo que o Ajuste deixe
+  físico < reservado. O déficit fica visível via `SaldoReserva::
+  disponivelPorMaterialLocal()`/`disponivelPorUnidadeLocal()`
+  (negativo = descoberto), nunca escolhido automaticamente qual Reserva
+  perdeu cobertura — mesma filosofia já estabelecida desde a 20.4/20.6.
+- **Transferências (Seção 18)**: uma Transferência ANTES do início do
+  Inventário já está refletida no snapshot (é só saldo já movimentado);
+  uma Transferência DEPOIS nunca reescreve o snapshot já tirado — só
+  altera o saldo FRESCO que a aprovação do Ajuste revalida.
+- **UI**: nova aba "Inventário" em `⚡estoque.blade.php` — listagem +
+  detalhe com fluxo completo (Novo → Iniciar → Contar/Recontar →
+  Registrar serial inesperado → Mover para Análise → Aprovar Ajuste
+  [com justificativa obrigatória] → Concluir/Cancelar). Badge de
+  contagem de inventários abertos no botão da aba. Reaproveita
+  `App\Support\Estoque\ConciliacaoInventario::porItens()` (novo, mesma
+  filosofia 100% derivada/em-lote de `ConciliacaoTakeOff`/
+  `ConciliacaoAlocacao`/`ConciliacaoRecebimento`, Ciclo 19) pra montar a
+  tabela de divergências sem N+1 (medido: 54 queries fixas pra listar 5
+  OU 30 itens).
+- **Achado de implementação, mesma classe de bug já documentada no
+  projeto (18.5.9/19.3)**: `@php(...)` de uma linha como primeira
+  instrução logo após `@forelse`, antes do elemento `wire:key`-ado,
+  evitado desde o início — o `<tr wire:key="...">` foi escrito como
+  primeira instrução do loop, com o `@php ... @endphp` (bloco, nunca de
+  uma linha) só depois, dentro da própria `<tr>`.
+- Testes: `tests/Feature/InventarioEstoqueTest.php` (57 testes — A-AF do
+  pedido: criação/início, snapshot quantitativo/bobina-por-Local/bobina-
+  dividida/serial, contagem exata/falta/sobra, recontagem/histórico,
+  justificativa/ajuste positivo/negativo/saldo pós-ajuste, movimentação
+  histórica preservada, Reserva preservada, déficit físico<reservado,
+  Transferência antes/depois do snapshot, cancelamento/conclusão,
+  imutabilidade dos 4 Observers, concorrência (dupla aprovação + ordem
+  de lock), cross-obra/cross-tenant, UI completa + dupla autorização,
+  performance por DELTA sem N+1, zero saldo persistido redundante, zero
+  novo case no enum, zero conceito de 20.8/barcode, zero efeito
+  colateral em Restrição/prontidão — mais os cenários extras de serial
+  inesperado, contagem cega e Local Terceiro bloqueado) + 1 novo em
+  `TenantIsolationTest.php` (as 4 tabelas novas). Regressão: Bucket 1
+  (Estoque completo + TenantIsolationTest) — **532 passed / 1 skipped /
+  0 failed** (1467 assertions); Bucket 2 (Suprimentos legado/GED/
+  Cronograma/Restrições/Central/Lookahead/Plano Semanal/Plano de Ação/
+  Health Check, incluindo `SincronizarRestricaoSuprimentoTest`) —
+  **1326 passed / 3 failed** (3591 assertions), as mesmas 3 falhas de
+  calendar-drift já documentadas desde 20.3.CORREÇÃO, sem relação com
+  esta etapa. Suíte completa (full suite solo): **3440 passed / 7 skipped / 6 failed / 9338 assertions**
+  (de 3382/7/6/9099 antes desta etapa — delta esperado de +58 testes
+  (57 InventarioEstoqueTest + 1 TenantIsolationTest). As mesmas 6
+  falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (3 testes) — zero 7ª falha).
+- **Não implementado nesta etapa, por instrução explícita**: código de
+  barras/QR de leitura real, impressão de etiquetas, leitura por
+  câmera/scanner, Notification/Restrição automática a partir de
+  divergência, alteração de prontidão.
+- **Não avançar pra Inventário em Local Terceiro, barcode, Ajuste/
+  Estorno de um Ajuste já aprovado, ou qualquer alteração em prontidão/
+  Restrição sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:
@@ -5167,6 +8752,17 @@ Rode `php artisan test` antes de considerar qualquer tarefa concluída.
   `finally` de limpeza) — nunca alterando produção. Ao escrever um teste
   novo com fixture relativa a `now()` E uma janela de "semana atual" no
   mesmo cenário, considerar travar o relógio desde o início.
+- **`migrate:fresh`/`db:wipe`/`migrate:reset`/`migrate:refresh` são
+  PROIBIDOS no banco de dev sem autorização explícita do usuário a cada
+  vez** — apagam TODAS as tabelas (tenants/users/obras/tudo), não só a
+  tabela que motivou a dúvida. Incidente real (Ciclo 19, Etapa
+  19.1.CORREÇÃO): rodado 2x sem pedir antes pra corrigir uma migration
+  mal-ordenada, deixando o banco de dev sem NENHUM usuário (login manual
+  no navegador parou de funcionar) até uma reconstrução manual e
+  autorizada. Pra depurar uma migration com problema, preferir: reverter
+  só a migration específica (`migrate:rollback --step=N`) ou investigar/
+  corrigir o schema pontualmente — nunca resetar o banco inteiro como
+  atalho.
 
 ## Infraestrutura de release (Fase 1 do roadmap de maturidade SaaS)
 

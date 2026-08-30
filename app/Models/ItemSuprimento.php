@@ -14,6 +14,15 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
+/**
+ * Ciclo 19, Etapa 19.3 — este model evolui conceitualmente pra "Pacote de
+ * Compra": a UI passa a chamá-lo assim, mas a tabela/model/PK/ULID
+ * permanecem os mesmos (decisão do produto, confirmada por investigação —
+ * `ItemSuprimento` já não carrega quantidade/unidade própria e já é N:N
+ * com Atividade/Documento, ou seja, já era estruturalmente um coordenador
+ * de workflow de compra, nunca uma linha de material individual). Nenhum
+ * rename destrutivo de tabela/model.
+ */
 class ItemSuprimento extends Model
 {
     use BelongsToTenant, HasAuthorship, HasFactory, HasUlids, SoftDeletes;
@@ -94,15 +103,80 @@ class ItemSuprimento extends Model
         return $this->hasMany(ItemSuprimentoComentario::class, 'item_suprimento_id')->latest();
     }
 
+    /** Ciclo 19, Etapa 19.3 — alocações de RequisicaoPlanejamentoItem recebidas por este Pacote. */
+    public function alocacoes(): HasMany
+    {
+        return $this->hasMany(AlocacaoRequisicaoPacote::class, 'item_suprimento_id');
+    }
+
     /**
-     * Data de necessidade do item: a mais cedo entre TODAS as atividades
-     * vinculadas — é a atividade que "primeiro precisa" do material que
-     * dirige o agendamento retroativo (App\Services\SuprimentoScheduler),
-     * não uma atividade específica.
+     * Ciclo 19, Etapa 19.4 — Requisições de Compra formais deste Pacote
+     * (domínio novo e paralelo ao mecanismo legado de `etapas()`/
+     * `status` acima — os dois nunca se sincronizam).
+     */
+    public function requisicoesCompra(): HasMany
+    {
+        return $this->hasMany(RequisicaoCompra::class, 'item_suprimento_id');
+    }
+
+    /**
+     * Data de necessidade do item: a mais cedo entre as atividades
+     * vinculadas ATIVAS — é a atividade que "primeiro precisa" do
+     * material que dirige o agendamento retroativo
+     * (App\Services\SuprimentoScheduler), não uma atividade específica.
+     *
+     * Ciclo 19, Etapa 19.3 — correção do risco R1 registrado na
+     * investigação 19.0: atividade `fora_do_cronograma = true` (arquivada
+     * numa reimportação) NUNCA participa do cálculo — mesmo critério já
+     * usado em toda regra de "atividade ativa" do projeto (Fotografia O,
+     * Health Check, Plano de Ação). O vínculo em `item_suprimento_atividades`
+     * NUNCA é removido automaticamente por isso — só deixa de contar pra
+     * essa data específica; se a atividade for reativada numa reimportação
+     * seguinte, volta a contar sozinha, sem nenhuma ação manual.
      */
     public function necessidade(): ?Carbon
     {
-        return $this->atividades->min('inicio_planejado');
+        return $this->atividades
+            ->reject(fn (Atividade $atividade) => $atividade->fora_do_cronograma)
+            ->min('inicio_planejado');
+    }
+
+    /**
+     * Ciclo 19, Etapa 19.5 — "data projetada de atendimento" do Pacote
+     * (decisão do usuário): o MÁXIMO entre `RequisicaoCompra::
+     * dataProjetadaAtendimento()` de todas as RCs formais (Emitida/
+     * Concluida — Rascunho nunca representa demanda formal) deste
+     * Pacote. Cada RC já resolve, por si, "Pedido Emitido mais tarde,
+     * ou fimPrevisto() como fallback" — aqui só agregamos o pior caso
+     * entre as RCs, nunca somando/misturando unidades.
+     */
+    public function dataProjetadaAtendimento(): ?Carbon
+    {
+        return $this->requisicoesCompra
+            ->reject(fn (RequisicaoCompra $rc) => $rc->status === \App\Enums\StatusRequisicaoCompra::Rascunho)
+            ->map(fn (RequisicaoCompra $rc) => $rc->dataProjetadaAtendimento())
+            ->filter()
+            ->max();
+    }
+
+    /**
+     * "Risco de atendimento"/"Folga até necessidade" — NUNCA "impacto no
+     * cronograma" (terminologia explícita do produto). folga > 0 = há
+     * margem; folga = 0 = atendimento exatamente na necessidade;
+     * folga < 0 = risco (a previsão ultrapassa a necessidade do
+     * cronograma). `null` sempre que faltar um dos dois lados — nunca
+     * inventa 0 nem erro. Nunca cria Restricao automaticamente aqui.
+     */
+    public function folgaAtendimento(): ?int
+    {
+        $necessidade = $this->necessidade();
+        $atendimento = $this->dataProjetadaAtendimento();
+
+        if (! $necessidade || ! $atendimento) {
+            return null;
+        }
+
+        return (int) $atendimento->diffInDays($necessidade, false);
     }
 
     /**

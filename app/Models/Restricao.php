@@ -35,6 +35,7 @@ class Restricao extends Model
         'resolvida_em',
         'origem_suprimento_item_id',
         'origem_plano_acao_id',
+        'origem_cadeia_suprimento_id',
     ];
 
     protected $casts = [
@@ -83,5 +84,19 @@ class Restricao extends Model
     public function origemPlanoAcao(): BelongsTo
     {
         return $this->belongsTo(PlanoAcao::class, 'origem_plano_acao_id');
+    }
+
+    /**
+     * Ciclo 19, Etapa 19.7 — rastreabilidade da Restrição automática
+     * originada da cadeia formal de Suprimentos (RP→Pacote→RC→Pedido→
+     * Recebimento), sincronizada por
+     * `App\Support\SincronizarRestricaoCadeiaSuprimento`. Identidade
+     * DEDICADA e estruturalmente separada de `origem_suprimento_item_id`
+     * (mecanismo legado, `App\Support\SincronizarRestricaoSuprimento`) —
+     * os dois nunca se tocam, nunca resolvem a Restrição um do outro.
+     */
+    public function origemCadeiaSuprimento(): BelongsTo
+    {
+        return $this->belongsTo(ItemSuprimento::class, 'origem_cadeia_suprimento_id');
     }
 }

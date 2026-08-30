@@ -1,7 +1,10 @@
 <?php
 
+use App\Actions\Suprimentos\AtualizarRascunhoRequisicaoCompra;
 use App\Enums\SerieAvanco;
 use App\Enums\StatusItemSuprimento;
+use App\Enums\StatusPedidoCompra;
+use App\Enums\StatusRequisicaoCompra;
 use App\Exports\SuprimentosExport;
 use App\Models\Atividade;
 use App\Models\Disciplina;
@@ -76,6 +79,31 @@ new class extends Component {
   public string $codigoNovo = '';
   public string $observacoesNovo = '';
 
+  // ---- Ciclo 19, Etapa 19.4 — modal Requisições de Compra (RC) ----
+  public ?string $rcPacoteId = null;
+  public ?string $rcDetalheId = null;
+  public ?string $rcFluxoIdNovo = null;
+  public string $rcObservacaoNovo = '';
+  public ?string $rcItemAlocacaoIdNovo = null;
+  public string $rcItemQuantidadeNovo = '';
+
+  // ---- Ciclo 19, Etapa 19.5 — Pedidos/Ordens de Compra (dentro do detalhe da RC) ----
+  public ?string $pedidoDetalheId = null;
+  public ?string $pedidoFornecedorIdNovo = null;
+  public string $pedidoDataPrevistaEntregaNovo = '';
+  public string $pedidoNumeroContratoNovo = '';
+  public string $pedidoDataContratoNovo = '';
+  public string $pedidoObservacaoNovo = '';
+  public ?string $pedidoItemRcItemIdNovo = null;
+  public string $pedidoItemQuantidadeNovo = '';
+
+  // ---- Ciclo 19, Etapa 19.6 — Recebimento Físico (dentro do item do Pedido) ----
+  public ?string $recebimentoItemAbertoId = null;
+  public string $recebimentoQuantidadeNova = '';
+  public string $recebimentoDataNova = '';
+  public string $recebimentoLocalNova = '';
+  public string $recebimentoObservacaoNova = '';
+
   public function mount(Work $obra): void
   {
     $this->obra = $obra;
@@ -84,6 +112,68 @@ new class extends Component {
   private function garantirPermissao(string $acao): void
   {
     abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'suprimentos.mapa', $acao), 403);
+  }
+
+  // =========================================================================
+  // Ciclo 19, Etapa 19.4.CORREÇÃO, item 8 — resolvers obra-scoped (mesmo
+  // padrão de resolverGrdDaObraAtual()/resolverDestinatarioDaObraAtual()
+  // já usado em ⚡grds.blade.php): NENHUM id vindo de propriedade pública
+  // Livewire ($rcPacoteId/$rcDetalheId/etc.) é confiável — a página é
+  // /app/suprimentos/{obra}, e todo recurso manipulado por ela precisa
+  // pertencer à MESMA obra, sempre reconfirmado server-side, nunca só
+  // pela permissão (que checa $this->obra->id, não o recurso em si).
+  // =========================================================================
+
+  private function resolverPacoteDaObraAtual(string $id): ItemSuprimento
+  {
+    return ItemSuprimento::where('obra_id', $this->obra->id)->findOrFail($id);
+  }
+
+  private function resolverRcDaObraAtual(string $id): \App\Models\RequisicaoCompra
+  {
+    return \App\Models\RequisicaoCompra::where('obra_id', $this->obra->id)->findOrFail($id);
+  }
+
+  private function resolverAlocacaoDaObraAtual(string $id): \App\Models\AlocacaoRequisicaoPacote
+  {
+    return \App\Models\AlocacaoRequisicaoPacote::whereHas('pacote', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  private function resolverItemRcDaObraAtual(string $id): \App\Models\RequisicaoCompraItem
+  {
+    return \App\Models\RequisicaoCompraItem::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  private function resolverEtapaRcDaObraAtual(string $id): \App\Models\RequisicaoCompraEtapa
+  {
+    return \App\Models\RequisicaoCompraEtapa::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  // ---- Ciclo 19, Etapa 19.5 — mesma disciplina de resolvers obra-scoped ----
+
+  private function resolverRcItemDaObraAtual(string $id): \App\Models\RequisicaoCompraItem
+  {
+    return \App\Models\RequisicaoCompraItem::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  private function resolverFornecedorDaObraAtual(string $id): Fornecedor
+  {
+    return Fornecedor::where('obra_id', $this->obra->id)->findOrFail($id);
+  }
+
+  private function resolverPedidoDaObraAtual(string $id): \App\Models\PedidoCompra
+  {
+    return \App\Models\PedidoCompra::where('obra_id', $this->obra->id)->findOrFail($id);
+  }
+
+  private function resolverItemPedidoDaObraAtual(string $id): \App\Models\PedidoCompraItem
+  {
+    return \App\Models\PedidoCompraItem::whereHas('pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
   }
 
   // =========================================================================
@@ -260,6 +350,230 @@ new class extends Component {
       })
       ->sortBy(fn(ItemSuprimento $item) => $item->necessidade()?->timestamp ?? PHP_INT_MAX)
       ->values();
+  }
+
+  /**
+   * Ciclo 19, Etapa 19.3 — leitura SOMENTE (seção 27 do pedido): quantas
+   * RPs/RPItens estão alocados a cada Pacote da página atual. 1 query em
+   * lote (join + GROUP BY) pra toda a listagem, nunca 1 por Pacote —
+   * o Mapa nunca emite/edita alocação, só lê (link pro Pacote::detalhe,
+   * que sim permite alocar/desalocar).
+   */
+  #[Computed]
+  public function alocacoesPorPacote(): \Illuminate\Support\Collection
+  {
+    $ids = $this->itensFiltrados->pluck('id')->all();
+    if (empty($ids)) {
+      return collect();
+    }
+
+    return \App\Models\AlocacaoRequisicaoPacote::query()
+      ->whereIn('alocacoes_requisicao_pacote.item_suprimento_id', $ids)
+      ->join('requisicao_planejamento_itens', 'requisicao_planejamento_itens.id', '=', 'alocacoes_requisicao_pacote.requisicao_planejamento_item_id')
+      ->selectRaw('alocacoes_requisicao_pacote.item_suprimento_id, COUNT(DISTINCT requisicao_planejamento_itens.requisicao_planejamento_id) as total_rps, COUNT(*) as total_rp_itens')
+      ->groupBy('alocacoes_requisicao_pacote.item_suprimento_id')
+      ->get()
+      ->keyBy('item_suprimento_id');
+  }
+
+  /**
+   * Seção "Demanda do Planejamento" do modal de detalhe (seção 28) — só
+   * leitura, escopada ao ÚNICO Pacote aberto (nunca N+1 real: 1 query
+   * por abertura de modal, não por linha da listagem).
+   */
+  #[Computed]
+  public function alocacoesDoPacoteAberto(): \Illuminate\Support\Collection
+  {
+    if (! $this->itemDetalheId) {
+      return collect();
+    }
+
+    return \App\Models\AlocacaoRequisicaoPacote::query()
+      ->where('item_suprimento_id', $this->itemDetalheId)
+      ->with([
+        'requisicaoItem.requisicao',
+        'requisicaoItem.itemTakeOff.unidadeMedida',
+        'requisicaoItem.itemTakeOff.lista.revisao.documento',
+      ])
+      ->get();
+  }
+
+  /**
+   * Ciclo 19, Etapa 19.6, seção 31 — fecha o D pendente da 19.5: leitura
+   * agregada de atendimento/recebimento físico do Pacote com o detalhe
+   * aberto. Delega 100% pra `ConciliacaoRecebimento::porPacote()` (zero
+   * regra nova aqui) — nunca soma unidades incompatíveis, só contagem de
+   * itens.
+   */
+  #[Computed]
+  public function atendimentoFisicoPacoteAberto(): ?array
+  {
+    if (! $this->itemDetalheId) {
+      return null;
+    }
+
+    return \App\Support\Suprimentos\ConciliacaoRecebimento::porPacote($this->itemDetalhe);
+  }
+
+  /**
+   * Ciclo 19, Etapa 19.7, seção 35 — quantas Restrições automáticas
+   * ABERTAS a cadeia formal já criou pra este Pacote (origem
+   * `origem_cadeia_suprimento_id`, nunca `origem_suprimento_item_id`
+   * do mecanismo legado). Puramente leitura — nunca cria/resolve nada
+   * aqui, isso é exclusividade de SincronizarRestricaoCadeiaSuprimento.
+   */
+  #[Computed]
+  public function restricoesAutomaticasAbertasPacoteAberto(): int
+  {
+    if (! $this->itemDetalheId) {
+      return 0;
+    }
+
+    return \App\Models\Restricao::where('origem_cadeia_suprimento_id', $this->itemDetalheId)
+      ->whereIn('status', ['aberta', 'em_tratamento', 'aguardando_terceiros'])
+      ->count();
+  }
+
+  /**
+   * Ciclo 19, Etapa 19.4 — Requisições de Compra do Pacote com o modal
+   * de RC aberto. Domínio novo e paralelo ao mecanismo legado (etapas()/
+   * status via SuprimentoScheduler, seção acima) — nunca sincroniza.
+   */
+  #[Computed]
+  public function requisicoesCompraDoPacoteAberto(): \Illuminate\Support\Collection
+  {
+    if (! $this->rcPacoteId) {
+      return collect();
+    }
+
+    // Ciclo 19, Etapa 19.4.CORREÇÃO, item 8 — reescopado por obra_id (o
+    // Pacote da RC pode não pertencer a esta obra se rcPacoteId tiver
+    // sido manipulado); leitura nunca vaza dado de outra obra.
+    return \App\Models\RequisicaoCompra::where('obra_id', $this->obra->id)
+      ->where('item_suprimento_id', $this->rcPacoteId)
+      ->with('etapas')
+      ->orderByDesc('created_at')
+      ->get();
+  }
+
+  #[Computed]
+  public function rcAberta(): ?\App\Models\RequisicaoCompra
+  {
+    if (! $this->rcDetalheId) {
+      return null;
+    }
+
+    return \App\Models\RequisicaoCompra::where('obra_id', $this->obra->id)
+      ->where('id', $this->rcDetalheId)
+      ->with(['itens.alocacao.requisicaoItem.itemTakeOff.unidadeMedida', 'etapas.realizadaPor', 'fluxo'])
+      ->first();
+  }
+
+  /**
+   * Ciclo 19, Etapa 19.4.CORREÇÃO — saldo OFICIAL (só RC Emitida/
+   * Concluida, nunca Rascunho — mesma fonte única de
+   * AlocacaoRequisicaoPacote::quantidadeConsumidaOficialPorRc(), aqui
+   * em versão em LOTE pra evitar N+1 por alocação). Reescopado por
+   * obra_id (item 8) — o Pacote nunca é lido de outra obra.
+   */
+  #[Computed]
+  public function alocacoesComSaldoParaRc(): \Illuminate\Support\Collection
+  {
+    if (! $this->rcPacoteId) {
+      return collect();
+    }
+
+    $alocacoes = \App\Models\AlocacaoRequisicaoPacote::whereHas('pacote', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->where('item_suprimento_id', $this->rcPacoteId)
+      ->with('requisicaoItem.itemTakeOff.unidadeMedida')
+      ->get();
+
+    $consumidoOficial = \App\Models\RequisicaoCompraItem::whereIn('alocacao_requisicao_pacote_id', $alocacoes->pluck('id'))
+      ->whereHas('requisicaoCompra', fn ($q) => $q->whereIn('status', [
+        StatusRequisicaoCompra::Emitida->value,
+        StatusRequisicaoCompra::Concluida->value,
+      ]))
+      ->groupBy('alocacao_requisicao_pacote_id')
+      ->selectRaw('alocacao_requisicao_pacote_id, SUM(quantidade) as total')
+      ->pluck('total', 'alocacao_requisicao_pacote_id');
+
+    return $alocacoes->map(function ($alocacao) use ($consumidoOficial) {
+      $alocacao->saldo_para_rc = round((float) $alocacao->quantidade_alocada - (float) ($consumidoOficial[$alocacao->id] ?? 0), 3);
+      return $alocacao;
+    })->filter(fn ($a) => $a->saldo_para_rc > 0)->values();
+  }
+
+  // =========================================================================
+  // Ciclo 19, Etapa 19.5 — Pedidos/Ordens de Compra (dentro do detalhe da RC)
+  // =========================================================================
+
+  /**
+   * Ciclo 19, Etapa 19.6, seção 34 — leitura resumida do recebimento
+   * (previsto/recebido/saldo/situação) por Pedido, direto na lista da RC
+   * — Planejamento nunca muta recebimento aqui, só lê (mesmo mecanismo de
+   * `ConciliacaoRecebimento::porPedido()`, cardinalidade tipicamente
+   * pequena — poucos Pedidos por RC — mesma classe de custo já aceita
+   * pra listas de detalhe deste tamanho no projeto).
+   */
+  #[Computed]
+  public function pedidosDaRcAberta(): \Illuminate\Support\Collection
+  {
+    if (! $this->rcDetalheId) {
+      return collect();
+    }
+
+    return \App\Models\PedidoCompra::where('obra_id', $this->obra->id)
+      ->where('requisicao_compra_id', $this->rcDetalheId)
+      ->with(['fornecedor', 'itens'])
+      ->orderByDesc('created_at')
+      ->get()
+      ->map(function (\App\Models\PedidoCompra $pedido) {
+        $pedido->resumo_entrega = $pedido->status->value === 'emitido'
+          ? \App\Support\Suprimentos\ConciliacaoRecebimento::porPedido($pedido)
+          : null;
+        return $pedido;
+      });
+  }
+
+  #[Computed]
+  public function pedidoAberto(): ?\App\Models\PedidoCompra
+  {
+    if (! $this->pedidoDetalheId) {
+      return null;
+    }
+
+    return \App\Models\PedidoCompra::where('obra_id', $this->obra->id)
+      ->where('id', $this->pedidoDetalheId)
+      ->with(['itens.requisicaoCompraItem', 'itens.recebimentos.registradoPor', 'fornecedor', 'requisicaoCompra'])
+      ->first();
+  }
+
+  /**
+   * Itens da RC com saldo OFICIAL > 0 pra Pedido (mesma filosofia de
+   * `alocacoesComSaldoParaRc()`, uma camada acima) — nunca N+1: 1 query
+   * em lote por abertura do detalhe da RC.
+   */
+  #[Computed]
+  public function rcItensComSaldoParaPedido(): \Illuminate\Support\Collection
+  {
+    if (! $this->rcDetalheId) {
+      return collect();
+    }
+
+    $rcItens = \App\Models\RequisicaoCompraItem::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->where('requisicao_compra_id', $this->rcDetalheId)
+      ->get();
+
+    $consumidoOficial = \App\Models\PedidoCompraItem::whereIn('requisicao_compra_item_id', $rcItens->pluck('id'))
+      ->whereHas('pedidoCompra', fn ($q) => $q->where('status', StatusPedidoCompra::Emitido->value))
+      ->groupBy('requisicao_compra_item_id')
+      ->selectRaw('requisicao_compra_item_id, SUM(quantidade_pedida) as total')
+      ->pluck('total', 'requisicao_compra_item_id');
+
+    return $rcItens->map(function ($rcItem) use ($consumidoOficial) {
+      $rcItem->saldo_para_pedido = round((float) $rcItem->quantidade - (float) ($consumidoOficial[$rcItem->id] ?? 0), 3);
+      return $rcItem;
+    })->filter(fn ($i) => $i->saldo_para_pedido > 0)->values();
   }
 
   #[Computed]
@@ -824,19 +1138,444 @@ new class extends Component {
   {
     $this->garantirPermissao('excluir');
 
-    $item = ItemSuprimento::findOrFail($id);
-
-    $this->transacaoSegura(function () use ($item) {
-      SincronizarRestricaoSuprimento::resolverTudo($item, Auth::id());
-      $item->delete();
-    });
-
-    if ($this->transacaoSeguraFalhou()) {
+    // Ciclo 19, Etapa 19.3.CORREÇÃO — trava o Pacote (ItemSuprimento) ANTES
+    // de checar/excluir, dentro da MESMA transação, pra disputar o mesmo
+    // lock que AlocarRequisicaoAoPacote::alocar()/alterarQuantidade()/
+    // remover() adquirem (ordem única: RequisicaoPlanejamentoItem primeiro,
+    // ItemSuprimento segundo — aqui só o segundo é relevante, já que
+    // excluir Pacote nunca mexe em RPItem). Sem isso, uma alocação
+    // concorrente podia ser criada apontando pra um Pacote que acabara de
+    // ser soft-deletado (achado C da auditoria adversarial da 19.3).
+    try {
+      \Illuminate\Support\Facades\DB::transaction(function () use ($id) {
+        $item = ItemSuprimento::whereKey($id)->lockForUpdate()->firstOrFail();
+        SincronizarRestricaoSuprimento::resolverTudo($item, Auth::id());
+        $item->delete();
+      });
+    } catch (\App\Exceptions\AlocacaoRequisicaoInvalidaException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
       return;
     }
 
     unset($this->itensFiltrados, $this->totais);
     $this->dispatch('show-toast', message: 'Item de suprimento removido.');
+  }
+
+  // =========================================================================
+  // Ciclo 19, Etapa 19.4 — Requisições de Compra (RC)
+  // =========================================================================
+
+  public function abrirModalRc(string $pacoteId): void
+  {
+    // Ciclo 19, Etapa 19.4.CORREÇÃO, item 8/9 — resolve (e descarta) via
+    // resolver obra-scoped antes de aceitar o id: um pacoteId de outra
+    // obra nunca chega a ficar em $this->rcPacoteId.
+    $pacote = $this->resolverPacoteDaObraAtual($pacoteId);
+
+    $this->rcPacoteId = $pacote->id;
+    $this->rcDetalheId = null;
+    $this->resetFormularioRcNovo();
+    unset($this->requisicoesCompraDoPacoteAberto, $this->alocacoesComSaldoParaRc);
+  }
+
+  public function fecharModalRc(): void
+  {
+    $this->rcPacoteId = null;
+    $this->rcDetalheId = null;
+    $this->resetFormularioRcNovo();
+    $this->fecharPedido();
+  }
+
+  public function abrirRcDetalhe(string $rcId): void
+  {
+    $rc = $this->resolverRcDaObraAtual($rcId);
+
+    $this->rcDetalheId = $rc->id;
+    $this->resetFormularioRcNovo();
+    $this->fecharPedido();
+    unset($this->rcAberta, $this->alocacoesComSaldoParaRc);
+  }
+
+  public function voltarListaRc(): void
+  {
+    $this->rcDetalheId = null;
+    $this->fecharPedido();
+    unset($this->requisicoesCompraDoPacoteAberto);
+  }
+
+  private function resetFormularioRcNovo(): void
+  {
+    $this->rcFluxoIdNovo = null;
+    $this->rcObservacaoNovo = '';
+    $this->rcItemAlocacaoIdNovo = null;
+    $this->rcItemQuantidadeNovo = '';
+  }
+
+  public function criarRcRascunho(): void
+  {
+    $this->garantirPermissao('criar');
+
+    $pacote = $this->resolverPacoteDaObraAtual($this->rcPacoteId);
+    $fluxo = $this->rcFluxoIdNovo ? FluxoSuprimento::find($this->rcFluxoIdNovo) : null;
+
+    $rc = (new \App\Actions\Suprimentos\CriarRequisicaoCompra())->execute(
+      $pacote,
+      $fluxo,
+      $this->rcObservacaoNovo ?: null,
+      Auth::user(),
+    );
+
+    $this->rcDetalheId = $rc->id;
+    $this->resetFormularioRcNovo();
+    unset($this->requisicoesCompraDoPacoteAberto);
+    $this->dispatch('show-toast', message: 'Rascunho de Requisição de Compra criado.');
+  }
+
+  public function adicionarItemRc(): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->rcItemAlocacaoIdNovo || $this->rcItemQuantidadeNovo === '') {
+      $this->dispatch('show-toast', message: 'Selecione uma alocação e informe a quantidade.', type: 'error');
+      return;
+    }
+
+    try {
+      $rc = $this->resolverRcDaObraAtual($this->rcDetalheId);
+      $alocacao = $this->resolverAlocacaoDaObraAtual($this->rcItemAlocacaoIdNovo);
+
+      (new AtualizarRascunhoRequisicaoCompra())->adicionarItem($rc, $alocacao, (float) str_replace(',', '.', $this->rcItemQuantidadeNovo));
+    } catch (\App\Exceptions\SaldoAlocacaoInsuficienteException|\App\Exceptions\RequisicaoCompraImutavelException|\InvalidArgumentException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->rcItemAlocacaoIdNovo = null;
+    $this->rcItemQuantidadeNovo = '';
+    unset($this->rcAberta, $this->alocacoesComSaldoParaRc);
+    $this->dispatch('show-toast', message: 'Item adicionado à Requisição de Compra.');
+  }
+
+  public function removerItemRc(string $itemId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $item = $this->resolverItemRcDaObraAtual($itemId);
+      (new AtualizarRascunhoRequisicaoCompra())->removerItem($item);
+    } catch (\App\Exceptions\RequisicaoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->rcAberta, $this->alocacoesComSaldoParaRc);
+    $this->dispatch('show-toast', message: 'Item removido.');
+  }
+
+  public function emitirRc(): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $rc = $this->resolverRcDaObraAtual($this->rcDetalheId);
+      (new \App\Actions\Suprimentos\EmitirRequisicaoCompra())->execute($rc, Auth::user());
+    } catch (\App\Exceptions\RequisicaoCompraEmissaoInvalidaException|\App\Exceptions\RequisicaoCompraImutavelException|\App\Exceptions\SaldoAlocacaoInsuficienteException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->rcAberta, $this->requisicoesCompraDoPacoteAberto);
+    $this->dispatch('show-toast', message: 'Requisição de Compra emitida.');
+  }
+
+  public function concluirEtapaRc(string $etapaId): void
+  {
+    $this->garantirPermissao('editar');
+
+    $etapa = $this->resolverEtapaRcDaObraAtual($etapaId);
+
+    try {
+      (new \App\Actions\Suprimentos\RegistrarConclusaoEtapaRequisicaoCompra())->execute($etapa, Auth::user());
+    } catch (\App\Exceptions\EtapaRequisicaoCompraJaConcluidaException|\App\Exceptions\RequisicaoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->rcAberta, $this->requisicoesCompraDoPacoteAberto);
+    $this->dispatch('show-toast', message: 'Etapa registrada como concluída.');
+  }
+
+  /**
+   * Ciclo 19, Etapa 19.4.CORREÇÃO, itens 4/5/6/8 — fecha, de uma vez, os
+   * 3 achados C da auditoria: (1) trava a linha ANTES de checar status
+   * (nunca confia num objeto Livewire previamente carregado — o `$rcId`
+   * é só um id, resolvido do zero aqui dentro da transação); (2) lê o
+   * status FRESH sob lock, então uma emissão concorrente que já
+   * commitou é sempre vista; (3) reescopa por obra_id antes mesmo de
+   * travar, então um id de outra obra nunca chega a ser travado/excluído.
+   * Mesma disciplina de 19.2.CORREÇÃO (ItemTakeOff)/19.3.CORREÇÃO
+   * (ItemSuprimento) — o Observer continua sendo só a barreira
+   * semântica; quem garante ausência de corrida é este lock aqui.
+   *
+   * **Item 6 — filhos do rascunho excluído**: `RequisicaoCompraItem`
+   * NUNCA conta como saldo oficial de qualquer forma (item 1/3 —
+   * `quantidadeConsumidaOficialPorRc()` só soma RC Emitida/Concluída),
+   * então o soft-delete do header já é suficiente pra "saldo volta a
+   * 100%". Mas sem limpar os itens, eles ficam órfãos apontando pra uma
+   * alocação — e como essa FK é `restrictOnDelete()`, isso bloquearia
+   * PERMANENTEMENTE uma futura remoção física da alocação por causa de
+   * um rascunho que o usuário já abandonou. Por isso os itens (nunca
+   * etapas — Rascunho jamais tem etapa, só nasce na emissão) são
+   * apagados de verdade (`RequisicaoCompraItem` não tem SoftDeletes
+   * própria, mesmo padrão de `RequisicaoPlanejamentoItem`) na MESMA
+   * transação, LOGO DEPOIS do soft-delete do header (que é quem
+   * dispara o guard do Observer — nunca risco de apagar item de uma RC
+   * que acaba não sendo Rascunho) — nunca depende de FK cascade (que
+   * não dispara em soft-delete, lição já conhecida do projeto).
+   */
+  public function excluirRcRascunho(string $rcId): void
+  {
+    $this->garantirPermissao('excluir');
+
+    try {
+      \Illuminate\Support\Facades\DB::transaction(function () use ($rcId) {
+        $rc = \App\Models\RequisicaoCompra::where('obra_id', $this->obra->id)
+          ->whereKey($rcId)
+          ->lockForUpdate()
+          ->firstOrFail();
+
+        // Ordem importa: delete() do header PRIMEIRO — é ele quem dispara
+        // o guard do Observer (RequisicaoCompraImutavelException se não
+        // for Rascunho). Só chegamos a apagar os itens DEPOIS de o guard
+        // já ter deixado passar — nunca risco de apagar item de uma RC
+        // que acaba sendo Emitida/Concluída.
+        $rc->delete();
+        $rc->itens()->delete();
+      });
+    } catch (\App\Exceptions\RequisicaoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->rcDetalheId = null;
+    unset($this->requisicoesCompraDoPacoteAberto);
+    $this->dispatch('show-toast', message: 'Rascunho de Requisição de Compra excluído.');
+  }
+
+  // =========================================================================
+  // Ciclo 19, Etapa 19.5 — Pedidos/Ordens de Compra
+  // =========================================================================
+
+  private function resetFormularioPedidoNovo(): void
+  {
+    $this->pedidoFornecedorIdNovo = null;
+    $this->pedidoDataPrevistaEntregaNovo = '';
+    $this->pedidoNumeroContratoNovo = '';
+    $this->pedidoDataContratoNovo = '';
+    $this->pedidoObservacaoNovo = '';
+    $this->pedidoItemRcItemIdNovo = null;
+    $this->pedidoItemQuantidadeNovo = '';
+  }
+
+  public function abrirPedidoDetalhe(string $pedidoId): void
+  {
+    $pedido = $this->resolverPedidoDaObraAtual($pedidoId);
+
+    $this->pedidoDetalheId = $pedido->id;
+    $this->resetFormularioPedidoNovo();
+    unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido);
+  }
+
+  public function voltarListaPedidos(): void
+  {
+    $this->pedidoDetalheId = null;
+    unset($this->pedidosDaRcAberta);
+  }
+
+  public function fecharPedido(): void
+  {
+    $this->pedidoDetalheId = null;
+    $this->resetFormularioPedidoNovo();
+  }
+
+  public function criarPedidoRascunho(): void
+  {
+    $this->garantirPermissao('criar');
+
+    if (! $this->pedidoFornecedorIdNovo) {
+      $this->dispatch('show-toast', message: 'Selecione um fornecedor.', type: 'error');
+      return;
+    }
+
+    try {
+      $rc = $this->resolverRcDaObraAtual($this->rcDetalheId);
+      $fornecedor = $this->resolverFornecedorDaObraAtual($this->pedidoFornecedorIdNovo);
+
+      $pedido = (new \App\Actions\Suprimentos\CriarPedidoCompra())->execute(
+        $rc,
+        $fornecedor,
+        $this->pedidoDataPrevistaEntregaNovo ?: null,
+        $this->pedidoNumeroContratoNovo ?: null,
+        $this->pedidoDataContratoNovo ?: null,
+        $this->pedidoObservacaoNovo ?: null,
+        Auth::user(),
+      );
+    } catch (\App\Exceptions\PedidoCompraEmissaoInvalidaException|\InvalidArgumentException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->pedidoDetalheId = $pedido->id;
+    $this->resetFormularioPedidoNovo();
+    unset($this->pedidosDaRcAberta);
+    $this->dispatch('show-toast', message: 'Rascunho de Pedido/Ordem de Compra criado.');
+  }
+
+  public function adicionarItemPedido(): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->pedidoItemRcItemIdNovo || $this->pedidoItemQuantidadeNovo === '') {
+      $this->dispatch('show-toast', message: 'Selecione um item e informe a quantidade.', type: 'error');
+      return;
+    }
+
+    try {
+      $pedido = $this->resolverPedidoDaObraAtual($this->pedidoDetalheId);
+      $rcItem = $this->resolverRcItemDaObraAtual($this->pedidoItemRcItemIdNovo);
+
+      (new \App\Actions\Suprimentos\AtualizarRascunhoPedidoCompra())->adicionarItem(
+        $pedido,
+        $rcItem,
+        (float) str_replace(',', '.', $this->pedidoItemQuantidadeNovo),
+      );
+    } catch (\App\Exceptions\SaldoRequisicaoCompraInsuficienteException|\App\Exceptions\PedidoCompraImutavelException|\InvalidArgumentException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->pedidoItemRcItemIdNovo = null;
+    $this->pedidoItemQuantidadeNovo = '';
+    unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido);
+    $this->dispatch('show-toast', message: 'Item adicionado ao Pedido.');
+  }
+
+  public function removerItemPedido(string $itemId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $item = $this->resolverItemPedidoDaObraAtual($itemId);
+      (new \App\Actions\Suprimentos\AtualizarRascunhoPedidoCompra())->removerItem($item);
+    } catch (\App\Exceptions\PedidoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido);
+    $this->dispatch('show-toast', message: 'Item removido.');
+  }
+
+  public function emitirPedido(): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $pedido = $this->resolverPedidoDaObraAtual($this->pedidoDetalheId);
+      (new \App\Actions\Suprimentos\EmitirPedidoCompra())->execute($pedido, Auth::user());
+    } catch (\App\Exceptions\PedidoCompraEmissaoInvalidaException|\App\Exceptions\PedidoCompraImutavelException|\App\Exceptions\SaldoRequisicaoCompraInsuficienteException|\App\Exceptions\FornecedorPedidoInvalidoException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->pedidoAberto, $this->pedidosDaRcAberta);
+    $this->dispatch('show-toast', message: 'Pedido/Ordem de Compra emitido.');
+  }
+
+  /**
+   * Ciclo 19, Etapa 19.5 — mesma disciplina de 19.4.CORREÇÃO (RC): lock
+   * ANTES de checar status (nunca reaproveita objeto Livewire
+   * previamente carregado), status fresh sob lock, reescopado por
+   * obra_id. Header primeiro (dispara o guard do Observer) — só depois,
+   * com o guard já tendo deixado passar, limpa os itens do rascunho.
+   */
+  public function excluirPedidoRascunho(string $pedidoId): void
+  {
+    $this->garantirPermissao('excluir');
+
+    try {
+      \Illuminate\Support\Facades\DB::transaction(function () use ($pedidoId) {
+        $pedido = \App\Models\PedidoCompra::where('obra_id', $this->obra->id)
+          ->whereKey($pedidoId)
+          ->lockForUpdate()
+          ->firstOrFail();
+
+        $pedido->delete();
+        $pedido->itens()->delete();
+      });
+    } catch (\App\Exceptions\PedidoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->pedidoDetalheId = null;
+    unset($this->pedidosDaRcAberta);
+    $this->dispatch('show-toast', message: 'Rascunho de Pedido/Ordem de Compra excluído.');
+  }
+
+  // =========================================================================
+  // Ciclo 19, Etapa 19.6 — Recebimento Físico (dentro do item do Pedido)
+  // =========================================================================
+
+  private function resetFormularioRecebimentoNovo(): void
+  {
+    $this->recebimentoQuantidadeNova = '';
+    $this->recebimentoDataNova = '';
+    $this->recebimentoLocalNova = '';
+    $this->recebimentoObservacaoNova = '';
+  }
+
+  public function abrirRecebimentoItem(string $itemId): void
+  {
+    $this->recebimentoItemAbertoId = $itemId;
+    $this->resetFormularioRecebimentoNovo();
+  }
+
+  public function fecharRecebimentoItem(): void
+  {
+    $this->recebimentoItemAbertoId = null;
+    $this->resetFormularioRecebimentoNovo();
+  }
+
+  public function registrarRecebimento(string $itemId): void
+  {
+    $this->garantirPermissao('editar');
+
+    if ($this->recebimentoQuantidadeNova === '' || ! $this->recebimentoDataNova) {
+      $this->dispatch('show-toast', message: 'Informe a quantidade e a data do recebimento.', type: 'error');
+      return;
+    }
+
+    try {
+      $item = $this->resolverItemPedidoDaObraAtual($itemId);
+
+      (new \App\Actions\Suprimentos\RegistrarRecebimentoPedido())->execute(
+        $item,
+        (float) str_replace(',', '.', $this->recebimentoQuantidadeNova),
+        \Carbon\Carbon::parse($this->recebimentoDataNova),
+        Auth::user(),
+        $this->recebimentoObservacaoNova ?: null,
+        $this->recebimentoLocalNova ?: null,
+      );
+    } catch (\App\Exceptions\SaldoPedidoInsuficienteException|\App\Exceptions\RecebimentoPedidoInvalidoException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->recebimentoItemAbertoId = null;
+    $this->resetFormularioRecebimentoNovo();
+    unset($this->pedidoAberto, $this->pedidosDaRcAberta);
+    $this->dispatch('show-toast', message: 'Recebimento registrado.');
   }
 
   public function resetModalItem(): void
@@ -962,6 +1701,7 @@ new class extends Component {
                         <tr>
                             <th>Pacote de Compra</th>
                             <th class="text-center" style="width:80px">Atividades</th>
+                            <th class="text-center" style="width:90px">Demanda</th>
                             <th class="text-center" style="width:60px">Farol</th>
                             <th class="text-center" style="width:100px">Status</th>
                             <th class="text-center" style="width:100px">Progresso</th>
@@ -1000,6 +1740,18 @@ new class extends Component {
                                         title="Ver atividades vinculadas">
                                     <i class="bx bx-link me-1"></i>{{ $item->atividades->count() }}
                                 </button>
+                            </td>
+                            <td class="text-center">
+                                @php
+                                    $demanda = $this->alocacoesPorPacote->get($item->id);
+                                @endphp
+                                @if ($demanda)
+                                <span class="badge bg-label-info" title="{{ $demanda->total_rps }} Requisição(ões) do Planejamento, {{ $demanda->total_rp_itens }} item(ns)">
+                                    <i class="bx bx-clipboard"></i> {{ $demanda->total_rps }} RP{{ $demanda->total_rps > 1 ? 's' : '' }}
+                                </span>
+                                @else
+                                <span class="text-muted small" title="Sem demanda formal do Planejamento alocada ainda">—</span>
+                                @endif
                             </td>
                             <td class="text-center" title="{{ $item->status->label() }}">
                                 <span class="fs-5" role="img" aria-label="{{ $item->status->label() }}">{{ $this->farolEmoji($item->status) }}</span>
@@ -1132,6 +1884,104 @@ new class extends Component {
                         <span><strong>Fornecedor:</strong> {{ $item->fornecedor?->nome ?? '—' }}</span>
                         <span><strong>Necessidade:</strong> {{ $item->necessidade()?->format('d/m/Y') ?? '—' }}</span>
                         <span><strong>Status:</strong> <span class="badge {{ $this->badgeStatus($item->status) }}">{{ $item->status->label() }}</span></span>
+                    </div>
+
+                    {{-- Ciclo 19, Etapa 19.6, seção 31 — Atendimento e Recebimento Físico (fecha o D pendente da 19.5). --}}
+                    @php $atendimentoFisico = $this->atendimentoFisicoPacoteAberto; @endphp
+                    @if($atendimentoFisico)
+                    <div class="mb-4">
+                        <h6 class="mb-2 fw-bold text-uppercase" style="font-size:.78rem; letter-spacing:.03em">Atendimento e Recebimento Físico</h6>
+                        <div class="row g-2 small">
+                            <div class="col-6 col-md-3">
+                                <div class="text-muted">Necessidade</div>
+                                <div class="fw-semibold">{{ $atendimentoFisico['necessidade']?->format('d/m/Y') ?? '—' }}</div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="text-muted">Atendimento projetado</div>
+                                <div class="fw-semibold">{{ $atendimentoFisico['atendimento_projetado']?->format('d/m/Y') ?? '—' }}</div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="text-muted">Folga projetada</div>
+                                <div class="fw-semibold">
+                                    @if($atendimentoFisico['folga'] === null)
+                                        <span class="text-muted">—</span>
+                                    @else
+                                        {{ $atendimentoFisico['folga'] }}d
+                                        <span class="badge {{ $atendimentoFisico['risco'] === 'em_risco' ? 'bg-danger' : 'bg-success' }} ms-1">
+                                            {{ $atendimentoFisico['risco'] === 'em_risco' ? 'Em risco' : 'Dentro do prazo' }}
+                                        </span>
+                                    @endif
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="text-muted">Pedidos emitidos</div>
+                                <div class="fw-semibold">{{ $atendimentoFisico['total_pedidos'] }}</div>
+                            </div>
+                        </div>
+                        <div class="d-flex flex-wrap gap-3 mt-2 small">
+                            <span><span class="badge bg-label-secondary">{{ $atendimentoFisico['itens_nao_recebidos'] }}</span> não recebidos</span>
+                            <span><span class="badge bg-label-warning">{{ $atendimentoFisico['itens_parciais'] }}</span> parciais</span>
+                            <span><span class="badge bg-label-success">{{ $atendimentoFisico['itens_completos'] }}</span> completos</span>
+                            @if($atendimentoFisico['algum_pedido_atrasado'])
+                            <span class="badge bg-danger"><i class="bx bx-error me-1"></i>Há Pedido com entrega atrasada</span>
+                            @endif
+                            @if($this->restricoesAutomaticasAbertasPacoteAberto > 0)
+                            <span class="badge bg-danger"><i class="bx bx-block me-1"></i>{{ $this->restricoesAutomaticasAbertasPacoteAberto }} atividade(s) com Restrição automática ativa</span>
+                            @endif
+                        </div>
+                    </div>
+                    @endif
+
+                    {{-- Ciclo 19, Etapa 19.3, seção 28 — Demanda do Planejamento (somente leitura). --}}
+                    <div class="mb-4">
+                        <h6 class="mb-2 fw-bold text-uppercase" style="font-size:.78rem; letter-spacing:.03em">Demanda do Planejamento</h6>
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>RP</th>
+                                        <th>Item</th>
+                                        <th>LM/LI</th>
+                                        <th>Documento/Revisão</th>
+                                        <th class="text-end">Qtd. requisitada</th>
+                                        <th class="text-end">Qtd. alocada</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse ($this->alocacoesDoPacoteAberto as $alocacao)
+                                        @php
+                                            $rpItem = $alocacao->requisicaoItem;
+                                            $ito = $rpItem?->itemTakeOff;
+                                        @endphp
+                                        <tr wire:key="demanda-{{ $alocacao->id }}">
+                                            <td>{{ $rpItem?->requisicao?->numero ? '#'.str_pad($rpItem->requisicao->numero, 4, '0', STR_PAD_LEFT) : '—' }}</td>
+                                            <td>{{ $ito?->descricao ?? $rpItem?->descricao_snapshot ?? '—' }}</td>
+                                            <td>{{ $ito?->lista?->codigo ?? $rpItem?->lista_codigo_snapshot ?? '—' }}</td>
+                                            <td>{{ $ito?->lista?->revisao?->documento?->codigo ?? $rpItem?->documento_codigo_snapshot ?? '—' }} / {{ $ito?->lista?->revisao?->revisao ?? $rpItem?->revisao_snapshot ?? '—' }}</td>
+                                            <td class="text-end">{{ number_format((float) ($rpItem?->quantidade_requisitada ?? 0), 3, ',', '.') }} {{ $ito?->unidadeMedida?->codigo ?? $rpItem?->unidade_snapshot }}</td>
+                                            <td class="text-end">{{ number_format((float) $alocacao->quantidade_alocada, 3, ',', '.') }}</td>
+                                        </tr>
+                                    @empty
+                                        <tr><td colspan="6" class="text-center text-muted py-3">Sem demanda formal do Planejamento alocada a este Pacote ainda.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    {{-- Ciclo 19, Etapa 19.4 — Requisições de Compra (domínio novo e paralelo
+                         ao mecanismo legado abaixo; nunca sincronizam). --}}
+                    <div class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="mb-0 fw-bold text-uppercase" style="font-size:.78rem; letter-spacing:.03em">Requisições de Compra</h6>
+                            <button type="button" class="btn btn-sm btn-outline-primary" wire:click="abrirModalRc('{{ $item->id }}')">
+                                <i class="bx bx-cart me-1"></i>Gerenciar Requisições de Compra
+                            </button>
+                        </div>
+                        <p class="text-muted small mb-0">
+                            Processo formal de compra, independente do fluxo legado abaixo — este Pacote pode ter várias
+                            Requisições de Compra, cada uma com seu próprio progresso.
+                        </p>
                     </div>
 
                     {{-- Timeline vertical: avanço proporcional à quantidade de etapas --}}
@@ -1273,6 +2123,467 @@ new class extends Component {
                     </button>
                     @endif
                 </div>
+            </div>
+        </div>
+    </div>
+    @endif
+
+    {{-- ------------------------------------------------------------------ --}}
+    {{-- Ciclo 19, Etapa 19.4 — Modal: Requisições de Compra (RC) --}}
+    {{-- ------------------------------------------------------------------ --}}
+    @if($rcPacoteId)
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                @if(! $rcDetalheId)
+                {{-- Lista de RCs do Pacote + criação de novo rascunho --}}
+                <div class="modal-header">
+                    <h5 class="modal-title">Requisições de Compra</h5>
+                    <button type="button" class="btn-close" wire:click="fecharModalRc"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="table-responsive mb-4">
+                        <table class="table table-sm align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Nº</th>
+                                    <th>Status</th>
+                                    <th>Fluxo</th>
+                                    <th>Fim previsto</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @forelse ($this->requisicoesCompraDoPacoteAberto as $rc)
+                                <tr wire:key="rc-{{ $rc->id }}">
+                                    <td>{{ $rc->numero ? '#'.str_pad($rc->numero, 4, '0', STR_PAD_LEFT) : 'Rascunho' }}</td>
+                                    <td><span class="badge {{ $rc->status->value === 'concluida' ? 'bg-label-success' : ($rc->status->value === 'emitida' ? 'bg-label-info' : 'bg-label-secondary') }}">{{ $rc->status->label() }}</span></td>
+                                    <td>{{ $rc->fluxo_nome_snapshot ?? $rc->fluxo?->nome ?? '—' }}</td>
+                                    <td>{{ $rc->fimPrevisto()?->format('d/m/Y') ?? '—' }}</td>
+                                    <td class="text-end">
+                                        <button class="btn btn-xs btn-outline-secondary py-0 px-1" wire:click="abrirRcDetalhe('{{ $rc->id }}')">
+                                            <i class="bx bx-show"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                @empty
+                                <tr><td colspan="5" class="text-center text-muted py-3">Nenhuma Requisição de Compra ainda.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'criar'))
+                    <h6 class="fw-bold text-uppercase mb-2" style="font-size:.78rem; letter-spacing:.03em">Nova Requisição de Compra</h6>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label small">Fluxo de Suprimento</label>
+                            <select class="form-select form-select-sm" wire:model="rcFluxoIdNovo">
+                                <option value="">Selecione (obrigatório para emitir)</option>
+                                @foreach($this->fluxos as $fluxo)
+                                <option value="{{ $fluxo->id }}">{{ $fluxo->nome }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">Observação</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="rcObservacaoNovo">
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-primary mt-3" wire:click="criarRcRascunho">
+                        <i class="bx bx-plus me-1"></i>Criar Rascunho
+                    </button>
+                    @endif
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" wire:click="fecharModalRc">Fechar</button>
+                </div>
+                @elseif ($this->rcAberta)
+                @php $rc = $this->rcAberta; @endphp
+                {{-- Detalhe de uma RC — itens (rascunho) / etapas (emitida/concluída) --}}
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        {{ $rc->numero ? 'Requisição de Compra #'.str_pad($rc->numero, 4, '0', STR_PAD_LEFT) : 'Rascunho de Requisição de Compra' }}
+                        <span class="badge {{ $rc->status->value === 'concluida' ? 'bg-label-success' : ($rc->status->value === 'emitida' ? 'bg-label-info' : 'bg-label-secondary') }} ms-1">{{ $rc->status->label() }}</span>
+                    </h5>
+                    <button type="button" class="btn-close" wire:click="fecharModalRc"></button>
+                </div>
+                <div class="modal-body">
+                    <button type="button" class="btn btn-link btn-sm p-0 mb-3" wire:click="voltarListaRc">
+                        <i class="bx bx-arrow-back me-1"></i>Voltar para a lista
+                    </button>
+
+                    @if($rc->status->value === 'rascunho')
+                    {{-- Itens (rascunho, editável) --}}
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Item</th>
+                                    <th class="text-end">Quantidade</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @forelse ($rc->itens as $rcItem)
+                                @php $ito = $rcItem->alocacao?->requisicaoItem?->itemTakeOff; @endphp
+                                <tr wire:key="rcitem-{{ $rcItem->id }}">
+                                    <td>{{ $ito?->descricao ?? '—' }}</td>
+                                    <td class="text-end">{{ number_format((float) $rcItem->quantidade, 3, ',', '.') }} {{ $ito?->unidadeMedida?->codigo }}</td>
+                                    <td class="text-end">
+                                        <button class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerItemRc('{{ $rcItem->id }}')">
+                                            <i class="bx bx-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                @empty
+                                <tr><td colspan="3" class="text-center text-muted py-3">Nenhum item adicionado ainda.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                    <div class="row g-2 align-items-end mb-3">
+                        <div class="col-md-7">
+                            <label class="form-label small">Alocação (saldo disponível)</label>
+                            <select class="form-select form-select-sm" wire:model="rcItemAlocacaoIdNovo">
+                                <option value="">Selecione</option>
+                                @foreach($this->alocacoesComSaldoParaRc as $alocacao)
+                                <option value="{{ $alocacao->id }}">
+                                    {{ $alocacao->requisicaoItem?->itemTakeOff?->descricao }} — saldo {{ number_format($alocacao->saldo_para_rc, 3, ',', '.') }}
+                                </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Quantidade</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="rcItemQuantidadeNovo">
+                        </div>
+                        <div class="col-md-2">
+                            <button class="btn btn-sm btn-primary w-100" wire:click="adicionarItemRc">Adicionar</button>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-success" wire:click="emitirRc">
+                        <i class="bx bx-send me-1"></i>Emitir Requisição de Compra
+                    </button>
+                    @endif
+                    @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'excluir'))
+                    <button type="button" class="btn btn-outline-danger ms-2"
+                            onclick="confirmarAcao(this, { mensagem: 'Excluir este rascunho de Requisição de Compra?', metodo: 'excluirRcRascunho', args: ['{{ $rc->id }}'], icone: 'bx-trash' })">
+                        Excluir Rascunho
+                    </button>
+                    @endif
+                    @else
+                    {{-- Emitida/Concluída: etapas (progresso) --}}
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Etapa</th>
+                                    <th class="text-center">Prevista</th>
+                                    <th class="text-center">Realizada</th>
+                                    <th class="text-center">Status</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($rc->etapas as $etapa)
+                                <tr wire:key="rcetapa-{{ $etapa->id }}">
+                                    <td>{{ $etapa->nome_snapshot }}</td>
+                                    <td class="text-center small text-muted">{{ $etapa->data_prevista->format('d/m/Y') }}</td>
+                                    <td class="text-center small">{{ $etapa->data_realizada?->format('d/m/Y') ?? '—' }}</td>
+                                    <td class="text-center">
+                                        @php $statusEtapa = $etapa->status(); @endphp
+                                        <span class="badge {{ $statusEtapa->value === 'concluida' ? 'bg-label-success' : ($statusEtapa->value === 'atrasada' ? 'bg-label-danger' : 'bg-label-secondary') }}">{{ $statusEtapa->label() }}</span>
+                                    </td>
+                                    <td class="text-end">
+                                        @if(! $etapa->data_realizada && $rc->status->value === 'emitida' && Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                        <button class="btn btn-xs btn-outline-success py-0 px-1" wire:click="concluirEtapaRc('{{ $etapa->id }}')">
+                                            <i class="bx bx-check"></i>
+                                        </button>
+                                        @endif
+                                    </td>
+                                </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {{-- Ciclo 19, Etapa 19.5 — Pedidos/Ordens de Compra desta RC --}}
+                    <hr class="my-4">
+                    @if(! $pedidoDetalheId)
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0 fw-bold text-uppercase" style="font-size:.78rem; letter-spacing:.03em">Pedidos / Ordens de Compra</h6>
+                    </div>
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Nº</th>
+                                    <th>Fornecedor</th>
+                                    <th>Status</th>
+                                    <th>Previsão de entrega</th>
+                                    <th>Situação de entrega</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @forelse ($this->pedidosDaRcAberta as $pedido)
+                                <tr wire:key="pedido-{{ $pedido->id }}">
+                                    <td>{{ $pedido->numero ? '#'.str_pad($pedido->numero, 4, '0', STR_PAD_LEFT) : 'Rascunho' }}</td>
+                                    <td>{{ $pedido->fornecedor_nome_snapshot ?? $pedido->fornecedor?->nome ?? '—' }}</td>
+                                    <td><span class="badge {{ $pedido->status->value === 'emitido' ? 'bg-label-info' : 'bg-label-secondary' }}">{{ $pedido->status->label() }}</span></td>
+                                    <td>{{ $pedido->data_prevista_entrega?->format('d/m/Y') ?? '—' }}</td>
+                                    <td>
+                                        @if(! $pedido->resumo_entrega)
+                                        <span class="text-muted">—</span>
+                                        @else
+                                        <span class="badge {{ match($pedido->resumo_entrega['situacao']->value) { 'completa' => 'bg-label-success', 'parcial' => 'bg-label-warning', default => 'bg-label-secondary' } }}">
+                                            {{ $pedido->resumo_entrega['situacao']->label() }}
+                                        </span>
+                                        <span class="text-muted small ms-1">({{ $pedido->resumo_entrega['itens_completos'] }}/{{ $pedido->resumo_entrega['total_itens'] }} itens)</span>
+                                        @if($pedido->resumo_entrega['dias_atraso_atual'])
+                                        <span class="badge bg-danger ms-1">+{{ $pedido->resumo_entrega['dias_atraso_atual'] }}d atraso</span>
+                                        @endif
+                                        @endif
+                                    </td>
+                                    <td class="text-end">
+                                        <button class="btn btn-xs btn-outline-secondary py-0 px-1" wire:click="abrirPedidoDetalhe('{{ $pedido->id }}')">
+                                            <i class="bx bx-show"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                @empty
+                                <tr><td colspan="6" class="text-center text-muted py-3">Nenhum Pedido/Ordem de Compra ainda.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'criar'))
+                    <h6 class="fw-bold text-uppercase mb-2" style="font-size:.78rem; letter-spacing:.03em">Novo Pedido/Ordem de Compra</h6>
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label class="form-label small">Fornecedor</label>
+                            <select class="form-select form-select-sm" wire:model="pedidoFornecedorIdNovo">
+                                <option value="">Selecione</option>
+                                @foreach($this->fornecedores as $fornecedor)
+                                <option value="{{ $fornecedor->id }}">{{ $fornecedor->nome }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Previsão de entrega</label>
+                            <input type="date" class="form-control form-control-sm" wire:model="pedidoDataPrevistaEntregaNovo">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Nº Contrato</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="pedidoNumeroContratoNovo">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Data do Contrato</label>
+                            <input type="date" class="form-control form-control-sm" wire:model="pedidoDataContratoNovo">
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-primary mt-3" wire:click="criarPedidoRascunho">
+                        <i class="bx bx-plus me-1"></i>Criar Rascunho de Pedido
+                    </button>
+                    @endif
+                    @else
+                    @php $pedido = $this->pedidoAberto; @endphp
+                    @if($pedido)
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0 fw-bold text-uppercase" style="font-size:.78rem; letter-spacing:.03em">
+                            {{ $pedido->numero ? 'Pedido #'.str_pad($pedido->numero, 4, '0', STR_PAD_LEFT) : 'Rascunho de Pedido' }}
+                            <span class="badge {{ $pedido->status->value === 'emitido' ? 'bg-label-info' : 'bg-label-secondary' }} ms-1">{{ $pedido->status->label() }}</span>
+                        </h6>
+                        <button type="button" class="btn btn-link btn-sm p-0" wire:click="voltarListaPedidos">
+                            <i class="bx bx-arrow-back me-1"></i>Voltar
+                        </button>
+                    </div>
+                    <div class="d-flex flex-wrap gap-3 mb-3 small text-muted">
+                        <span><strong>Fornecedor:</strong> {{ $pedido->fornecedor_nome_snapshot ?? $pedido->fornecedor?->nome ?? '—' }}</span>
+                        <span><strong>Previsão de entrega:</strong> {{ $pedido->data_prevista_entrega?->format('d/m/Y') ?? '—' }}</span>
+                        @if($pedido->numero_contrato)
+                        <span><strong>Contrato:</strong> {{ $pedido->numero_contrato }} @if($pedido->data_contrato) ({{ $pedido->data_contrato->format('d/m/Y') }}) @endif</span>
+                        @endif
+                    </div>
+
+                    {{-- Ciclo 19, Etapa 19.6, seção 23/32 — resumo de entrega física. --}}
+                    @if($pedido->status->value === 'emitido')
+                    @php
+                        $situacaoEntrega = $pedido->situacaoEntrega();
+                        $diasAtrasoAtual = $pedido->diasAtrasoAtual();
+                        $diasAtrasoFinal = $pedido->diasAtrasoFinal();
+                        $dataEntregaCompleta = $pedido->dataEntregaCompleta();
+                    @endphp
+                    <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+                        <span class="badge {{ match($situacaoEntrega->value) { 'completa' => 'bg-label-success', 'parcial' => 'bg-label-warning', default => 'bg-label-secondary' } }}">
+                            {{ $situacaoEntrega->label() }}
+                        </span>
+                        @if($dataEntregaCompleta)
+                        <span class="small text-muted">Entrega completa em {{ $dataEntregaCompleta->format('d/m/Y') }}</span>
+                        @endif
+                        @if($diasAtrasoAtual)
+                        <span class="badge bg-danger">Atrasado há {{ $diasAtrasoAtual }} dia(s)</span>
+                        @endif
+                        @if($diasAtrasoFinal)
+                        <span class="badge bg-warning text-dark">Concluído com {{ $diasAtrasoFinal }} dia(s) de atraso</span>
+                        @endif
+                    </div>
+                    @endif
+
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Item</th>
+                                    <th class="text-end">Pedido</th>
+                                    @if($pedido->status->value === 'rascunho')
+                                    <th></th>
+                                    @else
+                                    <th class="text-end">Recebido</th>
+                                    <th class="text-end">Saldo</th>
+                                    <th>Situação</th>
+                                    <th></th>
+                                    @endif
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @forelse ($pedido->itens as $pedidoItem)
+                                @php $statusRecebimento = $pedido->status->value === 'emitido' ? $pedidoItem->statusRecebimento() : null; @endphp
+                                <tr wire:key="pedidoitem-{{ $pedidoItem->id }}">
+                                    <td>{{ $pedidoItem->descricao_snapshot ?? $pedidoItem->requisicaoCompraItem?->descricao_snapshot ?? '—' }}</td>
+                                    <td class="text-end">{{ number_format((float) $pedidoItem->quantidade_pedida, 3, ',', '.') }} {{ $pedidoItem->unidade_snapshot ?? $pedidoItem->requisicaoCompraItem?->unidade_snapshot }}</td>
+                                    @if($pedido->status->value === 'rascunho')
+                                    <td class="text-end">
+                                        <button class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerItemPedido('{{ $pedidoItem->id }}')">
+                                            <i class="bx bx-trash"></i>
+                                        </button>
+                                    </td>
+                                    @else
+                                    <td class="text-end">{{ number_format($pedidoItem->quantidadeRecebida(), 3, ',', '.') }}</td>
+                                    <td class="text-end">{{ number_format($pedidoItem->saldoAReceber(), 3, ',', '.') }}</td>
+                                    <td>
+                                        <span class="badge {{ match($statusRecebimento->value) { 'recebido' => 'bg-label-success', 'parcialmente_recebido' => 'bg-label-warning', default => 'bg-label-secondary' } }}">
+                                            {{ $statusRecebimento->label() }}
+                                        </span>
+                                    </td>
+                                    <td class="text-end">
+                                        @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                        <button class="btn btn-xs btn-outline-primary py-0 px-1" wire:click="abrirRecebimentoItem('{{ $pedidoItem->id }}')" title="Registrar recebimento">
+                                            <i class="bx bx-truck"></i>
+                                        </button>
+                                        @endif
+                                    </td>
+                                    @endif
+                                </tr>
+                                @if($pedido->status->value === 'emitido' && $recebimentoItemAbertoId === $pedidoItem->id)
+                                <tr wire:key="pedidoitem-recebimento-{{ $pedidoItem->id }}">
+                                    <td colspan="5">
+                                        <div class="border rounded p-2 bg-light">
+                                            @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                            <div class="row g-2 align-items-end mb-2">
+                                                <div class="col-md-3">
+                                                    <label class="form-label small">Quantidade recebida</label>
+                                                    <input type="text" class="form-control form-control-sm" wire:model="recebimentoQuantidadeNova">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label small">Data do recebimento</label>
+                                                    <input type="date" class="form-control form-control-sm" wire:model="recebimentoDataNova" max="{{ now()->toDateString() }}">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label small">Local (opcional)</label>
+                                                    <input type="text" class="form-control form-control-sm" wire:model="recebimentoLocalNova">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label small">Observação (opcional)</label>
+                                                    <input type="text" class="form-control form-control-sm" wire:model="recebimentoObservacaoNova">
+                                                </div>
+                                            </div>
+                                            <button class="btn btn-sm btn-primary" wire:click="registrarRecebimento('{{ $pedidoItem->id }}')">Registrar recebimento</button>
+                                            <button type="button" class="btn btn-sm btn-link" wire:click="fecharRecebimentoItem">Cancelar</button>
+                                            @endif
+
+                                            {{-- Ciclo 19, Etapa 19.6, seção 33 — histórico completo, nunca só o estado final. --}}
+                                            @if($pedidoItem->recebimentos->isNotEmpty())
+                                            <table class="table table-sm mb-0 mt-2">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Data</th>
+                                                        <th class="text-end">Quantidade</th>
+                                                        <th>Registrado por</th>
+                                                        <th>Observação</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach($pedidoItem->recebimentos as $evento)
+                                                    <tr wire:key="recebimento-{{ $evento->id }}">
+                                                        <td class="small">{{ $evento->recebido_em->format('d/m/Y') }}</td>
+                                                        <td class="text-end small">{{ number_format((float) $evento->quantidade_recebida, 3, ',', '.') }}</td>
+                                                        <td class="small">{{ $evento->registradoPor ? "{$evento->registradoPor->first_name} {$evento->registradoPor->last_name}" : 'Usuário removido' }}</td>
+                                                        <td class="small text-muted">{{ $evento->observacao ?? '—' }}</td>
+                                                    </tr>
+                                                    @endforeach
+                                                </tbody>
+                                            </table>
+                                            @else
+                                            <p class="text-muted small mb-0 mt-2">Nenhum recebimento registrado ainda para este item.</p>
+                                            @endif
+                                        </div>
+                                    </td>
+                                </tr>
+                                @endif
+                                @empty
+                                <tr><td colspan="6" class="text-center text-muted py-3">Nenhum item adicionado ainda.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if($pedido->status->value === 'rascunho')
+                        @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                        <div class="row g-2 align-items-end mb-3">
+                            <div class="col-md-7">
+                                <label class="form-label small">Item da RC (saldo disponível)</label>
+                                <select class="form-select form-select-sm" wire:model="pedidoItemRcItemIdNovo">
+                                    <option value="">Selecione</option>
+                                    @foreach($this->rcItensComSaldoParaPedido as $rcItem)
+                                    <option value="{{ $rcItem->id }}">
+                                        {{ $rcItem->descricao_snapshot }} — saldo {{ number_format($rcItem->saldo_para_pedido, 3, ',', '.') }}
+                                    </option>
+                                    @endforeach
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">Quantidade</label>
+                                <input type="text" class="form-control form-control-sm" wire:model="pedidoItemQuantidadeNovo">
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-sm btn-primary w-100" wire:click="adicionarItemPedido">Adicionar</button>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-success" wire:click="emitirPedido">
+                            <i class="bx bx-send me-1"></i>Emitir Pedido/Ordem de Compra
+                        </button>
+                        @endif
+                        @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'excluir'))
+                        <button type="button" class="btn btn-outline-danger ms-2"
+                                onclick="confirmarAcao(this, { mensagem: 'Excluir este rascunho de Pedido/Ordem de Compra?', metodo: 'excluirPedidoRascunho', args: ['{{ $pedido->id }}'], icone: 'bx-trash' })">
+                            Excluir Rascunho
+                        </button>
+                        @endif
+                    @endif
+                    @endif
+                    @endif
+
+                    @endif
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" wire:click="fecharModalRc">Fechar</button>
+                </div>
+                @endif
             </div>
         </div>
     </div>

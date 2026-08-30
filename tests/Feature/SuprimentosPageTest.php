@@ -712,4 +712,41 @@ class SuprimentosPageTest extends TestCase
         $item = ItemSuprimento::where('nome', 'Item Com Fornecedor')->firstOrFail();
         $this->assertSame($fornecedor->id, $item->fornecedor_id);
     }
+
+    /**
+     * Ciclo 19, Etapa 19.3 — coluna "Demanda" (badge de RPs alocadas) e a
+     * seção "Demanda do Planejamento" do modal de detalhe, ambas leitura
+     * somente, nunca quebram a renderização da página legada.
+     */
+    public function test_pagina_mostra_demanda_do_planejamento_quando_pacote_tem_alocacao(): void
+    {
+        $documento = DocumentoEngenharia::create(['obra_id' => $this->obra->id, 'codigo' => 'ISO-001', 'descricao' => 'Isometrico']);
+        $revisao = $documento->revisoes()->create(['revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'E']);
+        $lista = \App\Models\ListaEngenharia::create(['documento_engenharia_revisao_id' => $revisao->id, 'tipo' => 'material', 'codigo' => 'LM-001']);
+        $itemTakeOff = \App\Models\ItemTakeOff::create(['lista_engenharia_id' => $lista->id, 'codigo' => 'A', 'descricao' => 'Tubo de Aço', 'quantidade' => 100]);
+
+        $rp = (new \App\Actions\Suprimentos\CriarRequisicaoPlanejamento())->execute($this->obra->id, null, $this->user->id);
+        $rpItem = (new \App\Actions\Suprimentos\AtualizarRascunhoRequisicaoPlanejamento())->adicionarItem($rp, $itemTakeOff->id, 60);
+        (new \App\Actions\Suprimentos\EmitirRequisicaoPlanejamento())->execute($rp->fresh(), $this->user);
+
+        $pacote = ItemSuprimento::create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id, 'nome' => 'Pacote Tubulação']);
+        (new \App\Actions\Suprimentos\AlocarRequisicaoAoPacote())->alocar($rpItem->fresh(), $pacote, 40);
+
+        $c = $this->componente();
+        $c->assertSee('1 RP');
+
+        $c->call('abrirDetalhe', $pacote->id)
+            ->assertSee('Demanda do Planejamento')
+            ->assertSee('Tubo de Aço')
+            ->assertDontSee('Sem demanda formal do Planejamento alocada');
+    }
+
+    public function test_pagina_mostra_sem_demanda_quando_pacote_nao_tem_alocacao(): void
+    {
+        $pacote = ItemSuprimento::create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id, 'nome' => 'Pacote Sem Demanda']);
+
+        $this->componente()
+            ->call('abrirDetalhe', $pacote->id)
+            ->assertSee('Sem demanda formal do Planejamento alocada');
+    }
 }

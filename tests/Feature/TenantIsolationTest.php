@@ -14,6 +14,7 @@ use App\Models\DocumentoEngenharia;
 use App\Models\DocumentoEngenhariaAtividade;
 use App\Models\DocumentoEngenhariaReprogramacao;
 use App\Models\Feedback;
+use App\Models\FamiliaMaterial;
 use App\Models\Feriado;
 use App\Models\FluxoSuprimento;
 use App\Models\Fornecedor;
@@ -26,6 +27,7 @@ use App\Models\GrdRecolhimento;
 use App\Models\CronogramaImportacao;
 use App\Models\ItemProntidao;
 use App\Models\ItemSuprimento;
+use App\Models\ItemTakeOff;
 use App\Models\LinhaBase;
 use App\Models\Plano;
 use App\Models\ProgramacaoSemanal;
@@ -35,6 +37,7 @@ use App\Models\ReportIndicadorSemana;
 use App\Models\Restricao;
 use App\Models\RevisaoLiberacao;
 use App\Models\Tenant;
+use App\Models\UnidadeMedida;
 use App\Models\User;
 use App\Models\Work;
 use App\Support\TenantContext;
@@ -658,5 +661,510 @@ class TenantIsolationTest extends TestCase
         $this->assertNull(GrdRecolhimento::find($ids['recolhimentoB']->id));
         $this->assertNull(GrdAlertaEntrega::find($ids['alertaEntregaB']->id));
         $this->assertNull(\App\Models\GrdAceiteEntrega::find($ids['aceiteEntregaB']->id));
+    }
+
+    /**
+     * Ciclo 19, Etapa 19.1 — Take Off (LM/LI) e os 2 catálogos novos
+     * (UnidadeMedida/FamiliaMaterial). ItemTakeOff não tem obra_id
+     * próprio (só chega à obra via revisão -> documento), mesma cadeia
+     * de dependência de GrdItem/DocumentoEngenhariaAtividade.
+     */
+    public function test_take_off_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $documentoB = DocumentoEngenharia::create([
+            'tenant_id' => $tenantB->id,
+            'obra_id' => $obraB->id,
+            'codigo' => 'DOC-B',
+            'descricao' => 'Documento B',
+        ]);
+        $revisaoB = $documentoB->revisoes()->create([
+            'tenant_id' => $tenantB->id,
+            'revisao' => 'R1',
+            'data_emissao' => now(),
+            'descricao' => 'Emissão B',
+        ]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'UN', 'nome' => 'Unidade B']);
+        $familiaB = FamiliaMaterial::create(['tenant_id' => $tenantB->id, 'nome' => 'Família B']);
+        $listaB = \App\Models\ListaEngenharia::create([
+            'tenant_id' => $tenantB->id,
+            'documento_engenharia_revisao_id' => $revisaoB->id,
+            'tipo' => 'material',
+            'codigo' => 'LM-001',
+        ]);
+        $itemB = ItemTakeOff::create([
+            'tenant_id' => $tenantB->id,
+            'lista_engenharia_id' => $listaB->id,
+            'descricao' => 'Item B',
+            'unidade_medida_id' => $unidadeB->id,
+            'familia_material_id' => $familiaB->id,
+            'quantidade' => 10,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\ListaEngenharia::find($listaB->id));
+        $this->assertNull(ItemTakeOff::find($itemB->id));
+        $this->assertNull(UnidadeMedida::find($unidadeB->id));
+        $this->assertNull(FamiliaMaterial::find($familiaB->id));
+    }
+
+    /** Ciclo 19, Etapa 19.2 — requisicoes_planejamento/requisicao_planejamento_itens. */
+    public function test_requisicao_planejamento_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $documentoB = DocumentoEngenharia::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DOC-B', 'descricao' => 'Documento B',
+        ]);
+        $revisaoB = $documentoB->revisoes()->create([
+            'tenant_id' => $tenantB->id, 'revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'Emissão B',
+        ]);
+        $listaB = \App\Models\ListaEngenharia::create([
+            'tenant_id' => $tenantB->id, 'documento_engenharia_revisao_id' => $revisaoB->id, 'tipo' => 'material', 'codigo' => 'LM-001',
+        ]);
+        $itemB = ItemTakeOff::create([
+            'tenant_id' => $tenantB->id, 'lista_engenharia_id' => $listaB->id, 'descricao' => 'Item B', 'quantidade' => 10,
+        ]);
+        $rpB = \App\Models\RequisicaoPlanejamento::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'status' => 'rascunho',
+        ]);
+        $rpItemB = \App\Models\RequisicaoPlanejamentoItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_id' => $rpB->id, 'item_take_off_id' => $itemB->id, 'quantidade_requisitada' => 5,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\RequisicaoPlanejamento::find($rpB->id));
+        $this->assertNull(\App\Models\RequisicaoPlanejamentoItem::find($rpItemB->id));
+    }
+
+    /** Ciclo 19, Etapa 19.3 — alocacoes_requisicao_pacote. */
+    public function test_alocacao_requisicao_pacote_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $documentoB = DocumentoEngenharia::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DOC-B', 'descricao' => 'Documento B',
+        ]);
+        $revisaoB = $documentoB->revisoes()->create([
+            'tenant_id' => $tenantB->id, 'revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'Emissão B',
+        ]);
+        $listaB = \App\Models\ListaEngenharia::create([
+            'tenant_id' => $tenantB->id, 'documento_engenharia_revisao_id' => $revisaoB->id, 'tipo' => 'material', 'codigo' => 'LM-001',
+        ]);
+        $itemB = ItemTakeOff::create([
+            'tenant_id' => $tenantB->id, 'lista_engenharia_id' => $listaB->id, 'descricao' => 'Item B', 'quantidade' => 10,
+        ]);
+        $rpB = \App\Models\RequisicaoPlanejamento::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'status' => 'rascunho',
+        ]);
+        $rpItemB = \App\Models\RequisicaoPlanejamentoItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_id' => $rpB->id, 'item_take_off_id' => $itemB->id, 'quantidade_requisitada' => 5,
+        ]);
+        $pacoteB = ItemSuprimento::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Pacote B']);
+        $alocacaoB = \App\Models\AlocacaoRequisicaoPacote::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_item_id' => $rpItemB->id, 'item_suprimento_id' => $pacoteB->id, 'quantidade_alocada' => 3,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\AlocacaoRequisicaoPacote::find($alocacaoB->id));
+    }
+
+    /** Ciclo 19, Etapa 19.4 — requisicoes_compra/requisicao_compra_itens/requisicao_compra_etapas. */
+    public function test_requisicao_compra_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $documentoB = DocumentoEngenharia::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DOC-B', 'descricao' => 'Documento B',
+        ]);
+        $revisaoB = $documentoB->revisoes()->create([
+            'tenant_id' => $tenantB->id, 'revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'Emissão B',
+        ]);
+        $listaB = \App\Models\ListaEngenharia::create([
+            'tenant_id' => $tenantB->id, 'documento_engenharia_revisao_id' => $revisaoB->id, 'tipo' => 'material', 'codigo' => 'LM-001',
+        ]);
+        $itemB = ItemTakeOff::create([
+            'tenant_id' => $tenantB->id, 'lista_engenharia_id' => $listaB->id, 'descricao' => 'Item B', 'quantidade' => 10,
+        ]);
+        $rpB = \App\Models\RequisicaoPlanejamento::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'status' => 'rascunho',
+        ]);
+        $rpItemB = \App\Models\RequisicaoPlanejamentoItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_id' => $rpB->id, 'item_take_off_id' => $itemB->id, 'quantidade_requisitada' => 5,
+        ]);
+        $pacoteB = ItemSuprimento::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Pacote B']);
+        $alocacaoB = \App\Models\AlocacaoRequisicaoPacote::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_item_id' => $rpItemB->id, 'item_suprimento_id' => $pacoteB->id, 'quantidade_alocada' => 5,
+        ]);
+        $rcB = \App\Models\RequisicaoCompra::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'item_suprimento_id' => $pacoteB->id, 'status' => 'rascunho',
+        ]);
+        $rcItemB = \App\Models\RequisicaoCompraItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_compra_id' => $rcB->id, 'alocacao_requisicao_pacote_id' => $alocacaoB->id, 'quantidade' => 3,
+        ]);
+        $rcEtapaB = \App\Models\RequisicaoCompraEtapa::create([
+            'tenant_id' => $tenantB->id, 'requisicao_compra_id' => $rcB->id, 'ordem' => 1,
+            'nome_snapshot' => 'Cotação', 'prazo_dias_snapshot' => 3, 'data_prevista' => now()->toDateString(),
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\RequisicaoCompra::find($rcB->id));
+        $this->assertNull(\App\Models\RequisicaoCompraItem::find($rcItemB->id));
+        $this->assertNull(\App\Models\RequisicaoCompraEtapa::find($rcEtapaB->id));
+    }
+
+    /** Ciclo 19, Etapa 19.5 — pedidos_compra/pedido_compra_itens. */
+    public function test_pedido_compra_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $documentoB = DocumentoEngenharia::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DOC-B', 'descricao' => 'Documento B',
+        ]);
+        $revisaoB = $documentoB->revisoes()->create([
+            'tenant_id' => $tenantB->id, 'revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'Emissão B',
+        ]);
+        $listaB = \App\Models\ListaEngenharia::create([
+            'tenant_id' => $tenantB->id, 'documento_engenharia_revisao_id' => $revisaoB->id, 'tipo' => 'material', 'codigo' => 'LM-001',
+        ]);
+        $itemB = ItemTakeOff::create([
+            'tenant_id' => $tenantB->id, 'lista_engenharia_id' => $listaB->id, 'descricao' => 'Item B', 'quantidade' => 10,
+        ]);
+        $rpB = \App\Models\RequisicaoPlanejamento::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'status' => 'rascunho',
+        ]);
+        $rpItemB = \App\Models\RequisicaoPlanejamentoItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_id' => $rpB->id, 'item_take_off_id' => $itemB->id, 'quantidade_requisitada' => 5,
+        ]);
+        $pacoteB = ItemSuprimento::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Pacote B']);
+        $alocacaoB = \App\Models\AlocacaoRequisicaoPacote::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_item_id' => $rpItemB->id, 'item_suprimento_id' => $pacoteB->id, 'quantidade_alocada' => 5,
+        ]);
+        $rcB = \App\Models\RequisicaoCompra::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'item_suprimento_id' => $pacoteB->id, 'status' => 'emitida',
+        ]);
+        $rcItemB = \App\Models\RequisicaoCompraItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_compra_id' => $rcB->id, 'alocacao_requisicao_pacote_id' => $alocacaoB->id, 'quantidade' => 3,
+        ]);
+        $fornecedorB = \App\Models\Fornecedor::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Fornecedor B',
+        ]);
+        $pedidoB = \App\Models\PedidoCompra::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'requisicao_compra_id' => $rcB->id,
+            'fornecedor_id' => $fornecedorB->id, 'status' => 'rascunho',
+        ]);
+        $pedidoItemB = \App\Models\PedidoCompraItem::create([
+            'tenant_id' => $tenantB->id, 'pedido_compra_id' => $pedidoB->id, 'requisicao_compra_item_id' => $rcItemB->id, 'quantidade_pedida' => 2,
+        ]);
+
+        $recebimentoB = \App\Models\RecebimentoPedido::create([
+            'tenant_id' => $tenantB->id, 'pedido_compra_item_id' => $pedidoItemB->id,
+            'quantidade_recebida' => 1, 'recebido_em' => now(),
+        ]);
+
+        // Ciclo 19, Etapa 19.7 — Restrição automática da cadeia formal.
+        $restricaoAutomaticaB = \App\Models\Restricao::create([
+            'tenant_id' => $tenantB->id, 'atividade_id' => Atividade::factory()->create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id])->id,
+            'descricao' => 'Restrição automática B', 'bloqueante' => true, 'status' => 'aberta', 'aberta_em' => now(),
+            'origem_cadeia_suprimento_id' => $pacoteB->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\PedidoCompra::find($pedidoB->id));
+        $this->assertNull(\App\Models\PedidoCompraItem::find($pedidoItemB->id));
+        $this->assertNull(\App\Models\RecebimentoPedido::find($recebimentoB->id));
+        $this->assertNull(\App\Models\Restricao::find($restricaoAutomaticaB->id));
+    }
+
+    /** Ciclo 20, Etapa 20.1 — materiais/locais_estoque/unidades_estoque/movimentacoes_estoque. */
+    public function test_estoque_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+        $localB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Local B', 'tipo' => 'almoxarifado', 'ativo' => true,
+        ]);
+        $unidadeEstoqueB = \App\Models\UnidadeEstoque::create([
+            'tenant_id' => $tenantB->id, 'material_id' => $materialB->id, 'local_estoque_id' => $localB->id, 'codigo_lote' => 'B-001',
+        ]);
+        $movimentacaoB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'entrada',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localB->id, 'unidade_estoque_id' => $unidadeEstoqueB->id,
+            'quantidade' => 100, 'ocorrido_em' => now(),
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\Material::find($materialB->id));
+        $this->assertNull(\App\Models\LocalEstoque::find($localB->id));
+        $this->assertNull(\App\Models\UnidadeEstoque::find($unidadeEstoqueB->id));
+        $this->assertNull(\App\Models\MovimentacaoEstoque::find($movimentacaoB->id));
+    }
+
+    public function test_destinacao_planejada_material_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-DEST-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+        $pacoteB = \App\Models\ItemSuprimento::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Pacote B']);
+        $frenteB = \App\Models\FrenteTrabalho::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Frente B']);
+        $destinacaoB = \App\Models\DestinacaoPlanejadaMaterial::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'item_suprimento_id' => $pacoteB->id,
+            'material_id' => $materialB->id, 'frente_trabalho_id' => $frenteB->id, 'quantidade_planejada' => 100,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\DestinacaoPlanejadaMaterial::find($destinacaoB->id));
+    }
+
+    public function test_reserva_estoque_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-RES-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+        $localB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Local B', 'tipo' => 'almoxarifado', 'ativo' => true,
+        ]);
+        $pacoteB = \App\Models\ItemSuprimento::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Pacote B']);
+        $reservaB = \App\Models\ReservaEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'item_suprimento_id' => $pacoteB->id, 'material_id' => $materialB->id,
+            'local_estoque_id' => $localB->id, 'quantidade' => 50, 'status' => 'ativa',
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\ReservaEstoque::find($reservaB->id));
+    }
+
+    public function test_aplicacao_material_estoque_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-APL-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+        $localB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Local B', 'tipo' => 'almoxarifado', 'ativo' => true,
+        ]);
+        $frenteB = \App\Models\FrenteTrabalho::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Frente B']);
+        $movimentacaoB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'saida',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localB->id,
+            'quantidade' => 10, 'ocorrido_em' => now(),
+        ]);
+        $aplicacaoB = \App\Models\AplicacaoMaterialEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'movimentacao_estoque_id' => $movimentacaoB->id,
+            'frente_trabalho_id' => $frenteB->id, 'quantidade' => 10, 'aplicado_em' => now(),
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\AplicacaoMaterialEstoque::find($aplicacaoB->id));
+    }
+
+    public function test_ordem_industrializacao_e_entidades_filhas_sao_escopadas_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-IND-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+        $fornecedorB = \App\Models\Fornecedor::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Fornecedor B']);
+        $localProprioB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Local Próprio B', 'tipo' => 'almoxarifado', 'ativo' => true,
+        ]);
+        $localTerceiroB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Local Terceiro B', 'tipo' => 'terceiro',
+            'fornecedor_id' => $fornecedorB->id, 'ativo' => true,
+        ]);
+        $ordemB = \App\Models\OrdemIndustrializacao::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'fornecedor_id' => $fornecedorB->id,
+            'local_terceiro_id' => $localTerceiroB->id, 'status' => 'rascunho',
+        ]);
+        $produtoB = \App\Models\ProdutoIndustrializado::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'ordem_industrializacao_id' => $ordemB->id,
+            'material_id' => $materialB->id, 'quantidade_prevista' => 10,
+        ]);
+        $ordemB->update(['status' => 'emitida', 'numero' => 1]);
+        $saidaB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'saida',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localProprioB->id, 'quantidade' => 10, 'ocorrido_em' => now(),
+        ]);
+        $entradaB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'entrada',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localTerceiroB->id, 'quantidade' => 10, 'ocorrido_em' => now(),
+        ]);
+        $remessaB = \App\Models\RemessaIndustrializacao::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'ordem_industrializacao_id' => $ordemB->id,
+            'material_id' => $materialB->id, 'direcao' => 'envio', 'quantidade' => 10, 'ocorrido_em' => now(),
+            'movimentacao_saida_id' => $saidaB->id, 'movimentacao_entrada_id' => $entradaB->id,
+        ]);
+        $consumoMovB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'saida',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localTerceiroB->id, 'quantidade' => 5, 'ocorrido_em' => now(),
+        ]);
+        $consumoB = \App\Models\ProdutoIndustrializadoConsumo::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'produto_industrializado_id' => $produtoB->id,
+            'remessa_industrializacao_id' => $remessaB->id, 'quantidade_consumida' => 5, 'ocorrido_em' => now(),
+            'movimentacao_consumo_id' => $consumoMovB->id,
+        ]);
+        $producaoMovB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'entrada',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localTerceiroB->id, 'quantidade' => 3, 'ocorrido_em' => now(),
+        ]);
+        $producaoB = \App\Models\ProducaoIndustrializada::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'produto_industrializado_id' => $produtoB->id,
+            'quantidade' => 3, 'ocorrido_em' => now(), 'movimentacao_entrada_id' => $producaoMovB->id,
+        ]);
+        $entregaSaidaB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'saida',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localTerceiroB->id, 'quantidade' => 3, 'ocorrido_em' => now(),
+        ]);
+        $entregaEntradaB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'entrada',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localProprioB->id, 'quantidade' => 3, 'ocorrido_em' => now(),
+        ]);
+        $entregaB = \App\Models\EntregaProdutoIndustrializado::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'produto_industrializado_id' => $produtoB->id,
+            'quantidade' => 3, 'modalidade' => 'retorno_estoque_obra', 'ocorrido_em' => now(),
+            'movimentacao_saida_terceiro_id' => $entregaSaidaB->id, 'movimentacao_entrada_destino_id' => $entregaEntradaB->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\OrdemIndustrializacao::find($ordemB->id));
+        $this->assertNull(\App\Models\ProdutoIndustrializado::find($produtoB->id));
+        $this->assertNull(\App\Models\RemessaIndustrializacao::find($remessaB->id));
+        $this->assertNull(\App\Models\ProdutoIndustrializadoConsumo::find($consumoB->id));
+        $this->assertNull(\App\Models\ProducaoIndustrializada::find($producaoB->id));
+        $this->assertNull(\App\Models\EntregaProdutoIndustrializado::find($entregaB->id));
+    }
+
+    public function test_transferencia_estoque_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-TRANSF-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+        $localOrigemB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Origem B', 'tipo' => 'almoxarifado', 'ativo' => true,
+        ]);
+        $localDestinoB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Destino B', 'tipo' => 'patio', 'ativo' => true,
+        ]);
+        $saidaB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'saida',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localOrigemB->id, 'quantidade' => 10, 'ocorrido_em' => now(),
+        ]);
+        $entradaB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'entrada',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localDestinoB->id, 'quantidade' => 10, 'ocorrido_em' => now(),
+        ]);
+        $transferenciaB = \App\Models\TransferenciaEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'material_id' => $materialB->id,
+            'local_origem_id' => $localOrigemB->id, 'local_destino_id' => $localDestinoB->id,
+            'quantidade' => 10, 'ocorrido_em' => now(),
+            'movimentacao_saida_id' => $saidaB->id, 'movimentacao_entrada_id' => $entradaB->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\TransferenciaEstoque::find($transferenciaB->id));
+    }
+
+    public function test_inventario_estoque_e_entidades_filhas_sao_escopadas_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-INV-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+        $localB = \App\Models\LocalEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Almox B', 'tipo' => 'almoxarifado', 'ativo' => true,
+        ]);
+        $entradaB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'entrada',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localB->id, 'quantidade' => 100, 'ocorrido_em' => now(),
+        ]);
+        $inventarioB = \App\Models\InventarioEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'local_estoque_id' => $localB->id,
+            'status' => 'em_analise', 'numero' => 1,
+        ]);
+        $itemB = \App\Models\InventarioItem::create([
+            'tenant_id' => $tenantB->id, 'inventario_estoque_id' => $inventarioB->id, 'material_id' => $materialB->id,
+            'unidade_estoque_id' => null, 'quantidade_sistema_snapshot' => 100, 'created_at' => now(),
+        ]);
+        $contagemB = \App\Models\ContagemInventario::create([
+            'tenant_id' => $tenantB->id, 'inventario_item_id' => $itemB->id, 'quantidade_contada' => 97,
+            'contado_em' => now(), 'contador_id' => $userB->id,
+        ]);
+        $ajusteMovB = \App\Models\MovimentacaoEstoque::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'tipo' => 'saida',
+            'material_id' => $materialB->id, 'local_estoque_id' => $localB->id, 'quantidade' => 3, 'ocorrido_em' => now(),
+        ]);
+        $ajusteB = \App\Models\InventarioAjuste::create([
+            'tenant_id' => $tenantB->id, 'inventario_item_id' => $itemB->id, 'movimentacao_estoque_id' => $ajusteMovB->id,
+            'quantidade' => 3, 'justificativa' => 'Falta identificada na contagem física.', 'aprovado_por' => $userB->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\InventarioEstoque::find($inventarioB->id));
+        $this->assertNull(\App\Models\InventarioItem::find($itemB->id));
+        $this->assertNull(\App\Models\ContagemInventario::find($contagemB->id));
+        $this->assertNull(\App\Models\InventarioAjuste::find($ajusteB->id));
     }
 }

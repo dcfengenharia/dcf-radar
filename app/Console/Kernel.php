@@ -15,6 +15,15 @@ class Kernel extends ConsoleKernel
         // $schedule->command('inspire')->hourly();
 
         $schedule->command('suprimentos:recalcular-status')->dailyAt('05:00');
+
+        // Ciclo 19, Etapa 19.7 — mesmo bloco diário de Suprimentos (05h),
+        // logo após o recálculo do mecanismo legado — analogia direta:
+        // ambos existem pela MESMA razão (deriva pura de calendário, sem
+        // nenhuma mutação de model), só que sobre domínios paralelos e
+        // nunca sincronizados entre si (ver App\Support\
+        // SincronizarRestricaoCadeiaSuprimento).
+        $schedule->command('suprimentos:sincronizar-cadeia-formal')->dailyAt('05:10');
+
         $schedule->command('reports:gerar-automatico')->dailyAt('06:00');
         $schedule->command('assinaturas:processar')->dailyAt('07:00');
 

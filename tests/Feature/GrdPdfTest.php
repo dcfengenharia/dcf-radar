@@ -43,7 +43,15 @@ class GrdPdfTest extends TestCase
     {
         parent::setUp();
         $this->tenant = Tenant::factory()->create();
-        $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);
+        // Nome determinístico (não Faker) — evita flake quando o Faker
+        // sorteia um nome com apóstrofo (ex.: "O'Hara"): o HTML renderizado
+        // escapa a aspas simples, então a comparação de string crua contra
+        // "{$first} {$last}" falharia por escaping, não por bug de produto.
+        $this->user = User::factory()->create([
+            'tenant_id' => $this->tenant->id,
+            'first_name' => 'Usuario',
+            'last_name' => 'Teste',
+        ]);
         $this->obra = Work::factory()->create(['tenant_id' => $this->tenant->id]);
         $this->vincularObra($this->obra, $this->user, Papel::Admin->value);
         $this->actingAs($this->user);

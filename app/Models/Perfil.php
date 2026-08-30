@@ -53,6 +53,66 @@ class Perfil extends Model
         'report.relatorios' => ['criar' => Papel::GerentePlanejamento, 'editar' => Papel::GerentePlanejamento, 'excluir' => Papel::GerentePlanejamento],
         'report.importar_avanco' => ['criar' => Papel::GerentePlanejamento, 'editar' => Papel::GerentePlanejamento, 'excluir' => Papel::GerentePlanejamento],
         'suprimentos.mapa' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],
+        // Ciclo 19, Etapa 19.2 — só 'editar' (decisão do usuário: sem
+        // granularidade de criar/excluir/emitir separada). "Emitida
+        // exclusivamente pelo setor de Planejamento" — mesmo limiar de
+        // obras.importar_cronograma/linhas_base/curvas, todas também
+        // responsabilidade do Planejamento.
+        'planejamento.requisicoes' => ['editar' => Papel::GerentePlanejamento],
+        // Ciclo 20, Etapa 20.1 — mesmo limiar de suprimentos.mapa (página
+        // irmã mais próxima em espírito: operação de campo registrando um
+        // fato quantitativo sobre a mesma cadeia de suprimentos). Sem
+        // Papel legado dedicado a "Almoxarifado" — Encarregado é o nível
+        // operacional mais próximo já usado pra ações de campo no
+        // catálogo.
+        'estoque.movimentacao' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],
+        // Ciclo 20, Etapa 20.2 — mesmo limiar de planejamento.requisicoes
+        // (só 'editar', cobrindo criar/alterar/remover/reservar/liberar):
+        // Destinação Planejada é uma decisão de como a demanda formal se
+        // reparte entre Frentes — mesma seniority de decidir uma RP.
+        // Reserva (física) nasce sob o MESMO slug por decisão do pedido
+        // (Seção 36, "Planejamento/Reserva" é um único guarda-chuva) —
+        // limiar revisável no futuro se o uso operacional do dia a dia
+        // mostrar que reservar fisicamente pede um nível mais baixo que
+        // planejar a divisão por Frente.
+        'estoque.reserva' => ['editar' => Papel::GerentePlanejamento],
+        // Ciclo 20, Etapa 20.4 — decisão do usuário: Encarregado
+        // para criar/editar a Aplicação/Conciliação — é uma
+        // confirmação operacional de campo ("onde foi aplicado"),
+        // mesma natureza de quem já registra a Saída física. Slug
+        // PRÓPRIO, nunca reaproveita estoque.movimentacao
+        // (Almoxarifado registra) nem estoque.reserva (Planejamento
+        // decide destinação) — as 3 responsabilidades ficam
+        // deliberadamente separadas (Seção 40 do pedido). Sem
+        // workflow de aprovação nesta etapa. "excluir" bumped pra
+        // GerentePlanejamento (nunca Encarregado, mesmo padrão de
+        // estoque.movimentacao) — achado real de regressão: o
+        // catálogo tem uma invariante já testada
+        // (MigracaoPerfisPadraoTest::
+        // test_encarregado_nao_tem_nenhuma_permissao_de_excluir)
+        // de que Encarregado NUNCA recebe "excluir" em nenhum slug
+        // do catálogo — a decisão do usuário só cobria criar/editar,
+        // excluir=Encarregado teria sido uma extrapolação minha
+        // que quebrava essa invariante.
+        'estoque.conciliacao' => ['criar' => Papel::Encarregado, 'editar' => Papel::Encarregado, 'excluir' => Papel::GerentePlanejamento],
+        // Ciclo 20, Etapa 20.5 — slug PRÓPRIO, decisão do usuário
+        // (Seção 41/42): criar=Encarregado (registrar remessa/
+        // retorno/produção/entrega físicos, mesmo nível de
+        // estoque.movimentacao/estoque.conciliacao), editar=
+        // Engenheiro (criar Ordem, vincular Documento de fabricação,
+        // declarar Produtos previstos), excluir=GerentePlanejamento
+        // (nunca Encarregado — mesma invariante já corrigida em
+        // 20.4: MigracaoPerfisPadraoTest::
+        // test_encarregado_nao_tem_nenhuma_permissao_de_excluir).
+        'estoque.industrializacao' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],
+        // Ciclo 20, Etapa 20.7 — criar=Encarregado (abre o Inventário e
+        // registra contagens/recontagens), editar=Engenheiro (move
+        // Em Contagem→Em Análise, conclui, e é UMA das duas permissões
+        // exigidas pra aprovar Ajuste — a outra é
+        // estoque.movimentacao|editar, checada em conjunto no Livewire,
+        // nunca dentro da Action), excluir=GerentePlanejamento (cancela
+        // — nunca Encarregado, mesma invariante de sempre).
+        'estoque.inventario' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],
         'cadastros.clientes' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         'cadastros.obras' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         'cadastros.categorias_restricao' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],

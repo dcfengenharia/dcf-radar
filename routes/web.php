@@ -240,6 +240,12 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
             Route::get('/suprimentos', fn() => view('app.radar.suprimentos'))
                 ->name('radar.suprimentos');
 
+            // Ciclo 20, Etapa 20.1 — Estoque (fundação: Material/Local/entrada),
+            // mesmo padrão de radar.suprimentos (obra-scoped, dentro do
+            // contexto de obra ativa).
+            Route::get('/estoque', fn() => view('app.radar.estoque'))
+                ->name('radar.estoque');
+
             Route::get('/plano-acao', fn() => view('app.radar.plano-acao'))
                 ->name('radar.plano-acao');
 
@@ -255,6 +261,15 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
 
     });
 
+    // PLANEJAMENTO — Ciclo 19, Etapa 19.2. Mesmo mecanismo de obra ativa
+    // na sessão do grupo RADAR (`obra.context`), área própria (não
+    // aninhada em /radar): Requisição do Planejamento é responsabilidade
+    // do Planejamento, não do Quadro de Restrições nem de Engenharia.
+    Route::prefix('planejamento')->middleware('obra.context')->group(function () {
+        Route::get('/requisicoes', fn() => view('app.planejamento.requisicoes-planejamento'))
+            ->name('planejamento.requisicoes');
+    });
+
     // ENGENHARIA — página com seletor de obra próprio (mesmo padrão dos
     // Cadastros), não depende de uma obra ativa na sessão.
     Route::prefix('engenharia')->group(function () {
@@ -265,6 +280,11 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
         // de /pacotes (reaproveita a mesma permissão engenharia.pacotes).
         Route::get('/grds', fn() => view('app.engenharia.grds'))
             ->name('engenharia.grds');
+
+        // Ciclo 19, Etapa 19.1 — mesmo padrão de seletor de obra próprio
+        // (reaproveita a mesma permissão engenharia.pacotes, nenhum slug novo).
+        Route::get('/take-off', fn() => view('app.engenharia.take-off'))
+            ->name('engenharia.take-off');
     });
 
 });

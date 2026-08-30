@@ -11,6 +11,7 @@ use App\Models\InconsistenciaAvanco;
 use App\Models\PacoteTrabalho;
 use App\Models\PlanoAcao;
 use App\Models\Report;
+use App\Models\RequisicaoPlanejamento;
 use App\Models\Restricao;
 use App\Models\Work;
 use App\Policies\AtividadePolicy;
@@ -22,6 +23,7 @@ use App\Policies\InconsistenciaAvancoPolicy;
 use App\Policies\PacoteTrabalhoPolicy;
 use App\Policies\PlanoAcaoPolicy;
 use App\Policies\ReportPolicy;
+use App\Policies\RequisicaoPlanejamentoPolicy;
 use App\Policies\RestricaoPolicy;
 use App\Policies\WorkPolicy;
 use App\Models\Tenant;
@@ -44,6 +46,7 @@ class AuthServiceProvider extends ServiceProvider
         CronogramaImportacao::class => CronogramaImportacaoPolicy::class,
         PlanoAcao::class => PlanoAcaoPolicy::class,
         InconsistenciaAvanco::class => InconsistenciaAvancoPolicy::class,
+        RequisicaoPlanejamento::class => RequisicaoPlanejamentoPolicy::class,
     ];
 
     public function boot(): void

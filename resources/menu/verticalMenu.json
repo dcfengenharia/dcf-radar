@@ -158,7 +158,24 @@
       "funcionalidade": "engenharia.pacotes"
     },
     {
-      "menuHeader": "5. SUPRIMENTOS"
+      "url": "/app/engenharia/take-off",
+      "name": "Take Off",
+      "icon": "menu-icon tf-icons bx bx-list-check",
+      "slug": "engenharia.pacotes",
+      "funcionalidade": "engenharia.pacotes"
+    },
+    {
+      "menuHeader": "5. PLANEJAMENTO"
+    },
+    {
+      "url": "/app/planejamento/requisicoes",
+      "name": "Requisições do Planejamento",
+      "icon": "menu-icon tf-icons bx bx-clipboard",
+      "slug": "planejamento.requisicoes",
+      "funcionalidade": "planejamento.requisicoes"
+    },
+    {
+      "menuHeader": "6. SUPRIMENTOS"
     },
     {
       "url": "/app/radar/suprimentos",
@@ -166,6 +183,16 @@
       "icon": "menu-icon tf-icons bx bx-package",
       "slug": "radar.suprimentos",
       "funcionalidade": "suprimentos.mapa"
+    },
+    {
+      "menuHeader": "7. ESTOQUE"
+    },
+    {
+      "url": "/app/radar/estoque",
+      "name": "Estoque",
+      "icon": "menu-icon tf-icons bx bx-cube",
+      "slug": "radar.estoque",
+      "funcionalidade": "estoque.movimentacao"
     },
     {
       "menuHeader": "CONFIGURAÇÕES"

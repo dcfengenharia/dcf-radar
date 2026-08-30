@@ -62,6 +62,66 @@ class CatalogoFuncionalidades
 
             ['slug' => 'suprimentos.mapa', 'nome' => 'Mapa de Suprimentos', 'secao' => 'Suprimentos', 'escopo' => self::ESCOPO_OBRA],
 
+            // Ciclo 19, Etapa 19.2 — slug próprio, deliberadamente
+            // separado de 'restricoes.*' e 'suprimentos.*' (decisão do
+            // usuário): a formalização da Requisição do Planejamento é
+            // responsabilidade do Planejamento, não do Quadro de
+            // Restrições nem de Suprimentos (que só passa a consumir essa
+            // demanda em etapas futuras).
+            ['slug' => 'planejamento.requisicoes', 'nome' => 'Requisições do Planejamento', 'secao' => 'Planejamento', 'escopo' => self::ESCOPO_OBRA],
+
+            // Ciclo 20, Etapa 20.1 — decisão do usuário (investigação
+            // 20.0, D20): catálogo estoque.* previsto com múltiplos slugs
+            // futuros (estoque.reserva/conciliacao/inventario, 20.2+) —
+            // nesta etapa só o necessário pra fundação física
+            // (Material/LocalEstoque/entrada). 'editar'/'excluir' também
+            // cobrem cadastro de Material/Local (decisão tomada durante a
+            // implementação: nenhum slug estoque.cadastros foi aprovado
+            // separadamente, e a arquitetura já uniforme de 4 ações por
+            // funcionalidade comporta os dois usos sem ambiguidade real).
+            ['slug' => 'estoque.movimentacao', 'nome' => 'Estoque', 'secao' => 'Estoque', 'escopo' => self::ESCOPO_OBRA],
+
+            // Ciclo 20, Etapa 20.2 — 'estoque.reserva' ativado conforme já
+            // previsto acima. Cobre TANTO DestinacaoPlanejadaMaterial
+            // (camada lógica — quanto planejar por Frente) QUANTO
+            // ReservaEstoque (camada física — quanto comprometer de
+            // saldo) — decisão do pedido (Seção 36): as duas nascem juntas
+            // sob o guarda-chuva "Planejamento/Reserva", nunca reaproveita
+            // 'estoque.movimentacao' (que é sobre entrada física bruta,
+            // responsabilidade operacional distinta). 'conciliacao'/
+            // 'inventario' continuam reservados pra fases futuras.
+            ['slug' => 'estoque.reserva', 'nome' => 'Planejamento / Reservas', 'secao' => 'Estoque', 'escopo' => self::ESCOPO_OBRA],
+
+            // Ciclo 20, Etapa 20.4 — 'estoque.conciliacao' ativado:
+            // cobre AplicacaoMaterialEstoque (onde uma Saída física foi
+            // efetivamente utilizada) — slug independente de
+            // 'estoque.movimentacao'/'estoque.reserva' (Seção 40 do
+            // pedido: Almoxarifado registra Saída, Produção/Campo
+            // confirma Aplicação, Planejamento só acompanha).
+            // 'inventario' continua reservado pra fase futura.
+            ['slug' => 'estoque.conciliacao', 'nome' => 'Conciliação / Aplicação', 'secao' => 'Estoque', 'escopo' => self::ESCOPO_OBRA],
+
+            // Ciclo 20, Etapa 20.5 — 'estoque.industrializacao' ativado:
+            // cobre OrdemIndustrializacao/RemessaIndustrializacao/
+            // ProdutoIndustrializado/genealogia — custódia em terceiro
+            // pra fabricação/industrialização externa. Slug
+            // independente de 'estoque.movimentacao'/'estoque.reserva'/
+            // 'estoque.conciliacao'/'estoque.inventario' (responsabilidades
+            // operacionais distintas).
+            ['slug' => 'estoque.industrializacao', 'nome' => 'Industrialização em Terceiros', 'secao' => 'Estoque', 'escopo' => self::ESCOPO_OBRA],
+
+            // Ciclo 20, Etapa 20.7 — 'estoque.inventario' ativado: cobre
+            // InventarioEstoque/InventarioItem/ContagemInventario/
+            // InventarioAjuste. Separado de 'estoque.movimentacao' de
+            // propósito (STOP-and-ask, decisão do usuário) — aprovar um
+            // Ajuste de Inventário exige DUPLA autorização
+            // ('estoque.inventario|editar' E 'estoque.movimentacao|editar'
+            // simultaneamente, mesmo padrão já usado em
+            // PlanoAcao::transformarEmRestricoes(), Ciclo 11) — quem
+            // administra o Inventário não tem, por si só, autoridade sobre
+            // o ledger físico que um Ajuste altera.
+            ['slug' => 'estoque.inventario', 'nome' => 'Inventário', 'secao' => 'Estoque', 'escopo' => self::ESCOPO_OBRA],
+
             ['slug' => 'cadastros.clientes', 'nome' => 'Clientes', 'secao' => 'Cadastros', 'escopo' => self::ESCOPO_TENANT],
             ['slug' => 'cadastros.obras', 'nome' => 'Obras (cadastro)', 'secao' => 'Cadastros', 'escopo' => self::ESCOPO_TENANT],
             ['slug' => 'cadastros.categorias_restricao', 'nome' => 'Tipos de Restrição', 'secao' => 'Cadastros', 'escopo' => self::ESCOPO_TENANT],

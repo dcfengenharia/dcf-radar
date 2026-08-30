@@ -34,6 +34,7 @@ use App\Models\ProgramacaoSemanalItem;
 use App\Models\Restricao;
 use App\Models\Work;
 use App\Services\DetectorInconsistenciasAvanco;
+use App\Support\SincronizarRestricaoCadeiaSuprimento;
 use App\Support\SincronizarRestricaoSuprimento;
 use App\Support\TextoCustomizado;
 use Carbon\Carbon;
@@ -570,6 +571,12 @@ class MsProjectImporter implements ImportadorCronograma
             // Linha de Base) — recalcula Tendência/status/restrição de
             // qualquer item de suprimento vinculado às atividades tocadas.
             SincronizarRestricaoSuprimento::aplicarParaAtividades(array_values($mapaAtividades), $userId);
+
+            // Ciclo 19, Etapa 19.7, seção 43 — mesmo evento, cadeia
+            // PARALELA (nunca a mesma Restrição): necessidade por
+            // Atividade pode ter mudado, exigindo reabrir/resolver a
+            // Restrição automática da cadeia formal de Suprimentos.
+            SincronizarRestricaoCadeiaSuprimento::aplicarParaAtividades(array_values($mapaAtividades), $userId);
 
             return $importacao;
         });

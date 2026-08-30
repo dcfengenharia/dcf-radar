@@ -26,7 +26,7 @@
 <div class="card bg-transparent border-0 my-4 shadow-none">
   <div class="card-body row p-0 pb-3">
     <div class="col-12 col-md-8 card-separator">
-      <h3>Fala comigo bb {{ Auth::user()->first_name }} 👋🏻 </h3>
+      <h3>Fala comigo {{ Auth::user()->first_name }} 👋🏻 </h3>
       <div class="col-12 col-lg-7">
         <p>Your progress this week is Awesome. let's keep it up and get a lot of points reward !</p>
       </div>

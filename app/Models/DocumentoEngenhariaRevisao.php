@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class DocumentoEngenhariaRevisao extends Model
@@ -60,6 +61,35 @@ class DocumentoEngenhariaRevisao extends Model
     public function itensGrd(): HasMany
     {
         return $this->hasMany(GrdItem::class, 'documento_engenharia_revisao_id');
+    }
+
+    /**
+     * Ciclo 19, Etapa 19.1.CORREÇÃO — Listas de Take Off (LM/LI) desta
+     * revisão exata. Nunca resolvido pela revisão vigente do Documento —
+     * cada revisão tem suas próprias listas, independentes das demais
+     * (D1). Uma revisão pode ter VÁRIAS listas do mesmo tipo (LM-001,
+     * LM-002, ambas Material) — corrigido na 19.1.CORREÇÃO, a 19.1
+     * original não tinha essa entidade intermediária.
+     */
+    public function listasEngenharia(): HasMany
+    {
+        return $this->hasMany(ListaEngenharia::class, 'documento_engenharia_revisao_id');
+    }
+
+    /**
+     * Conveniência de leitura — todos os itens de TODAS as listas desta
+     * revisão, atravessando `ListaEngenharia`. Nunca usado pra
+     * escrita/identidade (isso é sempre por lista); só pra telas que
+     * precisam do total bruto sem se importar com qual lista.
+     */
+    public function itensTakeOff(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            ItemTakeOff::class,
+            ListaEngenharia::class,
+            'documento_engenharia_revisao_id',
+            'lista_engenharia_id'
+        );
     }
 
     /**

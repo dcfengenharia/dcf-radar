@@ -18,7 +18,10 @@ $configData = Helper::appClasses();
     <div id="landingHero" class="section-py landing-hero position-relative">
       <div class="container">
         <div class="hero-text-box text-center">
-          <h1 class="text-primary hero-title display-4 fw-bold">Assuma o controle absoluto dos seus prazos </h1>
+          <h1 class="text-primary hero-title display-4 fw-bold">
+            O Cronograma mostra QUANDO fazer. <br>
+            A DCF.eng mostra se é possível fazer.
+          </h1>
           <h2 class="hero-sub-title h6 mb-4 pb-1">
             A maioria dos projetos morre antes mesmo de começar. <br class="d-none d-lg-block" />
             Vamos além de barras de Gantt estáticas: trazemos uma <mark>visão ampla</mark> do que é planejamento e transformamos os prazos do papel em ações reais.
