@@ -601,7 +601,12 @@ class EstoqueSaidaCorrecaoTest extends TestCase
     {
         $base = base_path('app');
         $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS));
-        $proibidos = ['case Industrializacao', 'case Divergencia', 'case Inventario', 'case Transferencia', 'case Ajuste'];
+        // Ciclo 21, Etapa 21.2 — mesmo achado/mesma correção de
+        // EstoqueSaidaTest::test_ar_...(): espaço à direita exige o nome
+        // EXATO do case, fechando a colisão de prefixo com
+        // App\Enums\TipoSituacaoGerencial (enum não relacionado, catálogo
+        // de situações gerenciais) sem enfraquecer o invariante real.
+        $proibidos = ['case Industrializacao ', 'case Divergencia ', 'case Inventario ', 'case Transferencia ', 'case Ajuste '];
 
         $encontrados = [];
         foreach ($iterator as $file) {

@@ -194,7 +194,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $material = $this->criarMaterial();
         $item = $this->criarItemTakeOffOrfao(null);
 
-        $this->associarMaterial->execute($item, $material);
+        $this->associarMaterial->execute($this->obra, $item,$material);
 
         $this->assertSame($material->id, $item->fresh()->material_id);
     }
@@ -205,7 +205,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $item = $this->criarItemTakeOffOrfao(null);
 
         $this->expectException(AssociacaoMaterialInvalidaException::class);
-        $this->associarMaterial->execute($item, $material);
+        $this->associarMaterial->execute($this->obra, $item,$material);
     }
 
     public function test_c_cross_tenant_bloqueia_associacao(): void
@@ -222,7 +222,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $item = $this->criarItemTakeOffOrfao(null);
 
         $this->expectException(AssociacaoMaterialInvalidaException::class);
-        $this->associarMaterial->execute($item, $materialOutroTenant);
+        $this->associarMaterial->execute($this->obra, $item,$materialOutroTenant);
     }
 
     // =========================================================
@@ -235,7 +235,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $b = $this->criarMaterial(['codigo' => 'B-D']);
         $item = $this->criarItemTakeOffOrfao($a);
 
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
 
         $this->assertSame($b->id, $item->fresh()->material_id);
     }
@@ -247,7 +247,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $item = $this->criarItemTakeOffOrfao($a);
         $this->criarRpItemEmitido($item, 100);
 
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
 
         $this->assertSame($b->id, $item->fresh()->material_id);
     }
@@ -262,7 +262,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $rc = $this->criarRcRascunho($alocacao, 100);
         $this->emitirRc($rc);
 
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
 
         $this->assertSame($b->id, $item->fresh()->material_id, 'RC Emitida sozinha NAO deveria congelar — só Pedido Emitido.');
     }
@@ -278,7 +278,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $rcEmitida = $this->emitirRc($rc);
         $this->criarPedidoRascunho($rcEmitida, 100); // Pedido continua Rascunho
 
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
 
         $this->assertSame($b->id, $item->fresh()->material_id, 'Pedido Rascunho NAO deveria congelar — só Pedido Emitido.');
     }
@@ -298,7 +298,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $this->assertFalse(PoliticaAssociacaoMaterial::podeAlterarMaterial($item->fresh()));
 
         $this->expectException(ItemTakeOffMaterialImutavelException::class);
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
     }
 
     public function test_g_recebimento_bloqueia_troca_cenario_completo_do_c2(): void
@@ -315,7 +315,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $recebimento = $this->registrarRecebimento->execute($pedidoItem, 100, Carbon::parse('2026-12-10'), $this->user);
 
         $this->expectException(ItemTakeOffMaterialImutavelException::class);
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
 
         // A entrada, quando registrada, deve ser do Material A original.
     }
@@ -353,7 +353,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $this->registrarEntrada->execute($recebimento, $this->criarLocal(), 100, Carbon::today(), $this->user);
 
         $this->expectException(ItemTakeOffMaterialImutavelException::class);
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
     }
 
     // ---- I/J: Action nunca reinterpreta histórico / snapshot ----
@@ -370,7 +370,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         ]);
 
         $this->expectException(ItemTakeOffMaterialImutavelException::class);
-        $this->associarMaterial->execute($item, $b);
+        $this->associarMaterial->execute($this->obra, $item,$b);
     }
 
     public function test_j_movimentacao_mantem_snapshot_mesmo_apos_tentativa_bloqueada(): void
@@ -385,7 +385,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         ]);
 
         try {
-            $this->associarMaterial->execute($item, $b);
+            $this->associarMaterial->execute($this->obra, $item,$b);
         } catch (ItemTakeOffMaterialImutavelException $e) {
             // esperado
         }

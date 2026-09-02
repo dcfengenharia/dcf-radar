@@ -172,6 +172,35 @@ class SaldoEstoque
     }
 
     /**
+     * Ciclo 21, Etapa 21.1 — saldo físico de VÁRIOS materiais numa única
+     * query, escopado por OBRA (nunca por Local) — necessário porque
+     * `Material` é catálogo TENANT-WIDE (sem `obra_id`, decisão de
+     * produto desde 20.1): `porMateriais()` (acima) soma
+     * `MovimentacaoEstoque` do TENANT INTEIRO, o que misturaria saldo de
+     * OUTRAS obras do mesmo tenant numa camada gerencial que precisa
+     * responder "por obra". `MovimentacaoEstoque.obra_id` já é
+     * denormalizado desde 20.1 — este método só filtra por ele, mesmo
+     * padrão exato de `porMateriaisNoLocal()`, sem nenhuma regra nova.
+     *
+     * @param  array<int, string>  $materialIds
+     * @return Collection<string, float> chave = material_id
+     */
+    public static function porMateriaisNaObra(array $materialIds, string $obraId): Collection
+    {
+        if (empty($materialIds)) {
+            return collect();
+        }
+
+        return MovimentacaoEstoque::query()
+            ->whereIn('material_id', $materialIds)
+            ->where('obra_id', $obraId)
+            ->groupBy('material_id')
+            ->selectRaw('material_id, ' . self::expressaoSaldoSql() . ' as total')
+            ->pluck('total', 'material_id')
+            ->map(fn ($v) => round((float) $v, 3));
+    }
+
+    /**
      * Saldo já incorporado ao estoque a partir de UM RecebimentoPedido —
      * usado pra derivar o saldo AINDA disponível pra entrada (over-entrada,
      * Seção 15/17 da investigação original). Usa a mesma expressão de

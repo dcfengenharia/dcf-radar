@@ -23,3 +23,12 @@ package-lock.log
 /public/assets/js
 /public/assets/css
 /public/assets/vendor
+
+# Materiais de negócio/marketing/precificação gerados fora do ciclo de
+# desenvolvimento (não fazem parte do código da aplicação) — mantidos
+# localmente, nunca versionados.
+/artifacts/
+/output/
+/build_manual_precificacao.py
+/build_spreadsheet.mjs
+/Manual_Operacional_de_Precificacao_DCF_Radar_EPC.docx

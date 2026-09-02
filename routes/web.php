@@ -41,6 +41,57 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
     // notificações
     Route::get('/notificacoes', fn() => view('app.notificacoes.index'))->name('notificacoes.index');
 
+    // Ciclo 21, Etapa 21.3 — deep-link REAL das Situações Gerenciais
+    // (App\Notifications\SituacaoGerencialNotification), mesmo espírito
+    // de 'radar.entrar' (lookup manual, não route-model-binding, pra
+    // responder com mensagem amigável em vez de 404/403 cru — a
+    // Notification histórica é comunicação de outro usuário/instante,
+    // então nunca pode confiar cegamente no ID recebido). Ownership é a
+    // primeira e mais importante checagem (Seção 24 — segurança): só
+    // resolve dentro de `$request->user()->notifications()`, nunca
+    // `Notification::find()` cru — usuário de outro tenant/obra nunca
+    // consegue ler/navegar/enumerar uma notificação alheia por aqui.
+    Route::get('/notificacoes/{notification}/abrir', function (string $notification, \Illuminate\Http\Request $request) {
+        $registro = $request->user()->notifications()->find($notification);
+
+        if (! $registro) {
+            return redirect()->route('notificacoes.index')
+                ->with('flash.banner', 'Esta notificação não existe ou não pertence à sua conta.')
+                ->with('flash.bannerStyle', 'danger');
+        }
+
+        $registro->markAsRead();
+
+        $dados = $registro->data;
+        $rota = $dados['deep_link']['rota'] ?? null;
+        $parametros = $dados['deep_link']['parametros'] ?? [];
+        $obraId = $dados['obra_id'] ?? null;
+
+        if (! $rota || ! Route::has($rota)) {
+            return redirect()->route('notificacoes.index')
+                ->with('flash.banner', 'Este link não está mais disponível.')
+                ->with('flash.bannerStyle', 'warning');
+        }
+
+        // A obra ONDE a situação aconteceu — nunca a obra ativa da
+        // sessão (Seção 13: "obra correta"). Sem acesso (perdido depois
+        // do envio, ou obra removida), redireciona sem nunca revelar se
+        // a obra existe ou não (mesma cautela de 'radar.entrar').
+        if ($obraId) {
+            $obra = \App\Models\Work::find($obraId);
+
+            if (! $obra || ! $request->user()->temAcessoAObra($obra)) {
+                return redirect()->route('notificacoes.index')
+                    ->with('flash.banner', 'Você não tem mais acesso à obra desta notificação.')
+                    ->with('flash.bannerStyle', 'danger');
+            }
+
+            \App\Support\ObraContext::set($obra);
+        }
+
+        return redirect()->route($rota, $parametros);
+    })->name('notificacoes.abrir');
+
     // configuração inicial (onboarding) — não fica no menu comum,
     // só acessível pelo botão do menu lateral ou pelo aviso da navbar
     Route::get('/onboarding', function () {
@@ -251,6 +302,26 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
 
             Route::get('/central-prontidao', fn() => view('app.radar.central-prontidao'))
                 ->name('radar.central-prontidao');
+
+            // Ciclo 21, Etapa 21.5 — Cockpit Executivo da Obra. Permissão
+            // checada dentro do mount() do componente (gestao.cockpit|ver,
+            // único slug do catálogo cujo 'ver' não é aberto por padrão —
+            // ver App\Models\Perfil::seedPadrao()), mesmo padrão de todas
+            // as outras rotas deste grupo.
+            Route::get('/cockpit', fn() => view('app.radar.cockpit'))
+                ->name('radar.cockpit');
+
+            // Ciclo 21, Etapa 21.6 — Cockpit de Suprimentos e Abastecimento.
+            // Mesmo padrão de permissão checada dentro do mount()
+            // (gestao.suprimentos|ver) das demais rotas deste grupo.
+            Route::get('/cockpit-suprimentos', fn() => view('app.radar.cockpit-suprimentos'))
+                ->name('radar.cockpit-suprimentos');
+
+            // Ciclo 22, Etapa 22.2 — Cockpit de Engenharia e Liberação para
+            // Construção. Mesmo padrão de permissão checada dentro do
+            // mount() (gestao.engenharia|ver) das demais rotas deste grupo.
+            Route::get('/cockpit-engenharia', fn() => view('app.radar.cockpit-engenharia'))
+                ->name('radar.cockpit-engenharia');
 
             // Ciclo 17, A.9.6 — mesma permissão de restricoes.lookahead
             // (InconsistenciaAvancoPolicy::viewAny), checada dentro do

@@ -121,6 +121,65 @@ class SaldoReserva
     }
 
     /**
+     * Ciclo 21, Etapa 21.1 — reservado ATIVO consolidado de VÁRIOS
+     * materiais numa única query, escopado por OBRA (nunca por Local) —
+     * mesmo motivo de `SaldoEstoque::porMateriaisNaObra()`: uma camada
+     * gerencial que responde "por obra" nunca pode agregar reserva de
+     * outra obra do mesmo tenant. `ReservaEstoque.obra_id` já é
+     * denormalizado desde 20.2 — este método só filtra por ele.
+     *
+     * @param  array<int, string>  $materialIds
+     * @return Collection<string, float> chave = material_id
+     */
+    public static function porMateriaisNaObra(array $materialIds, string $obraId): Collection
+    {
+        if (empty($materialIds)) {
+            return collect();
+        }
+
+        return ReservaEstoque::query()
+            ->whereIn('material_id', $materialIds)
+            ->where('obra_id', $obraId)
+            ->where('status', StatusReservaEstoque::Ativa->value)
+            ->groupBy('material_id')
+            ->selectRaw('material_id, SUM(quantidade) as total')
+            ->pluck('total', 'material_id')
+            ->map(fn ($v) => round((float) $v, 3));
+    }
+
+    /**
+     * Ciclo 21, Etapa 21.1 — reservado ATIVO agregado por PAR (Pacote,
+     * Material) — necessário pra `CoberturaMaterialAtividadeQuery`
+     * saber quanto do estoque já está comprometido ESPECIFICAMENTE com
+     * um Pacote (não com "algum lugar da obra"), respeitando reservas
+     * genéricas (sem `destinacao_planejada_material_id`, permitidas
+     * desde 20.2.CORREÇÃO) — por isso agrega direto por
+     * `item_suprimento_id`, nunca via `porDestinacoes()` (que exigiria
+     * toda reserva ter uma Destinação, o que nunca foi verdade).
+     *
+     * @param  Collection<int, array{item_suprimento_id: string, material_id: string}>  $pares
+     * @return Collection<string, float> chave = "{pacoteId}|{materialId}"
+     */
+    public static function porPacotesEMateriais(Collection $pares): Collection
+    {
+        if ($pares->isEmpty()) {
+            return collect();
+        }
+
+        $pacoteIds = $pares->pluck('item_suprimento_id')->unique()->values()->all();
+        $materialIds = $pares->pluck('material_id')->unique()->values()->all();
+
+        return ReservaEstoque::query()
+            ->whereIn('item_suprimento_id', $pacoteIds)
+            ->whereIn('material_id', $materialIds)
+            ->where('status', StatusReservaEstoque::Ativa->value)
+            ->groupBy('item_suprimento_id', 'material_id')
+            ->selectRaw('item_suprimento_id, material_id, SUM(quantidade) as total')
+            ->get()
+            ->mapWithKeys(fn ($row) => ["{$row->item_suprimento_id}|{$row->material_id}" => round((float) $row->total, 3)]);
+    }
+
+    /**
      * Reservado ATIVO consolidado de VÁRIAS DestinacaoPlanejadaMaterial
      * numa única query — usado pela UI (listagem de Destinações, nunca 1
      * SUM por linha) e pelo guard de redução em

@@ -1090,7 +1090,17 @@ class EstoqueSaidaTest extends TestCase
             glob($base . '/*.php')
         );
 
-        $proibidos = ['case Industrializacao', 'case Divergencia', 'case Inventario', 'case Transferencia', 'case Ajuste'];
+        // Ciclo 21, Etapa 21.2 — achado real: `str_contains()` sem
+        // delimitador casava por PREFIXO com `App\Enums\TipoSituacaoGerencial`
+        // (`case IndustrializacaoPendente`/`case InventarioAguardandoDecisao`
+        // — enum de domínio TOTALMENTE diferente, catálogo de situações
+        // gerenciais, sem nenhuma relação com `TipoMovimentacaoEstoque`).
+        // Espaço à direita exige o nome EXATO do case — a guarda continua
+        // protegendo o mesmo invariante real ("TipoMovimentacaoEstoque
+        // nunca ganha esses cases — Transferência/Remessa/Ajuste são
+        // sempre pares Entrada+Saida correlacionados, nunca um tipo
+        // novo"), só deixou de colidir com enums não relacionados.
+        $proibidos = ['case Industrializacao ', 'case Divergencia ', 'case Inventario ', 'case Transferencia ', 'case Ajuste '];
 
         $encontrados = [];
         $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS));

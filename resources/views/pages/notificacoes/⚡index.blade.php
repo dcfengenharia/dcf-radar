@@ -1,5 +1,9 @@
 <?php
 
+use App\Enums\SeveridadeSituacao;
+use App\Enums\TipoSituacaoGerencial;
+use App\Models\SituacaoOcorrencia;
+use App\Support\Gestao\ScopoNotificacoesObra;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 use Livewire\WithPagination;
@@ -10,11 +14,14 @@ new class extends Component {
     protected $paginationTheme = 'bootstrap';
 
     public string $filtro = 'todas'; // todas | nao_lidas | lidas
+    public string $obraFiltro = '';
+    public string $tipoFiltro = '';
+    public string $severidadeFiltro = '';
 
     #[Computed]
     public function notificacoes()
     {
-        $query = auth()->user()->notifications()->latest();
+        $query = ScopoNotificacoesObra::aplicar(auth()->user()->notifications()->latest(), auth()->user());
 
         if ($this->filtro === 'nao_lidas') {
             $query->whereNull('read_at');
@@ -22,7 +29,61 @@ new class extends Component {
             $query->whereNotNull('read_at');
         }
 
+        if ($this->obraFiltro !== '') {
+            $query->where('data->obra_id', $this->obraFiltro);
+        }
+
+        if ($this->tipoFiltro !== '') {
+            $query->where('data->tipo', $this->tipoFiltro);
+        }
+
+        if ($this->severidadeFiltro !== '') {
+            $query->where('data->severidade', $this->severidadeFiltro);
+        }
+
         return $query->paginate(20);
+    }
+
+    /**
+     * Ciclo 21, Etapa 21.3 (Seção 11) — "ativa"/"não lida" são dimensões
+     * DIFERENTES: aqui buscamos o estado ATUAL da ocorrência (pode ter
+     * mudado desde que a comunicação foi enviada), nunca inferido de
+     * `read_at`. 1 query em lote pra toda a página (nunca 1 por linha).
+     *
+     * @return \Illuminate\Support\Collection<string, \App\Enums\StatusSituacaoOcorrencia>
+     */
+    #[Computed]
+    public function estadosPorOcorrencia(): \Illuminate\Support\Collection
+    {
+        $ids = collect($this->notificacoes->items())
+            ->pluck('data.ocorrencia_id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return collect();
+        }
+
+        return SituacaoOcorrencia::whereIn('id', $ids)->pluck('status', 'id');
+    }
+
+    #[Computed]
+    public function obrasDisponiveis()
+    {
+        return auth()->user()->works()->orderBy('name')->get(['works.id', 'works.name']);
+    }
+
+    #[Computed]
+    public function tiposDisponiveis(): array
+    {
+        return TipoSituacaoGerencial::cases();
+    }
+
+    #[Computed]
+    public function severidadesDisponiveis(): array
+    {
+        return SeveridadeSituacao::cases();
     }
 
     public function marcarLida(string $id): void
@@ -33,11 +94,33 @@ new class extends Component {
 
     public function marcarTodasLidas(): void
     {
-        auth()->user()->unreadNotifications->markAsRead();
+        // ->get() sobre a relação de DatabaseNotification retorna uma
+        // DatabaseNotificationCollection, cujo markAsRead() já faz 1
+        // UPDATE em lote (nunca 1 por linha) — mesma eficiência do
+        // ->unreadNotifications->markAsRead() original, só escopado.
+        ScopoNotificacoesObra::aplicar(auth()->user()->unreadNotifications(), auth()->user())->get()->markAsRead();
         unset($this->notificacoes);
     }
 
     public function updatedFiltro(): void
+    {
+        $this->resetPage();
+        unset($this->notificacoes);
+    }
+
+    public function updatedObraFiltro(): void
+    {
+        $this->resetPage();
+        unset($this->notificacoes);
+    }
+
+    public function updatedTipoFiltro(): void
+    {
+        $this->resetPage();
+        unset($this->notificacoes);
+    }
+
+    public function updatedSeveridadeFiltro(): void
     {
         $this->resetPage();
         unset($this->notificacoes);
@@ -57,8 +140,8 @@ new class extends Component {
         </button>
     </div>
 
-    {{-- Filtro --}}
-    <ul class="nav nav-tabs mb-4">
+    {{-- Filtro de lidas/não lidas --}}
+    <ul class="nav nav-tabs mb-3">
         <li class="nav-item">
             <button class="nav-link {{ $filtro === 'todas' ? 'active' : '' }}" wire:click="$set('filtro', 'todas')">
                 Todas
@@ -76,6 +159,34 @@ new class extends Component {
         </li>
     </ul>
 
+    {{-- Filtros mínimos úteis (Ciclo 21, Etapa 21.3, Seção 10) --}}
+    <div class="row g-2 mb-4">
+        <div class="col-auto">
+            <select class="form-select form-select-sm" wire:model.live="obraFiltro" style="min-width: 180px;">
+                <option value="">Todas as obras</option>
+                @foreach ($this->obrasDisponiveis as $obraOpcao)
+                <option value="{{ $obraOpcao->id }}">{{ $obraOpcao->name }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div class="col-auto">
+            <select class="form-select form-select-sm" wire:model.live="tipoFiltro" style="min-width: 220px;">
+                <option value="">Todos os tipos</option>
+                @foreach ($this->tiposDisponiveis as $tipoOpcao)
+                <option value="{{ $tipoOpcao->value }}">{{ $tipoOpcao->label() }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div class="col-auto">
+            <select class="form-select form-select-sm" wire:model.live="severidadeFiltro" style="min-width: 160px;">
+                <option value="">Toda severidade</option>
+                @foreach ($this->severidadesDisponiveis as $severidadeOpcao)
+                <option value="{{ $severidadeOpcao->value }}">{{ $severidadeOpcao->label() }}</option>
+                @endforeach
+            </select>
+        </div>
+    </div>
+
     <div class="card">
         <ul class="list-group list-group-flush">
             @forelse($this->notificacoes as $notificacao)
@@ -85,6 +196,8 @@ new class extends Component {
                 $icone = $data['icone'] ?? 'bx-bell';
                 $cor   = $data['cor']   ?? 'primary';
                 $link  = $data['link']  ?? '#';
+                $ocorrenciaId = $data['ocorrencia_id'] ?? null;
+                $estadoOcorrencia = $ocorrenciaId ? $this->estadosPorOcorrencia->get($ocorrenciaId) : null;
             @endphp
             <li class="list-group-item list-group-item-action py-3 {{ $lida ? 'text-muted' : '' }}"
                 wire:key="notif-{{ $notificacao->id }}">
@@ -102,7 +215,15 @@ new class extends Component {
                                     @if(! $lida)
                                     <span class="badge bg-danger ms-1" style="width:8px;height:8px;border-radius:50%;padding:0;display:inline-block;vertical-align:middle;"></span>
                                     @endif
+                                    @if($estadoOcorrencia)
+                                    <span class="badge bg-label-{{ $estadoOcorrencia->estaAtiva() ? 'warning' : 'success' }} ms-1">
+                                        {{ $estadoOcorrencia->label() }}
+                                    </span>
+                                    @endif
                                 </h6>
+                                @if(!empty($data['obra_nome']))
+                                <small class="text-muted d-block mb-1">{{ $data['obra_nome'] }}</small>
+                                @endif
                                 <p class="mb-1 small">{{ $data['mensagem'] ?? '' }}</p>
                                 <small class="text-muted">{{ $notificacao->created_at->diffForHumans() }}</small>
                             </div>

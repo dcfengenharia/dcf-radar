@@ -124,6 +124,17 @@ class CentralProntidaoQuery
      * `itensSuprimento.atividades` é necessário pra `ItemSuprimento::
      * necessidade()` (chamado em montarView()) não disparar lazy loading
      * (Model::preventLazyLoading() está ativo fora de produção).
+     *
+     * **Etapa 21.7.CORREÇÃO (Achado C)**: o select limitado precisa
+     * incluir TODA coluna que `ItemSuprimento::necessidade()` lê —
+     * `inicio_planejado` E `fora_do_cronograma` (usada por
+     * `reject(fn($a) => $a->fora_do_cronograma)` pra excluir atividade
+     * arquivada do cálculo). Faltando `fora_do_cronograma` no select, o
+     * atributo chega como `null` (falsy) e o `reject()` nunca rejeita
+     * nada — uma atividade arquivada mais cedo passava a antecipar
+     * incorretamente a necessidade do Pacote. `id` continua presente
+     * (chave da relação BelongsToMany, sem ele a hidratação da pivot
+     * quebra).
      */
     private function carregarAtividades(
         Work $obra,
@@ -160,7 +171,7 @@ class CentralProntidaoQuery
                 'disciplina:id,nome',
                 'frenteTrabalho:id,nome',
                 'responsavel:id,first_name,last_name',
-                'itensSuprimento.atividades:id,inicio_planejado',
+                'itensSuprimento.atividades:id,inicio_planejado,fora_do_cronograma',
                 'itensSuprimento.documentosEngenharia',
                 // Ciclo 18, Etapa 18.4 — vínculo DIRETO Atividade<->Documento
                 // (Ciclo 18.1, pivô documento_engenharia_atividades), escopado

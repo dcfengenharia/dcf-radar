@@ -1167,4 +1167,43 @@ class TenantIsolationTest extends TestCase
         $this->assertNull(\App\Models\ContagemInventario::find($contagemB->id));
         $this->assertNull(\App\Models\InventarioAjuste::find($ajusteB->id));
     }
+
+    /** Ciclo 21, Etapa 21.3 — situacao_ocorrencias (ciclo de vida das Situações Gerenciais). */
+    public function test_situacao_ocorrencia_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $ocorrenciaB = \App\Models\SituacaoOcorrencia::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id,
+            'tipo' => 'documento_bloqueante', 'chave_logica' => 'documento_bloqueante:x:y',
+            'status' => 'ativa', 'episodio' => 1,
+            'severidade_atual' => 'atencao', 'severidade_peso_comunicado' => 1,
+            'entidade_tipo' => 'DocumentoEngenharia', 'entidade_id' => 'x', 'descricao_atual' => 'd',
+            'primeira_deteccao_em' => now(), 'ultima_deteccao_em' => now(),
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\SituacaoOcorrencia::find($ocorrenciaB->id));
+    }
+
+    /** Ciclo 21, Etapa 21.4 — situacao_comunicacao_entregas (ledger de e-mail). */
+    public function test_situacao_comunicacao_entrega_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $entregaB = \App\Models\SituacaoComunicacaoEntrega::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'usuario_id' => $userB->id,
+            'evento_usuario_id' => (string) \Illuminate\Support\Str::uuid(),
+            'canal' => 'mail', 'enviado_em' => now(),
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\SituacaoComunicacaoEntrega::find($entregaB->id));
+    }
 }

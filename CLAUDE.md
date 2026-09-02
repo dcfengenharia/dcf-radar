@@ -8712,6 +8712,2285 @@ ReportComentario (só em reports emitidos). Reaproveita
   Restrição sem validação do usuário** (instrução explícita) —
   aguardando aprovação desta etapa.
 
+## Identificação por QR/Código de Barras + Etiquetas + Operação Assistida (Ciclo 20, Etapa 20.8)
+
+- **Princípio central**: o código (QR) só IDENTIFICA a entidade — nunca
+  carrega saldo/quantidade/Local atual/regra de negócio. Ledger continua
+  sendo a única autoridade de saldo/localização/movimentação/custódia/
+  histórico. `scan → resolve entidade → consulta ledger → mostra estado
+  atual` — nunca `scan → "saldo=300"` embutido no próprio código.
+- **3 decisões via STOP-and-ask (Seção 44), todas confirmadas pelo
+  usuário**:
+  1. **Identidade do código**: reaproveita o ULID já existente como PK
+     de Material/UnidadeEstoque/LocalEstoque — formato `MAT:{ulid}` /
+     `UNI:{ulid}` / `LOC:{ulid}`. **ZERO migration** — nenhuma coluna
+     nova, nenhuma tabela de "códigos" criada (confirmado antes de
+     codificar: um ULID já é estável, imutável e opaco o suficiente
+     quando resolvido só em área autenticada com tenant/obra
+     revalidados).
+  2. **QR vs 1D**: só QR Code nesta etapa — nenhuma biblioteca de
+     barcode 1D existia no projeto; instalar uma sem uso real confirmado
+     foi descartado. 1D fica pra uma etapa futura, se necessário.
+  3. **Câmera**: só a API nativa `BarcodeDetector` do navegador — zero
+     dependência JS nova. Sem suporte (Safari/iOS, Firefox), o botão de
+     câmera simplesmente não aparece (`x-show="cameraSuportada"`) — o
+     campo manual/scanner USB-BT continua funcionando sempre.
+- **`App\Support\Estoque\ResolverCodigoEstoque`**: serviço CENTRAL de
+  resolução, nunca duplicado por tela. `resolver(string $codigo, ?string
+  $obraIdEsperada = null): ResultadoResolucaoCodigoEstoque` — parseia o
+  prefixo, resolve via `Model::find($ulid)` (índice primário, O(1),
+  nunca busca textual), valida obra quando informada, retorna tipo +
+  entidade + `ativo` (nullable — `UnidadeEstoque` nunca teve esse
+  conceito).
+- **Cross-tenant — decisão de segurança deliberada**: `Material`/
+  `UnidadeEstoque`/`LocalEstoque` usam `BelongsToTenant` — um ULID de
+  OUTRO tenant simplesmente não é encontrado (o global scope já filtra),
+  produzindo a MESMA mensagem "código desconhecido" que um ULID que
+  nunca existiu. As duas situações NUNCA são diferenciadas pro chamador
+  — diferenciar revelaria "este código existe, só não é seu" a um
+  usuário de outro tenant, um vazamento que o isolamento deste projeto
+  nunca permite em nenhum outro ponto do sistema.
+- **Cross-obra**: só `LocalEstoque`/`UnidadeEstoque` (via
+  `local_estoque_id.obra_id`) são rejeitados por obra — `Material` é
+  catálogo do TENANT inteiro, nunca obra-scoped, então nunca é
+  rejeitado por esse motivo.
+- **Material/Local inativo NUNCA bloqueia a resolução** ("Resolver !=
+  autorizar operação") — o resultado carrega `ativo` pra a UI avisar,
+  mas quem de fato bloqueia uma operação sobre entidade inativa
+  continua sendo, exclusivamente, a Action de domínio já existente
+  (`RegistrarEntradaEstoque::garantirMaterialAtivo()` etc.) — nunca
+  duplicado no resolver.
+- **`App\Support\Estoque\GeradorCodigoEstoque`**: gera o texto do
+  código e o SVG do QR — reaproveita `bacon/bacon-qr-code` (já instalada
+  transitivamente via `laravel/fortify`, mesma técnica já usada pelo QR
+  de verificação da GRD, Ciclo 18/18.5.9) — **zero dependência nova**.
+  Código nunca muda depois de gerado (é sempre derivado do ULID, que é
+  a PK e nunca é reescrita).
+- **Etiquetas** (`App\Support\Estoque\MontarDadosEtiquetaEstoque` +
+  `resources/views/exports/etiqueta-estoque-pdf.blade.php`): reaproveita
+  DomPDF (mesmo padrão de GRD/Central de Prontidão/Report — zero
+  biblioteca PDF nova). 3 templates no MESMO Blade (pequena/média/A4-
+  listagem). **Nunca imprime saldo/quantidade** (muda a todo momento) —
+  **nunca imprime "Local atual" de uma UnidadeEstoque** (desde a
+  20.5.CORREÇÃO, uma bobina pode estar fracionada em vários Locais ao
+  mesmo tempo — imprimir "está no Local X" seria factualmente errado
+  assim que uma Transferência parcial acontecesse). Conteúdo humano
+  mínimo: código do sistema, descrição, lote/serial quando aplicável, QR.
+- **Bobina multi-Local (Seção 7)**: `scan da Unidade NUNCA determina
+  automaticamente o Local` — o resolver não sabe nem expõe "Local
+  atual" (esse conceito nem existe desde 20.5.CORREÇÃO). O operador
+  sempre escaneia/seleciona o Local explicitamente, e a Action já
+  existente (`RegistrarSaidaEstoque` etc.) sempre valida o saldo NAQUELE
+  Local específico via `SaldoEstoque::porUnidadeLocal()` — o scan nunca
+  contorna essa validação, só preenche os MESMOS campos que ela usa.
+- **Serial**: mesma resolução de bobina, só que sempre quantidade=1 —
+  segunda saída/scan do mesmo serial já sem saldo continua bloqueada
+  pelas Actions já existentes (`SaldoFisicoInsuficienteException`),
+  nunca uma regra nova no resolver.
+- **Inventário assistido (Seção 20)**: `processarScanInventario()` é um
+  método DEDICADO (diferente do genérico `resolverEAplicarScan`) —
+  localiza o `InventarioItem` já esperado (do snapshot) pro Material/
+  Unidade escaneado e abre o modal de contagem dele diretamente. Serial
+  inesperado continua EXATAMENTE como a 20.7 decidiu: nunca resolvido
+  automaticamente — o operador usa "Registrar serial inesperado"
+  manualmente, o scan de um serial não-cadastrado simplesmente nunca
+  resolve (não existe como `UNI:` válido).
+- **Contagem cega**: nenhuma mudança na regra já existente da 20.7 — o
+  scan nunca expõe o snapshot por um caminho paralelo; quem decide
+  esconder a coluna "Sistema" continua sendo a MESMA condição
+  (`contagem_cega && status === em_contagem`) já testada na 20.7.
+- **Escaneamento nunca dispara Action automaticamente** (Seção 23): todo
+  fluxo é `scan → resolução → preenchimento de campo já existente →
+  confirmação manual do botão "Confirmar" já existente`. Duplo scan
+  (Seção 24) é inerentemente idempotente — só ATRIBUI valor a uma
+  propriedade, nunca duplica um efeito colateral.
+- **Achado real corrigido durante a implementação (ordem de hooks)**:
+  a primeira versão de `resolverEAplicarScanMaterialOuUnidade()` setava
+  Material E Unidade e SÓ DEPOIS disparava os hooks `updated{Campo}()`
+  de ambos, na ordem `[Material, Unidade]` — mas `updatedTransferenciaMaterialId()`/
+  `updatedSaidaMaterialId()` já resetam a Unidade pra `null` como efeito
+  colateral esperado de uma troca manual no `<select>` — disparar esse
+  hook DEPOIS de já ter setado a Unidade resolvida pelo scan apagava
+  silenciosamente o valor certo. Corrigido invertendo a ordem: seta
+  Material + dispara seu hook (que reseta Unidade) PRIMEIRO, só DEPOIS
+  seta a Unidade de verdade (sobrescrevendo o reset) + dispara o hook
+  dela. Pego por teste de fluxo completo de Transferência via scan, não
+  por inspeção manual.
+- **UI**: componente reutilizável único
+  `resources/views/pages/radar/_partials/escanear-codigo.blade.php`
+  (Alpine.js) — incluído com parâmetros diferentes em cada modal
+  (Entrada: só Local; Saída/Transferência: Local(is) + Material-ou-
+  Unidade combinado; Reserva: só Local, já que Pacote/Material chegam
+  fixos pela Destinação desde 20.2.CORREÇÃO; Inventário: método
+  dedicado). Scanner USB/Bluetooth funciona OUT-OF-THE-BOX (só um campo
+  de texto focado + Enter — o mesmo listener cobre digitação manual e
+  scanner físico, que só "digita" o código e envia Enter). "Imprimir
+  etiqueta" (individual + lote) nas abas Materiais/Locais — reaproveita
+  `estoque.movimentacao|ver` (nenhum slug novo — gerar/visualizar
+  etiqueta é leitura pura, e é o mesmo slug que já cobre visualizar
+  Material/Local).
+- **Segurança (Seção 26)**: nenhuma rota pública criada — resolver só
+  funciona dentro do componente Livewire autenticado; verificado por
+  teste que toda rota relacionada a `estoque` exige `auth`.
+- **Performance (Seção 38)**: resolver por PK indexada nunca escala com
+  o total de registros — medido empiricamente: 1 query fixa resolvendo
+  entre 21 e 1001 Materiais cadastrados.
+- **Não implementado nesta etapa, por instrução explícita**: código de
+  barras 1D, ZPL/EPL (impressora térmica dedicada), integração ERP, app
+  mobile nativo, alteração de prontidão/Restrição.
+- Testes: `tests/Feature/IdentificacaoEstoqueTest.php` (57 testes — A-AP
+  do pedido: identidade única/estável/inválida/desconhecida/cross-
+  tenant/cross-obra/inativo, Quantitativo, bobina multi-Local,
+  serial, Inventário assistido incluindo contagem cega e serial
+  inesperado, UI incluindo duplo-scan e fallback sem câmera, etiqueta
+  nunca com saldo/localização, performance, zero conceito de fase
+  futura, zero rota pública, zero efeito colateral em Restrição/
+  prontidão). **Zero migration** (confirmado — nenhuma tabela/coluna
+  nova, identidade 100% derivada do ULID já existente). Regressão:
+  Bucket 1 (Estoque completo + TenantIsolation) — **589 passed / 1
+  skipped / 0 failed** (1596 assertions); Bucket 2 (Suprimentos legado/
+  GED/Cronograma/Restrições/Central/Lookahead/Plano Semanal/Plano de
+  Ação/Health Check, incluindo `SincronizarRestricaoSuprimentoTest`) —
+  **1326 passed / 3 failed** (3591 assertions), as mesmas 3 falhas de
+  calendar-drift já documentadas desde 20.3.CORREÇÃO, sem relação com
+  esta etapa. Suíte completa (full suite solo): **3497 passed / 7
+  skipped / 6 failed / 9467 assertions** (de 3440/7/6/9338 antes desta
+  etapa — delta exato de +57 testes/+129 assertions, batendo com os 57
+  testes novos de `IdentificacaoEstoqueTest.php`. As mesmas 6 falhas
+  pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (3 testes) — zero 7ª falha).
+- **Não avançar pra código de barras 1D, ZPL/EPL, integração ERP, app
+  mobile nativo, ou qualquer alteração em Restrição/prontidão sem
+  validação do usuário** (instrução explícita) — aguardando aprovação
+  desta etapa.
+
+## Auditoria Integrada do Ciclo 20 (Etapa 20.9) + correção do Achado C1 (20.9.CORREÇÃO)
+
+- **20.9 foi auditoria pura, sem correção**: cruzou 20.1-20.8 de ponta a
+  ponta (necessidade→aplicação, bobina multi-Local, serial,
+  industrialização completa com genealogia, inventário com movimentação
+  concorrente, QR, 4 pares de concorrência nunca testados juntos antes —
+  Saída×Transferência/Remessa×Saída/Consumo concorrente/Reserva×Reserva,
+  tenant/obra/permissões, performance). Resultado: 13/14 cenários
+  confirmados corretos (A), performance O(1) reconfirmada, e **1 achado
+  C real e reproduzível** — escrita cross-obra no fluxo de "Associar
+  Material" do Take Off. Achado B1 (idempotência de
+  `RegistrarEntregaProdutoIndustrializado`/`RegistrarRemessaIndustrializacao`
+  retorno, já documentado desde 20.5.CORREÇÃO) foi reconfirmado com prova
+  empírica de impacto real (estoque fantasma) e mantido como B — não
+  corrigido nesta fase.
+- **Causa raiz do Achado C1**: `Material` é catálogo TENANT-WIDE por
+  decisão de produto (sem `obra_id`, desde 20.1) — `App\Actions\Estoque\
+  AssociarMaterialAoItemTakeOff::execute()` validava só tenant (nunca
+  obra), e `⚡estoque.blade.php::abrirModalAssociarMaterial()` resolvia
+  `RecebimentoPedido::findOrFail($recebimentoId)` sem nenhum escopo de
+  obra — só o global scope de tenant protegia. Confirmado por prova de
+  ESCRITA real (não só leitura vazada): um usuário com acesso legítimo a
+  2 obras do mesmo tenant conseguia, no contexto da obra A, associar um
+  Material da obra A a um `ItemTakeOff` que pertence à obra B.
+- **Cadeia autoritativa usada pra derivar a obra de um `ItemTakeOff`
+  (nenhuma coluna `obra_id` redundante criada)**: `ItemTakeOff.
+  lista_engenharia_id` → `ListaEngenharia.documento_engenharia_revisao_id`
+  → `DocumentoEngenhariaRevisao.documento_engenharia_id` →
+  `DocumentoEngenharia.obra_id` — a MESMA cadeia (`lista.revisao.documento
+  .obra_id`) já usada e comprovada em produção por `App\Actions\
+  Suprimentos\AtualizarRascunhoRequisicaoPlanejamento::garantirMesmaObra()`
+  (chamada 3+ vezes já eager-loaded em `EmitirRequisicaoPlanejamento`/
+  `EmitirRequisicaoCompra`/`TakeOffConsolidado`/`ConciliacaoAlocacao`) —
+  reaproveitada literalmente, nunca uma segunda regra. Para a obra de um
+  `RecebimentoPedido` (sem `obra_id` próprio), a cadeia autoritativa já
+  usada em `RegistrarEntradaEstoque` (`pedidoCompraItem->pedido_compra_id`
+  → `PedidoCompra->obra_id`) também foi reaproveitada, agora via
+  `whereHas('pedidoCompraItem.pedidoCompra', ...)`.
+- **Defesa em 2 camadas, nenhuma delas dispensável**:
+  1. **UI** (`abrirModalAssociarMaterial()`): `RecebimentoPedido` agora é
+     resolvido via `RecebimentoPedido::whereHas('pedidoCompraItem.
+     pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+     ->findOrFail(...)` — um `recebimentoId` de outra obra vira
+     `ModelNotFoundException` (mesmo comportamento já usado em toda a
+     tela pros outros resolvers obra-scoped desde a 19.4.CORREÇÃO).
+  2. **Action** (`AssociarMaterialAoItemTakeOff::execute()`): ganhou um
+     PRIMEIRO parâmetro OBRIGATÓRIO, `Work $obraAtual` (nunca opcional —
+     é a própria garantia de segurança; mesmo padrão de `Work $obra`
+     como 1º parâmetro já usado em `CriarOrdemIndustrializacao::
+     execute()`). Dentro da transação, logo após travar `$itemTravado`,
+     resolve `$itemTravado->loadMissing('lista.revisao.documento')` e
+     compara `$itemTravado->lista?->revisao?->documento?->obra_id` contra
+     `$obraAtual->id` — `AssociacaoMaterialInvalidaException` se
+     divergir. **Esta é a camada que realmente fecha o vetor mais grave**:
+     `itemTakeOffAssociarId` é propriedade PÚBLICA do componente Livewire
+     — um payload manipulado pode chamar `confirmarAssociarMaterial()`
+     setando essa propriedade DIRETO, sem nunca passar por
+     `abrirModalAssociarMaterial()` — só a validação DENTRO da Action
+     bloqueia esse segundo vetor de verdade.
+- **`confirmarAssociarMaterial()`** passou a chamar `app(
+  AssociarMaterialAoItemTakeOff::class)->execute($this->obra, $item,
+  $material)` — `$this->obra` (a obra ativa da sessão/rota, sempre
+  confiável, nunca vem de payload) é a referência que a Action usa pra
+  validar.
+- **Ordem de validação na Action**: obra é checada ANTES de tenant
+  (decisão desta correção — "não confie somente em tenant" era
+  instrução explícita) — mas como as duas checagens são independentes
+  (nenhuma depende do resultado da outra) e ambas rodam sempre, a ordem
+  não afeta o resultado final, só qual mensagem de erro aparece primeiro
+  quando as duas condições estão erradas ao mesmo tempo (cenário
+  hipotético, não testado — obra errada de um tenant certo é o caso
+  real; tenant errado já é bloqueado antes mesmo de chegar aqui, pelo
+  global scope de `BelongsToTenant` em `ItemTakeOff::find()`/`whereKey()`).
+- **`Material` continua sem `obra_id`** — decisão de produto da 20.1
+  reafirmada, não alterada. A validação de obra desta correção é
+  inteiramente sobre o `ItemTakeOff` (que TEM obra, via cadeia
+  documental), nunca sobre o Material (que não tem, por design).
+- **Quebra de assinatura deliberada, blast radius contido**: só 1 caller
+  de produção (`⚡estoque.blade.php`) e 12 chamadas em
+  `EstoqueFundacaoCorrecaoTest.php` (todas atualizadas pra passar
+  `$this->obra` como 1º argumento — nenhuma asserção de negócio
+  alterada, só a assinatura). Nenhum outro arquivo do projeto chama
+  `AssociarMaterialAoItemTakeOff::execute()`.
+- **Auditoria irmã (grep direcionado)**: confirmado por busca exaustiva
+  em `app/` e `resources/` que `AssociarMaterialAoItemTakeOff` só é
+  chamada (`->execute(`) num único ponto de produção — a linha já
+  corrigida em `⚡estoque.blade.php`. Nenhum segundo entry point com a
+  mesma ausência de escopo foi encontrado.
+- **Achado B1 (idempotência) e demais achados B/D da 20.9 NÃO foram
+  tocados nesta correção** (instrução explícita) — permanecem
+  documentados na seção da 20.9 acima, aguardando decisão futura.
+- **Incidente de ambiente durante esta correção, sem relação com o
+  código**: rodar `php artisan test` (comando completo, sem `--filter`)
+  em background e depois tentar interrompê-lo com `pkill -f 'artisan
+  test'` mata só o processo wrapper do Artisan — o `vendor/bin/phpunit`
+  que ele invoca internamente continua rodando como processo filho
+  independente. Duas invocações concorrentes de `phpunit` contra o MESMO
+  banco `testing` deixaram o schema num estado parcialmente migrado
+  (mesma classe de incidente já documentada no Ciclo 19, Etapa
+  19.1.CORREÇÃO) — corrigido com `pkill -9 -f phpunit` (mata os
+  processos phpunit de verdade, não só o wrapper) seguido de `DROP
+  DATABASE testing; CREATE DATABASE testing ...`, mesmo procedimento já
+  estabelecido no projeto pra este banco 100% descartável. **Banco de
+  desenvolvimento real (`dcf_eng`) nunca foi tocado** — confirmado antes
+  de qualquer ação (`config('database.connections.mysql.database')` =
+  `dcf_eng`, `testing` é usado só via override de `phpunit.xml`). Lição
+  registrada: ao interromper uma execução de `artisan test`, sempre
+  matar tanto o processo `artisan` quanto qualquer `phpunit` filho
+  (`pkill -9 -f phpunit`), nunca só o primeiro.
+- Testes: `tests/Feature/EstoqueAssociarMaterialObraCorrecaoTest.php`
+  (12 testes novos — A-K: mesma obra permitida, outro tenant bloqueado
+  (reafirma a checagem já existente desde 20.1.CORREÇÃO, provando que a
+  nova validação de obra não a enfraqueceu), mesmo tenant/outra obra
+  bloqueado via Action (o próprio Achado C1), usuário com acesso
+  LEGÍTIMO às duas obras ainda bloqueado no contexto errado (cenário
+  real de usuário multi-obra, não hipotético) e funcionando no contexto
+  certo, payload manipulado em `abrirModalAssociarMaterial` (vetor de
+  leitura, `ModelNotFoundException`) + prova de que o estado do modal
+  nunca é preenchido, confirmação manipulada via propriedade pública
+  `itemTakeOffAssociarId` sem nunca passar pelo modal (vetor de
+  escrita), chamada direta da Action fora de qualquer UI, falha nunca
+  altera `material_id`, fluxo legítimo completo via Livewire continua
+  funcionando, isolamento não impede operação legítima em nenhuma das 2
+  obras, e uma reprodução exata ponta-a-ponta do cenário da auditoria
+  provando zero write). `EstoqueFundacaoCorrecaoTest.php` (34 testes já
+  existentes, só a assinatura da chamada atualizada — nenhuma asserção
+  de negócio alterada, todos continuam verdes).
+- Regressão: `EstoqueFundacaoCorrecaoTest`/`EstoqueAssociarMaterialObraCorrecaoTest`
+  isolados — 46/46 passed. Bucket Estoque completo + TenantIsolationTest +
+  Take Off/Suprimentos (ItemTakeOff/ListaEngenharia/RequisicaoPlanejamento/
+  RequisicaoCompra/PedidoCompra/RecebimentoPedido/TakeOff/Inventario/
+  Identificacao) — **909 passed / 1 skipped / 0 failed** (2243
+  assertions), zero regressão. Suíte completa (full suite solo):
+  **3509 passed / 7 skipped / 6 failed / 9489 assertions** (de
+  3497/7/6/9467 antes desta correção — delta exato de +12 testes/+22
+  assertions, batendo com os 12 testes novos de
+  `EstoqueAssociarMaterialObraCorrecaoTest.php`. As mesmas 6 falhas
+  pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (3 testes) — zero 7ª falha).
+- **Migrations**: zero (confirmado antes de codificar — a cadeia
+  autoritativa já existente resolve a obra sem precisar de nenhuma
+  coluna nova; nenhuma ambiguidade real encontrada que justificasse
+  parar e perguntar).
+- **Riscos remanescentes**: nenhum novo introduzido por esta correção.
+  Achado B1 (idempotência) e os gaps D1/D2 da 20.9 seguem como estavam,
+  documentados na seção anterior, fora do escopo desta correção.
+- **Não avançar pra correção do Achado B1, D1 (`porObra()`), D2, ou
+  qualquer outra fase (Notificações/Cockpit/nova etapa) sem validação do
+  usuário** (instrução explícita) — aguardando aprovação desta correção.
+
+## Camada de Inteligência Gerencial — Fonte Única da Verdade (Ciclo 21, Etapa 21.1)
+
+- **Contexto**: a auditoria 20.9 identificou que a lacuna pra evoluir o
+  produto não é operacional, mas gerencial — dados confiáveis existem em
+  Engenharia/Cronograma/Suprimentos/Estoque/Industrialização/Inventário,
+  mas nenhuma camada cruzava esses fatos pra responder perguntas de
+  gestão. Esta etapa é a fundação: read-only, 100% derivada, zero
+  migration, zero UI/notificação/dashboard.
+- **Regra fundamental seguida à risca**: a MESMA regra alimenta o que
+  viria a ser dashboard e o que viria a ser alerta — não existe uma
+  fórmula pro gráfico e outra pra notificação. `RiscoSuprimentoQuery`
+  (candidato a alerta) e `CoberturaMaterialAtividadeQuery`/
+  `PipelineMaterialQuery` (candidatos a dashboard) reaproveitam
+  EXATAMENTE os mesmos serviços derivados — nunca uma segunda fórmula.
+- **Fresh-read confirmou o vínculo determinístico Atividade↔Material
+  (Seção 7 do pedido, decisão de NÃO parar)**: `Atividade` liga-se a
+  `Material` através de `App\Models\ItemSuprimento` (Pacote de Compra) —
+  `Atividade::itensSuprimento()`/`ItemSuprimento::atividades()` é uma
+  N:N REAL via FK (`item_suprimento_atividades`, mesma tabela que já
+  alimenta `App\Services\SuprimentoScheduler` desde o Ciclo 13) — nunca
+  heurística por WBS/descrição/disciplina. É MANUALMENTE CURADA (o
+  usuário vincula a(s) Atividade(s) na mesma tela onde cria/edita o
+  Pacote, `⚡suprimentos.blade.php::salvarItem()`) — quando ausente
+  (Pacote sem Atividade, ou Atividade sem Pacote), a resposta correta é
+  `EstadoCoberturaMaterial::InformacaoInsuficiente`, NUNCA "coberta". Do
+  Pacote em diante, a cadeia é 100% determinística por FK: `ItemSuprimento`
+  → `AlocacaoRequisicaoPacote` → `RequisicaoPlanejamentoItem` →
+  `ItemTakeOff` → `Material`.
+- **Mapa da Verdade Gerencial** (matriz interna que orientou a
+  implementação — condensada aqui): pergunta central "o que pode
+  impedir a execução da obra nas próximas semanas e onde agir agora?"
+  se decompõe em: (1) cobertura material por atividade/horizonte —
+  `CoberturaMaterialAtividadeQuery`; (2) pipeline quantitativo sem
+  double-counting — `PipelineMaterialQuery`; (3) fatos acionáveis agora
+  — `RiscoSuprimentoQuery`/`AcaoGerencial`.
+
+### Arquitetura
+
+- **`App\Support\Gestao\PipelineMaterialQuery`**: Necessidade→Requisitado→
+  Alocado→Em RC→Em Pedido→Recebido→Físico→Reservado→Disponível→Aplicado→
+  Déficit. Dois métodos batch: `porMateriais()` (agregado por Material,
+  obra-escopado) e `porPacotesEMateriais()` (agregado por PAR Pacote+
+  Material — necessário porque 2 Pacotes podem ter progresso de compra
+  independente do MESMO Material). **Nunca reimplementa** a matemática
+  de `App\Support\Suprimentos\ConciliacaoRecebimento::
+  cadeiaCompletaPorItemTakeOff()` (Ciclo 19.6, single-item) — só
+  agrega a MESMA cadeia de JOINs um ou dois níveis acima, em lote SQL
+  (`GROUP BY`). Físico/Reservado/Aplicado nunca vêm de ItemTakeOff (o
+  ledger de estoque não conhece ItemTakeOff, por design desde 20.1) —
+  sempre agregados no nível de Material, reaproveitando
+  `SaldoEstoque`/`SaldoReserva`/`ConciliacaoAplicacao::
+  pendenteAgregadaPorObra()` — nunca duplicados.
+- **2 métodos novos, mínimos e obra-escopados, adicionados aos serviços
+  JÁ EXISTENTES** (nunca duplicando a fórmula de sinal central): `App\Support\
+  Estoque\SaldoEstoque::porMateriaisNaObra()` e `App\Support\Estoque\
+  SaldoReserva::porMateriaisNaObra()`/`porPacotesEMateriais()` — Material é
+  catálogo TENANT-WIDE (sem `obra_id`, decisão de produto desde 20.1),
+  então `porMateriais()`/`porMateriaisNoLocal()` (já existentes) agregam
+  no nível errado de escopo (tenant inteiro/1 Local) pra uma camada que
+  precisa responder "por obra inteira" sem misturar dados de outras
+  obras do mesmo tenant (Seção 24). Mesmo padrão exato dos métodos já
+  existentes, só trocando o filtro de escopo — nenhuma regra nova.
+- **`App\Enums\EstadoCoberturaMaterial`**: 8 estados (Coberto/
+  ParcialmenteCoberto/RecebidoAguardandoDisponibilização/
+  CompradoAguardandoRecebimento/AguardandoCompra/
+  DeficitAposConsumoEmergencial/SemCobertura/InformacaoInsuficiente) —
+  nunca "saldo físico > 0". `InformacaoInsuficiente` é estado de
+  primeira classe, com `severidade()` (ranking editorial documentado,
+  revisável) posicionado ACIMA de ParcialmenteCoberto/
+  RecebidoAguardandoDisponibilização (nunca dominado por um par
+  "coberto" quando a Atividade tem múltiplos pares) mas ABAIXO de
+  AguardandoCompra/CompradoAguardandoRecebimento.
+- **`App\Support\Gestao\CoberturaMaterialAtividadeQuery::porObra(Work,
+  int $horizonteDias, ?CarbonInterface $referencia = null)`** — O
+  CORAÇÃO da etapa. Horizonte NUNCA hardcoded (parâmetro livre, testado
+  com 28/90 dias — suporta 7/14/28/56 e qualquer outro). Resolve
+  Atividades no horizonte (`fora_do_cronograma=false`, `status !=
+  Concluido`, `inicio_planejado` na janela), suas `itensSuprimento`
+  (Pacotes), os pares (Pacote,Material) via `AlocacaoRequisicaoPacote`
+  em lote, e classifica cada par via uma ÚNICA árvore de decisão
+  (`classificar()`, privado, documentado): `demanda` vem de
+  `ConciliacaoDestinacao::porPares()['formal']` (= `AlocacaoRequisicaoPacote
+  .quantidade_alocada`, reaproveitado, nunca uma segunda fonte);
+  `reservado_pacote` vem do novo `SaldoReserva::porPacotesEMateriais()`;
+  `deficit_obra_material` vem do Material inteiro (`fisico` vs.
+  `reservado` OBRA-WIDE, nunca só deste Pacote — reflete honestamente
+  quando o material como um todo está sobre-comprometido, mesmo que a
+  reserva DESTE Pacote pareça suficiente no papel — Cenário E do
+  pedido); progresso de compra (`requisitado`/`alocado`/`em_rc`/
+  `em_pedido`/`recebido`) vem de `PipelineMaterialQuery::
+  porPacotesEMateriais()`. Estado agregado da Atividade = o de MAIOR
+  `severidade()` entre seus pares.
+- **`App\DTOs\Gestao\AcaoGerencial`** — DTO `readonly`, `final class`,
+  **NUNCA persistido** (Seção 12 — "sem necessidade arquitetural
+  comprovada nesta etapa"). `tipo` é string livre (não enum fechado —
+  a lista ainda vai crescer nas fases de Notificações/Cockpit).
+- **`App\Support\Gestao\RiscoSuprimentoQuery::porObra(Work, int
+  $horizonteDias = 28)`** — "o que exige ação agora?" — compõe 4 dos
+  ~10 fatos listados no pedido (Seção 13), **cada um reaproveitando um
+  serviço JÁ EXISTENTE e batch-safe, zero regra nova**: pedido de
+  compra atrasado (`PedidoCompra::diasAtrasoAtual()`, eager-load
+  `itens.recebimentos` ANTES do loop — os métodos do model já respeitam
+  `relationLoaded()`, confirmado por leitura de código, então iterar em
+  memória nunca dispara query extra); reserva descoberta/déficit
+  (`CoberturaReservas::porPares()`, Ciclo 20.4, intocado); saída sem
+  conciliação (`ConciliacaoAplicacao::pendenteAgregadaPorObra()`, Ciclo
+  20.4, intocado); material crítico pra atividade próxima
+  (`CoberturaMaterialAtividadeQuery`, só estados genuinamente acionáveis
+  — SemCobertura/AguardandoCompra/DeficitAposConsumoEmergencial — nunca
+  ParcialmenteCoberto/RecebidoAguardandoDisponibilização/
+  InformacaoInsuficiente, que são informativos, não "ação AGORA" no
+  mesmo grau; `CompradoAguardandoRecebimento` também fica de fora
+  deliberadamente — já coberto pelo fato separado "pedido atrasado" SE/
+  QUANDO o pedido de fato atrasar, evita duplicar o mesmo risco sob 2
+  rótulos).
+- **Severidade sempre derivada, nunca arbitrária** (Seção 14): pedido
+  atrasado usa `dias_atraso > 14 ? critica : atencao`; material crítico
+  usa `dias_para_inicio <= 7 ? critica : atencao`; reserva descoberta é
+  sempre `critica` (déficit físico real, nunca hipotético).
+
+### Gaps documentados (Seções 15-17, NÃO implementados nesta entrega)
+
+- **Fornecedores (Seção 15)**: `pedidosAtrasados()` já resolve
+  `fornecedor:id,nome` em lote — uma extensão natural desta MESMA classe
+  (`ResumoFornecedor::porObra()`, agrupando por `fornecedor_id`) é
+  trivialmente derivável dos dados já existentes, mas não implementada
+  nesta entrega por recorte de escopo/tempo — nunca um gap de dado.
+- **Industrialização (Seção 17)**: confirma o gap já registrado na
+  auditoria 20.9 (D2) — `OrdemIndustrializacao`/`ProdutoIndustrializado`
+  não têm prazo formal de produção, então "atrasado" nunca pode ser
+  calculado hoje sem inventar um prazo. Quantidades (enviado/consumido/
+  produzido/entregue/saldo pendente) SÃO deriváveis em lote via
+  `GenealogiaIndustrializacao`/`SaldoProdutoIndustrializado` já
+  existentes — um `ResumoIndustrializacao::porObra()` é viável, mas
+  fica pra uma extensão futura desta mesma camada.
+- **Material parado/excesso (Seção 16)**: "última movimentação real"
+  por Material+Local é diretamente derivável (`MAX(created_at)` em
+  `MovimentacaoEstoque`, batch, obra-escopado) — não implementado nesta
+  entrega. "Excesso" exigiria cruzar disponibilidade × necessidade
+  futura, que por sua vez depende do MESMO vínculo Atividade↔Material já
+  confirmado determinístico nesta etapa — arquiteturalmente viável, não
+  implementado agora.
+- **Documentos de Engenharia (Seção 18)**: `DocumentoEngenharia::
+  atividades()` (N:N direta, já existente) + `scopeNaoLiberados()` (já
+  existente, nunca replicado) já permitem derivar "documento bloqueando
+  atividade" em lote — não incluído em `RiscoSuprimentoQuery` nesta
+  entrega, mas sem nenhum gap de dado.
+- **Inventário aguardando decisão (Seção 13)**: `InventarioEstoque.status
+  = EmAnalise` já é uma query trivial, obra-escopada — não incluído
+  nesta entrega por recorte, não por gap.
+
+Nenhum desses gaps exigiu migration nem revelou ambiguidade
+arquitetural — todos são extensões diretas de dados/serviços já
+confiáveis, deliberadamente deixados de fora desta primeira entrega
+(Seção 28: "esta etapa é a fundação analítica").
+
+### Histórico × Estado atual (Seção 22)
+
+- `fisico`/`disponivel`/`reservado` = estado ATUAL, sempre recalculado.
+- `aplicado` = acumulado HISTÓRICO (nunca "zera" — soma de todas as
+  Aplicações já registradas).
+- `pedido atrasado` = ATUAL (`diasAtrasoAtual()`, `null` assim que a
+  entrega completa — vira histórico via `diasAtrasoFinal()`, não
+  consumido nesta etapa).
+- `estado_agregado` de Cobertura Material = ATUAL em relação ao
+  horizonte consultado, nunca uma tendência.
+
+### Performance (Seção 23)
+
+- `CoberturaMaterialAtividadeQuery::porObra()`: **17 queries fixas** pra
+  5 OU 50 Atividades (prova por DELTA).
+- `RiscoSuprimentoQuery::porObra()`: **18 queries fixas** pra 5 OU 50
+  cenários completos, usando um conjunto realista de poucos Locais
+  compartilhados — reproduzir o teste com 1 Local NOVO por cenário
+  expõe o comportamento JÁ CONHECIDO e ACEITO de `CoberturaReservas::
+  porPares()` (Ciclo 20.4, intocado): O(nº de Locais DISTINTOS nos
+  pares), não O(nº de pares) — documentado aqui como característica
+  pré-existente, nunca "corrigida" nesta etapa (fora de escopo tocar
+  aquele serviço).
+
+### Tenant/obra (Seção 24)
+
+Toda query começa por `where('obra_id', ...)` explícito — nenhuma
+delega só ao global scope de tenant. `SaldoEstoque::porMateriaisNaObra()`/
+`SaldoReserva::porMateriaisNaObra()` foram criados EXATAMENTE pra fechar
+esse requisito (ver acima) — sem eles, a única alternativa batch-safe
+já existente (`porMateriais()`) misturaria dado de outra obra do mesmo
+tenant.
+
+### Testes
+
+`tests/Feature/CoberturaMaterialAtividadeTest.php` (15 testes — Cenários
+A-L completos + performance + consistência contra `SaldoEstoque`/
+`SaldoReserva`) + `tests/Feature/RiscoSuprimentoQueryTest.php` (6 testes
+— os 4 tipos de fato + ausência quando não aplicável + performance).
+`CoberturaMaterialAtividadeTest.php` passou 15/15 já na primeira
+rodada. `RiscoSuprimentoQueryTest.php` exigiu 2 ajustes, ambos no
+teste, nenhum na produção: (1) o cenário de "material crítico" original
+criava RC+Pedido Emitido e esperava `AguardandoCompra` — mas com Pedido
+Emitido o estado correto (e o que o código já produzia certo) é
+`CompradoAguardandoRecebimento`, deliberadamente fora do conjunto
+acionável de `RiscoSuprimentoQuery` (ver acima); corrigido o teste pra
+parar em Requisitado+Alocado, sem RC/Pedido, que É `AguardandoCompra`
+de verdade. (2) o teste de performance original criava um `LocalEstoque`
+NOVO a cada cenário — expondo o comportamento já conhecido de
+`CoberturaReservas::porPares()` (O(nº de Locais distintos), Ciclo 20.4,
+intocado) como se fosse um N+1 novo; corrigido reutilizando um conjunto
+pequeno e realista de Locais compartilhados (documentado no próprio
+teste).
+
+### Regressão
+
+Bucket amplo (Gestão nova/Estoque/Suprimentos/Engenharia-GED/Cronograma-
+Lookahead/Central de Prontidão/TenantIsolation/Take Off/Inventário/
+Identificação): **1684 passed / 1 skipped / 0 failed** (4448 assertions)
+— zero regressão. Suíte completa (full suite solo): **3530 passed / 7
+skipped / 6 failed / 9533 assertions** (de 3509/7/6/9489 antes desta
+etapa — delta exato de +21 testes/+44 assertions, batendo com os 15
+testes de `CoberturaMaterialAtividadeTest.php` + 6 de
+`RiscoSuprimentoQueryTest.php`. As mesmas 6 falhas pré-existentes e sem
+relação: `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+`ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+(3 testes) — zero 7ª falha).
+
+### Migrations
+
+**Zero.** Nenhuma ambiguidade arquitetural real encontrada — o vínculo
+Atividade↔Material já existe (FK real, curado por humano); todo saldo
+segue 100% derivado do ledger já existente.
+
+### Riscos
+
+Nenhum introduzido no domínio operacional (zero linha de
+`Actions`/`Observers` alterada — só leitura). Os 2 novos métodos em
+`SaldoEstoque`/`SaldoReserva` são aditivos, mesma assinatura/estilo dos
+já existentes, sem alterar nenhum comportamento pré-existente
+(confirmado por regressão completa dos buckets Estoque/Suprimentos).
+
+- **Não avançar pra Notificações, Cockpit, dashboard, ou qualquer
+  Etapa 21.2 sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+## Motor de Inteligência, Alertas e Priorização (Ciclo 21, Etapa 21.2)
+
+- **Contexto**: transforma os fatos operacionais/gerenciais da 21.1 numa
+  Central lógica de "situações que exigem atenção" — reutilizável
+  futuramente por Notificações/Cockpit/dashboards/digests/e-mail/sino/
+  Central de Prontidão. **Princípio central seguido à risca**: `Fato
+  operacional → Regra gerencial → Situação/Alerta → destinatários →
+  canais` — esta etapa cobre até "destinatários", NUNCA implementa
+  canais (zero Notification/e-mail/sino/scheduler/job/digest).
+- **Fresh-read encontrou precedente crítico não documentado até então**:
+  `App\Support\Suprimentos\AlertaCadeiaSuprimento` (Ciclo 19, Etapa
+  19.7, já em produção) já dispara Notification (`database`+`broadcast`)
+  pra 2 fatos de granularidade LEGADA (Pacote inteiro, via `ItemSuprimento::
+  necessidade()`/`dataProjetadaAtendimento()` e `PedidoCompra::
+  diasAtrasoAtual()`) mais Restrição criada. Este achado confirmou 3
+  coisas importantes: (1) o padrão de idempotência de envio (UUIDv5
+  determinístico + `notifications.id` como PRIMARY KEY) já É a resposta
+  arquitetural validada em produção pra "situação que persiste por dias
+  sem reenviar todo dia" — reaproveitado na proposta pra 21.3, abaixo;
+  (2) o padrão de destinatários por permissão/perfil obra-escopado
+  (`$obra->users()->where('ativo',true)->filter(temPermissaoNaObra(...))`)
+  já é o padrão canônico do projeto — reaproveitado literalmente em
+  `SituacoesGerenciaisQuery::resolverDestinatarios()`; (3) esta etapa
+  NUNCA duplica os 2 disparos já existentes — cobre os MESMOS domínios
+  com granularidade mais fina (por Material, via `CoberturaMaterialAtividadeQuery`,
+  não só por Pacote inteiro) e sem nenhum canal — as duas coexistem: 19.7
+  continua sendo o mecanismo de ENVIO já em produção; 21.2 é a fundação
+  de uma Central mais rica, ainda sem canal.
+- **`RiscoSuprimentoQuery`/`AcaoGerencial` (21.1) foram REMOVIDAS**
+  (Seção 17 — "não duplicar risco"): substituídas integralmente por
+  `SituacoesGerenciaisQuery`/`SituacaoGerencial`, que cobrem os MESMOS 4
+  fatos da 21.1 (pedido atrasado, reserva descoberta, saída sem
+  conciliação, material crítico) mais 7 novos, numa única fonte.
+
+### Catálogo de situações
+
+- **`App\Enums\TipoSituacaoGerencial`** — 11 tipos fechados (nunca
+  strings soltas): `MaterialCritico`, `ReservaDescoberta` (absorve
+  "RecomposicaoNecessaria" — fresh-read confirmou que `CoberturaReservas`
+  já retorna `deficit`/`reposicao_necessaria` como o MESMO número, criar
+  2 tipos seria taxonomia falsa), `PedidoAtrasado`, `RecebimentoPendente`
+  (NOVO — Pedido Emitido com entrega incompleta mas AINDA dentro do
+  prazo, informativo, nunca confundido com atraso), `MaterialSemDestinacao`,
+  `SaidaSemConciliacao`, `DesvioAplicacao`, `InventarioAguardandoDecisao`,
+  `DocumentoBloqueante`, `IndustrializacaoPendente`, `MaterialParado`.
+- **`App\Enums\SeveridadeSituacao`** — 4 níveis (Informativa/Atenção/
+  Alta/Crítica), investigado antes de criar: `HealthCheckSeveridade` (5
+  níveis) e `SeveridadeInconsistenciaAvanco` (3 níveis) já existem, mas
+  nenhum cabe aqui sem forçar um domínio no outro (mesmo princípio já
+  seguido em toda a Etapa 20: cada domínio tem sua própria taxonomia).
+  **Sempre CALCULADA** (Seção 6) — nunca `score = 37`: cada tipo tem seu
+  próprio método privado documentado (`severidadeMaterialCritico()` etc.)
+  cruzando proximidade temporal × gravidade do fato, nunca um peso
+  mágico.
+
+### Arquitetura
+
+- **`App\DTOs\Gestao\SituacaoGerencial`** (substitui `AcaoGerencial`) —
+  DTO `readonly`/`final`, NUNCA persistido. Campos novos vs. 21.1:
+  `chaveLogica` (dedup), `diasParaRelevante`/`impactoOperacional`/
+  `diasAtraso` (prioridade), `destinatariosPerfis` (array de
+  `{slug,acao}`, NUNCA usuário inventado), `deepLink` (array
+  ESTRUTURADO `{rota,parametros}`, nunca URL montada à mão no domínio).
+- **`App\Support\Gestao\SituacoesGerenciaisQuery::porObra(Work $obra,
+  int $horizonteDias = 28): Collection`** — a Central lógica (Seção 15).
+  11 métodos privados (1 por tipo), cada um reaproveitando um serviço JÁ
+  EXISTENTE e batch-safe (zero regra de negócio nova — só
+  classificação/severidade/priorização): `CoberturaMaterialAtividadeQuery`
+  (21.1), `CoberturaReservas::porPares()`, `PedidoCompra::diasAtrasoAtual()`/
+  `situacaoEntrega()`, `ConciliacaoDestinacao::porPares()`,
+  `ConciliacaoAplicacao::pendenteAgregadaPorObra()`,
+  `DesviosAplicacao::porSaidasEmLote()` (já existia, batch — não
+  precisou de nenhum método novo), `InventarioEstoque.status`,
+  `DocumentoEngenharia::scopeNaoLiberados()`/`atividades()`,
+  `ResumoIndustrializacaoQuery`/`MaterialParadoQuery` (novos, ver
+  abaixo). Pipeline final: `merge` de todas as 11 → `unique(chaveLogica)`
+  (dedup estrutural, Seção 8) → `sortBy(chaveOrdenacao())` (prioridade,
+  Seção 7) → `values()`.
+- **Deduplicação (Seção 8)**: `chaveLogica` NUNCA depende de texto —
+  sempre `"{tipo}:{entidade1}:{entidade2}..."` (ex.:
+  `material_critico:{atividade_id}:{pacote_id}:{material_id}`,
+  `pedido_atrasado:{pedido_id}`) — `unique()` sobre essa chave garante
+  matematicamente 1 ocorrência por fenômeno, mesmo que a consulta rode N
+  vezes (Cenário L, testado).
+- **Prioridade (Seção 7)**: `SituacaoGerencial::chaveOrdenacao()` — tupla
+  explícita `[-impacto, diasParaRelevante ?? PHP_INT_MAX, -severidade,
+  -diasAtraso, chaveLogica]`, ordenada ASCENDENTE — NUNCA um score
+  opaco. Ordem exata pedida: impacto operacional > proximidade temporal
+  > severidade > atraso > desempate estável (chaveLogica, alfabético,
+  nunca a ordem de retorno do banco — testado explicitamente).
+- **Destinatários conceituais (Seção 10)**: `destinatariosPerfis` é só
+  dado (`[{slug,acao}]`); `SituacoesGerenciaisQuery::resolverDestinatarios()`
+  resolve em usuários REAIS só SOB DEMANDA (nunca dentro de `porObra()`,
+  que fica barata) — mesmo padrão exato de `AlertaCadeiaSuprimento::
+  destinatarios()` (19.7): `$obra->users()->where('ativo',true)->filter(
+  temPermissaoNaObra(...))`. Testado: usuário sem NENHUM vínculo com a
+  obra nunca é candidato; usuário inativo nunca é candidato; usuário de
+  outra obra nunca é candidato.
+- **Deep-link (Seção 12)**: sempre `{'rota': 'nome.da.rota', 'parametros':
+  [...]}` — NUNCA uma URL montada com concatenação dentro do domínio.
+- **Linguagem não acusatória (Seção 14)**: `DesvioAplicacao` usa
+  literalmente "Aplicação diferente da destinação planejada" — testado
+  que a descrição NUNCA contém "incorret"/"erro".
+- **Observabilidade (Seção 22)**: todo `contexto` carrega os valores
+  brutos usados na classificação (demanda/reservado/déficit/dias/etc.) —
+  suficiente pra uma futura UI responder "por que isto está aparecendo"
+  sem nenhuma classificação opaca.
+
+### Fatos gerenciais adicionais (Seção 4)
+
+- **`App\Support\Industrializacao\ResumoIndustrializacaoQuery::porObra()`**
+  — previsto/enviado/em poder do terceiro/consumido/produzido/entregue/
+  pendente, batch, obra-escopada. **`prazo_industrializacao` é sempre a
+  string literal `'desconhecido'`** — fresh-read reconfirmou (Ordem/
+  Produto não têm nenhuma coluna de prazo formal) — nunca chamado de
+  "atrasado", nunca uma data inventada.
+- **`App\Support\Estoque\MaterialParadoQuery::porMateriaisNaObra()`** —
+  `dias_sem_movimentacao` = `MAX(MovimentacaoEstoque.ocorrido_em)` por
+  par Material+Local, batch. **Nunca classifica excesso** (decisão
+  explícita, não um gap) — excesso exigiria cruzar contra necessidade
+  FUTURA confiável (o mesmo vínculo Atividade↔Material da 21.1), fora do
+  recorte desta entrega, documentado como extensão futura.
+- **`App\Support\Gestao\ResumoFornecedorQuery::porObra()`** — pedidos
+  abertos/atrasados, quantidade pendente, industrializações em aberto,
+  tudo batch e SEM score arbitrário (instrução explícita). 2 campos
+  ficam sempre `null`, documentados como gap: `materiais_atividades_proximas`
+  (tecnicamente viável — cruzar `PedidoCompraItem` do Fornecedor com
+  `CoberturaMaterialAtividadeQuery` — mas fora do recorte desta entrega)
+  e `documentos_pendentes` (SEM vínculo determinístico — `Fornecedor`
+  nunca se relaciona com `DocumentoEngenharia` em nenhum ponto do
+  domínio, confirmado por fresh-read — nunca inferido via join frágil).
+- **`App\Support\Gestao\ResumoExecutivoGerencial::deSituacoes()`** —
+  Seção 16: contadores por severidade/tipo/domínio, calculados 100% EM
+  MEMÓRIA sobre a Collection já obtida de `porObra()` — **0 queries**,
+  testado explicitamente (`DB::enableQueryLog()` antes/depois confirma
+  zero SQL).
+
+### Engenharia/Documentos (Seção 4)
+
+`DocumentoBloqueante` reaproveita `DocumentoEngenharia::atividades()`
+(N:N direta, já existente desde o Ciclo 18) + `scopeNaoLiberados()`
+(regra autoritativa de liberação, NUNCA replicada) — a única lógica
+nova é o cruzamento com o horizonte temporal da Atividade vinculada.
+
+### Inventário (Seção 4)
+
+`InventarioAguardandoDecisao` = `InventarioEstoque.status = EmAnalise`
+— trivial, obra-escopado. "Ajuste pendente" não é um estado PRÓPRIO do
+domínio (`InventarioItem`/`InventarioAjuste` não têm um status
+"pendente" — o Ajuste só existe DEPOIS de aprovado) — `EmAnalise` já é
+exatamente "aguardando decisão de ajuste", sem precisar de um segundo
+tipo de situação pro mesmo fenômeno.
+
+### Ciclo de vida (Seção 9)
+
+100% derivado, sem persistência — uma situação "resolvida" simplesmente
+não aparece na PRÓXIMA chamada de `porObra()` (testado nos Cenários
+A/C/D/E/G/H: cria a condição → aparece; resolve a condição → desaparece,
+sem nenhuma ação de "marcar como resolvida"). Nada de tabela de
+situações, nada de "status" persistido.
+
+### Preparação arquitetural pra 21.3 (Seção 23 — proposta, NÃO implementada)
+
+Confirmando tecnicamente a preferência do usuário ("fato/situação
+continua derivado; persistimos apenas o estado de comunicação por
+usuário"): **o precedente de `AlertaCadeiaSuprimento` (19.7) já é essa
+arquitetura em produção**, e deve ser generalizado, nunca reinventado:
+
+1. **Chave lógica**: reaproveitar `SituacaoGerencial::chaveLogica`
+   (já existe, já é estável através do tempo enquanto o fenômeno não
+   muda genuinamente — ex.: `pedido_atrasado:{pedido_id}` nasce 1x na
+   vida do Pedido, já que `data_prevista_entrega` é imutável desde a
+   emissão).
+2. **"Já avisei este usuário sobre esta ocorrência?"**: resolvido pelo
+   MESMO mecanismo já validado — UUIDv5 determinístico
+   (`hash(chaveLogica + tipo + userId)`) atribuído a `notification->id`
+   ANTES de `$user->notify()`. `notifications.id` já é PRIMARY KEY —
+   uma 2ª tentativa de gravar a MESMA chave nunca vira 2 linhas, mesmo
+   sob corrida concorrente (o `exists()` prévio é só atalho de
+   performance, a PK é a defesa real).
+3. **Primeira/última detecção**: `notifications.created_at`/`updated_at`
+   já cobrem "primeira detecção" (quando o registro idempotente nasceu);
+   "última detecção" exigiria um campo extra (`updated_at` só muda se
+   algo tocar o registro, o que hoje nunca acontece) — **recomendação**:
+   se "última detecção" for genuinamente necessária no futuro (ex.: pra
+   saber se uma situação "esfriou" e precisa reabrir), adicionar 1
+   coluna nova (`ultima_deteccao_em`) na PRÓPRIA tabela `notifications`
+   customizada do projeto (`database/migrations` já tem uma migration
+   própria de `notifications` desde o Jetstream/Sanctum, não a genérica
+   do framework) — nunca uma tabela paralela.
+4. **Lida/enviada/canal**: `notifications` já tem `read_at`; "enviada"
+   por canal específico já é resolvido por linha SEPARADA por canal
+   (mesmo padrão de `GrdLedgerMailChannel`/`GrdLedgerZApiChannel`,
+   Ciclo 18.5.6 — 1 ledger por canal, nunca uma coluna "enviado" genérica
+   que perderia informação de QUAL canal).
+5. **Resolvida/reabertura**: **decisão a confirmar em 21.3, não
+   resolvida aqui** — `notifications` nativo não tem conceito de
+   "resolvida" (só lida/não-lida). Se a Central de Alertas precisar
+   mostrar "situações já resolvidas que foram notificadas" (histórico),
+   uma tabela PRÓPRIA e pequena (`situacoes_comunicadas` ou similar,
+   chave=`chaveLogica`+`user_id`, colunas: `primeira_deteccao_em`,
+   `ultima_deteccao_em`, `resolvida_em` nullable) é mais robusta que
+   forçar esse conceito dentro de `notifications` — **recomendação
+   final**: avaliar em 21.3 se o volume/necessidade justifica essa
+   tabela nova, ou se o padrão `notifications`-por-canal (já usado 5x no
+   projeto) continua suficiente. **Confirmado tecnicamente**: em NENHUM
+   cenário a SITUAÇÃO em si precisa ser persistida — só o ESTADO DE
+   COMUNICAÇÃO dela, exatamente como a preferência do usuário antecipava.
+6. **Preferências/digest**: fora de escopo de 21.3 também (mencionado
+   só como próximo passo depois — nenhuma tabela de preferência de
+   notificação existe hoje no projeto, seria decisão nova).
+
+### Performance (Seção 21)
+
+`SituacoesGerenciaisQuery::porObra()`: **22 queries fixas** pra 5 OU 50
+cenários completos (prova por DELTA). `ResumoExecutivoGerencial`: **0
+queries** (100% memória).
+
+### Tenant/obra (Seção 11)
+
+Toda situação nasce com `obraId` explícito; testado que a Obra B nunca
+aparece na consulta da Obra A (Cenário K) e que `resolverDestinatarios()`
+nunca inclui usuário só vinculado a outra obra.
+
+### Testes
+
+`tests/Feature/SituacoesGerenciaisQueryTest.php` (22 testes — Cenários
+A-L completos + 3 de prioridade + 3 de destinatários + performance +
+resumo executivo + zero efeito colateral) + `tests/Feature/
+ResumoFornecedorQueryTest.php` (3 testes). 25 testes novos, **100%
+verdes** (2 ajustes durante o desenvolvimento, nenhum de regra de
+negócio: relação `InventarioEstoque::local()` não existe — corrigido
+pra `localEstoque()`, o nome real; teste de destinatário assumia que
+Encarregado não teria `ver` em `suprimentos.mapa` — mas `ver` é liberado
+por padrão a qualquer perfil com vínculo na obra (convenção já
+documentada do projeto) — corrigido o teste pra usar um usuário SEM
+NENHUM vínculo com a obra, que é o cenário real de exclusão).
+
+### Regressão
+
+Bucket amplo (Gestão 21.1+21.2/Estoque/Suprimentos/Engenharia-GED/
+Cronograma-Lookahead/Central de Prontidão/TenantIsolation/Take Off/
+Inventário/Identificação): **1703 passed / 1 skipped / 0 failed** (4506
+assertions) — zero regressão. Suíte completa (full suite solo): **3549
+passed / 7 skipped / 6 failed / 9591 assertions** (de 3530/7/6/9533
+antes desta etapa — delta exato de +19 testes/+58 assertions: −6 dos
+testes removidos de `RiscoSuprimentoQueryTest.php` (21.1, superseded) +
+25 novos (`SituacoesGerenciaisQueryTest.php` com 22 +
+`ResumoFornecedorQueryTest.php` com 3). As mesmas 6 falhas
+pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+`ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`/
+`SincronizarRestricaoSuprimentoTest` (3 testes) — zero 7ª falha).
+
+**Achado real de regressão corrigido durante o processo (teste, nunca
+produção)**: 4 testes-guarda de arquitetura pré-existentes do Ciclo 20
+(`EstoqueSaidaTest::test_ar_zero_conceito_pos_20_4_no_codigo_de_producao`,
+`EstoqueSaidaCorrecaoTest::test_y_zero_conceito_pos_20_4`,
+`EstoqueIndustrializacaoTest::test_zero_conceito_de_20_6_no_codigo`,
+`EstoquePreviewLocalTest::test_l_zero_conceito_pos_20_6...`) fazem
+`str_contains($conteudo, 'case Industrializacao')`/`'case Inventario'`
+sobre TODO `app/` — sem delimitador de fim de palavra, essas duas
+substrings casaram por PREFIXO com `case IndustrializacaoPendente`/
+`case InventarioAguardandoDecisao` (`App\Enums\TipoSituacaoGerencial`,
+enum desta etapa, sem NENHUMA relação com `TipoMovimentacaoEstoque`, o
+domínio real que essas guardas protegem). **Corrigido com o mínimo de
+mudança**: acrescentado 1 espaço à direita em cada termo (`'case
+Industrializacao '`, `'case Inventario '`) nos 4 arquivos — exige o
+nome EXATO do case (todo case de enum `string`-backed sempre tem um
+espaço antes de `=`), preservando 100% o invariante real que a guarda
+sempre protegeu ("`TipoMovimentacaoEstoque` nunca ganha um case
+Transferência/Ajuste/Divergência/Industrialização/Inventário — esses
+fenômenos são sempre pares Entrada+Saida correlacionados, nunca um tipo
+de movimentação novo") sem colidir com enums não relacionados. Mesma
+classe de achado já documentada 2x antes no próprio Ciclo 20
+(`test_ar_zero_conceito_de_20_4` → `test_ar_zero_conceito_pos_20_4`,
+etc.) — nenhuma asserção foi enfraquecida, só a precisão do match.
+
+### Migrations
+
+**Zero.**
+
+### Gaps
+
+`ResumoFornecedorQuery`: materiais de atividades próximas (viável, fora
+do recorte) e documentos pendentes (sem vínculo determinístico).
+`MaterialParadoQuery`: excesso de estoque (exigiria cruzar necessidade
+futura, fora do recorte). Nenhum gap exigiu migration.
+
+### Riscos
+
+Nenhum introduzido no domínio operacional — zero linha de Action/
+Observer alterada, só leitura. `RiscoSuprimentoQuery`/`AcaoGerencial`
+(21.1) foram removidas sem nenhum consumidor de produção afetado
+(único consumidor era o próprio teste da 21.1, também removido).
+
+- **Não avançar pra 21.3 (persistência de comunicação, canais,
+  Notification, dashboard) sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta etapa.
+
+## Central de Notificações e Estado de Comunicação (Ciclo 21, Etapa 21.3)
+
+- **Contexto**: transforma as `SituacaoGerencial` derivadas da 21.2 em
+  comunicação persistente e real a usuários — sino/badge/Central completa
+  já existentes desde antes do Ciclo 21 (`notificacoes-dropdown.blade.php`/
+  `pages/notificacoes/⚡index.blade.php`), agora alimentados pelo novo
+  motor. **A fonte da verdade da situação continua sendo
+  `SituacoesGerenciaisQuery::porObra()`** — nada aqui persiste o FATO
+  operacional, só o CICLO DE VIDA da ocorrência e as mensagens entregues.
+
+### Fresh-read — achados que definiram a arquitetura
+
+- **`App\Support\Suprimentos\AlertaCadeiaSuprimento` (19.7) já resolve
+  "evita duplicação" com UUIDv5 determinístico** sobre uma chave estável
+  no tempo, atribuído a `notification->id` (PRIMARY KEY) — mas NUNCA
+  suporta reabertura dentro da mesma chave: se o fenômeno resolve e volta
+  com a MESMA chave lógica (ex.: `pedido_atrasado:{id}` — imutável desde
+  a emissão), a 2ª ocorrência colide com a 1ª e nunca é comunicada de
+  novo. Suficiente pra 19.7 (nenhum dos 3 fatos legados tem uma noção
+  real de "reabertura" documentada), mas insuficiente pro requisito desta
+  etapa.
+- **`notifications` é o schema NATIVO do Laravel, nunca estendido**
+  (`uuid` PK, `notifiable_type`/`notifiable_id` ulid, `data` text,
+  `read_at`, timestamps — confirmado lendo as 2 migrations reais da
+  tabela) — não existe hoje nenhuma coluna própria de "resolvido"/
+  "reaberto"/"chave lógica" nela.
+- **`SuprimentosPedidoAtrasadoNotification`/demais Notifications de
+  alerta fixam `$this->connection = 'redis'` incondicionalmente** — em
+  produção isso já é `config('queue.default')`, mas FORÇAR a conexão
+  ignora o `QUEUE_CONNECTION=sync` que `phpunit.xml` define pra testes,
+  empurrando o job pro Redis real mesmo dentro da suíte. É por isso que
+  os testes existentes desses alertas (`AlertaCadeiaSuprimentoTest`)
+  **sempre usam `Notification::fake()`**, nunca inspecionam o conteúdo
+  real persistido em `notifications`.
+- **`SincronizarRestricaoCadeiaSuprimento::sincronizarPacote()` (19.7) já
+  é o precedente EXATO de "1 linha por fenômeno, status alterna Aberta/
+  Resolvida, nunca duplica"** — aplicado a `Restricao`, não a
+  `Notification`, mas a estrutura (unique constraint, reabertura
+  atualizando a MESMA linha, resolução nunca deleta) é literalmente o
+  modelo que esta etapa generaliza para `SituacaoOcorrencia`.
+- **`DB::afterCommit()` NUNCA dispara dentro de `RefreshDatabase`** —
+  achado empírico confirmado lendo `Illuminate\Database\
+  DatabaseTransactionsManager::afterCommitCallbacksShouldBeExecuted()`
+  (`return $level === 0`): callbacks só executam quando a transação MAIS
+  EXTERNA chega a nível zero. Como todo teste do projeto roda dentro de
+  UMA transação externa que é sempre revertida (nunca commitada de
+  verdade), qualquer `DB::afterCommit()` registrado durante um teste
+  NUNCA dispara — contrariando o padrão já usado (e nunca testado
+  diretamente contra `notifications`) em `SincronizarRestricaoCadeiaSuprimento::
+  dispararAlertaAposCommit()`. Ver "Achados de implementação" abaixo.
+
+### Decisão arquitetural — A/B/C (Seção 3 do pedido)
+
+| Critério | A — só `notifications` | B — tabela de ocorrência + `notifications` | C — inbox próprio, sem `notifications` |
+|---|---|---|---|
+| Deduplicação | Só por comunicação individual (UUIDv5), nunca sabe se o FENÔMENO já existia | `chave_logica` única por fenômeno (tabela própria) + UUIDv5 por comunicação | Precisaria reimplementar dedup do zero |
+| Resolução | Sem lugar pra guardar "resolvida_em" fora de uma comunicação específica | Coluna própria, sempre a MESMA linha | Precisaria reimplementar |
+| Reabertura | Impossível sem inventar uma 2ª chave (ex.: sufixo de data) — arbitrário | `episodio` incrementado na MESMA linha — natural | Precisaria reimplementar |
+| Multiusuário | `notifications` já resolve de graça (1 linha por notifiable) | Idem — herdado sem esforço extra | Precisaria reimplementar do zero |
+| Lido/não lido | `read_at` já existe | Idem, herdado | Precisaria reimplementar |
+| Canais futuros (mail/WhatsApp) | `via()` já suporta | Idem | Perderia toda a infra de `Notification` |
+| Limpeza/retenção | Padrão Laravel | Idem + a ocorrência decide o que é "histórico relevante" | Reimplementar |
+| Compatibilidade com 19.7 | Nenhuma mudança necessária | Nenhuma mudança necessária (coexistem) | Migraria 19.7 à força — fora de escopo |
+| Complexidade | Mínima, mas INSUFICIENTE (não suporta reabertura corretamente) | 1 tabela pequena, reaproveita tudo que já funciona | Maior — duplica infraestrutura já pronta |
+
+**Escolhida: Opção B** — a mais simples que realmente suporta resolução
+e reabertura, porque generaliza um padrão JÁ PROVADO em produção
+(`SincronizarRestricaoCadeiaSuprimento`) para o domínio de comunicação,
+sem descartar nada da infraestrutura nativa do Laravel já usada pela
+Central existente.
+
+### Fenômeno ≠ ocorrência ≠ comunicação (Seção 4)
+
+- **Fenômeno**: identificado por `SituacaoGerencial::chaveLogica`
+  (21.2, intocado) — estável enquanto a MESMA causa raiz persistir.
+- **Ocorrência** (`App\Models\SituacaoOcorrencia`, tabela
+  `situacao_ocorrencias`): 1 linha por `(tenant_id, chave_logica)`
+  — `UNIQUE`, nunca duas linhas pro mesmo fenômeno. Tem um `episodio`
+  (inteiro, começa em 1, incrementado só quando uma ocorrência
+  `resolvida` volta a ser detectada) — "material crítico → recomposto →
+  crítico de novo" é a MESMA linha, 2 episódios, nunca 2 ocorrências.
+  `vezesReaberta()` é sempre `episodio - 1`, nunca uma coluna própria.
+- **Comunicação**: linha em `notifications` (schema nativo, intocado).
+  Identidade determinística (UUIDv5, mesmo mecanismo de 19.7) sobre
+  `(ocorrencia_id, episodio, motivo[, peso], userId)` — a inclusão de
+  `episodio` no hash é o que resolve a Seção 4 do pedido: 2 episódios da
+  MESMA `chave_logica` produzem comunicações com IDs DIFERENTES, nunca
+  colapsadas pela mesma chave.
+
+### Idempotência, deduplicação, reabertura, escalada (Seções 6/8/15/16/22)
+
+- **`App\Support\Gestao\SincronizarSituacoesGerenciais`** (mesmo
+  espírito de nome/papel de `SincronizarRestricaoCadeiaSuprimento`) é o
+  ÚNICO escritor de `situacao_ocorrencias` e o único disparador de
+  `App\Notifications\SituacaoGerencialNotification`.
+  `sincronizarObra(Work $obra)`:
+  1. Deriva `$situacoesAtuais = SituacoesGerenciaisQuery::porObra($obra,
+     self::HORIZONTE_DIAS)` — **horizonte FIXO** (`HORIZONTE_DIAS = 28`,
+     constante, nunca variável entre execuções — Seção 7: variar o
+     horizonte faria uma situação "sumir" só porque a janela encolheu,
+     nunca porque o fato deixou de ser verdade, uma resolução FALSA).
+  2. Processa cada situação (`processarSituacao`): sem ocorrência
+     existente → cria (episódio 1); ocorrência `Resolvida` → reabre
+     (episódio+1, `resolvida_em=null`); ocorrência `Ativa` → atualiza
+     `ultima_deteccao_em`/`descricao_atual`/`contexto_atual` sempre, e
+     **só marca escalada quando `severidade->peso()` sobe ALÉM do maior
+     peso JÁ COMUNICADO neste episódio** (`severidade_peso_comunicado`,
+     coluna própria) — nunca em desescalada (Seção 16/Teste G: severidade
+     Crítica→Atenção atualiza `severidade_atual` pra exibição, mas nunca
+     dispara comunicação nem reduz `severidade_peso_comunicado`;
+     reescalar pro MESMO peso já comunicado dentro do mesmo episódio
+     também não gera nova comunicação — decisão deliberada anti-flapping,
+     documentada no código).
+  3. `resolverAusentes()`: toda ocorrência `Ativa` da obra cuja
+     `chave_logica` NÃO está em `$situacoesAtuais` vira `Resolvida`
+     (`resolvida_em=now()`) — **nunca gera comunicação** (resolução não
+     está na lista de gatilhos do Teste D/Seção 16).
+- **Comunicação "base" tentada em TODO tick pra TODOS os destinatários
+  ATUAIS** (não só na transição) — chave `{ocorrencia_id}:{episodio}:base`.
+  Isso resolve a Seção 9 ("usuário ganha permissão enquanto ativa") DE
+  GRAÇA, sem nenhum caso especial: um usuário já notificado colide com a
+  PRIMARY KEY (custo: 1 `exists()` barato) e não recebe nada de novo; um
+  usuário recém-elegível nunca teve essa chave gravada, então recebe a
+  comunicação do episódio ATUAL na primeira vez que aparece como
+  destinatário (Teste I). Um usuário que perde acesso simplesmente para
+  de aparecer em `SituacoesGerenciaisQuery::resolverDestinatarios()` —
+  nunca recebe comunicação nova, histórico antigo nunca é tocado (Teste J).
+- **Comunicação de "escalada"** (chave
+  `{ocorrencia_id}:{episodio}:escalada:{peso}`) é uma comunicação
+  ADICIONAL, não substitui a base — nunca cria novo episódio (Teste F:
+  Atenção→Alta mantém `episodio=1`, gera 2ª comunicação).
+- **Concorrência (Seção 21)**: `criarOcorrencia()` tenta `create()` e
+  captura `QueryException` 1062 (mesma UNIQUE constraint, mesmo idioma
+  de `AlertaCadeiaSuprimento`/`PlanoAcao::transformarEmRestricoes()`) —
+  outro processo já criou, refaz o SELECT. `processarSituacao()` roda
+  dentro de `DB::transaction()` com `lockForUpdate()` na ocorrência antes
+  de decidir criar/reabrir/atualizar. `enviarComIdempotencia()` (mesmo
+  método/nome de 19.7) protege a comunicação da mesma forma. Prova
+  estrutural: inserir manualmente uma 2ª linha com a MESMA
+  `(tenant_id, chave_logica)` é rejeitado pelo banco (teste O2).
+- **Alta frequência (Seção 17/Teste B)**: 50 execuções idênticas
+  produzem exatamente 1 ocorrência e 1 comunicação — nada no design
+  depende de "isto é a primeira vez", só de estado já persistido.
+
+### Destinatários, multi-obra, tenant (Seções 8/10/23/24)
+
+- `resolverDestinatarios()` (21.2, intocado) continua a única fonte —
+  `SincronizarSituacoesGerenciais` nunca resolve usuário sozinho.
+- Toda `SituacaoOcorrencia` nasce com `obra_id` explícito; toda
+  comunicação carrega `obra_id`/`obra_nome` no payload. Testes K/L
+  provam isolamento absoluto entre obras do MESMO tenant e entre
+  tenants — inclusive achado de implementação: criar fixtures de um
+  "outro tenant" enquanto autenticado como o tenant atual exige criar
+  os models `BelongsToTenant` (`Work`, `Atividade`, etc.) DENTRO de
+  `TenantContext::actingAs($outroTenant, ...)` — fora dele, o
+  `tenant_id` explícito no array é ignorado e sobrescrito pelo tenant
+  ATUALMENTE autenticado (mesma regra já documentada em todo o projeto,
+  agora também confirmada pro `Work` neste teste específico).
+- **Segurança do deep-link (Seção 24)**: nova rota
+  `notificacoes.abrir/{notification}` — resolve a Notification SEMPRE
+  via `$request->user()->notifications()->find($id)` (nunca
+  `DatabaseNotification::find()` cru) — usuário de outro dono nunca lê,
+  marca como lida, ou navega via este endpoint (testado explicitamente,
+  Teste M).
+
+### Deep-link real (Seção 13)
+
+- `notificacoes.abrir` (mesmo espírito de `radar.entrar`: lookup manual,
+  nunca route-model-binding, resposta amigável em vez de 404/403 cru):
+  1. Ownership (acima).
+  2. `markAsRead()`.
+  3. `Route::has($rota)` — se a rota não existe, mensagem amigável (achado
+     real: `SituacoesGerenciaisQuery::documentoBloqueante()` apontava pra
+     `'engenharia.documentos'`, rota que NUNCA existiu — corrigido nesta
+     etapa pra `'engenharia.pacotes'`, a Lista de Documentos de verdade,
+     confirmado por grep em `routes/web.php`).
+  4. Se o payload carrega `obra_id`: valida `temAcessoAObra()` (mesma
+     API de `HasObraPapel`) e, se autorizado, `ObraContext::set($obra)`
+     ANTES do redirect — a obra ONDE a situação aconteceu, nunca a obra
+     ativa da sessão no momento do clique.
+  5. Redireciona pra `route($rota, $parametros)`.
+- **Entidade removida (Seção 13/Teste N)**: nenhum dos 11 tipos de
+  situação usa deep-link com `{model}`-binding — todos são rotas de
+  LISTAGEM com parâmetros de query string (`?documento=X`,
+  `?pacote=X`) — uma entidade excluída nunca derruba a navegação, só
+  deixa de aparecer destacada na tela de destino; a mensagem histórica
+  (frozen no payload) continua legível de qualquer forma.
+
+### Snapshot da mensagem (Seção 14)
+
+- `App\Notifications\SituacaoGerencialNotification` — **1 classe
+  genérica pros 11 tipos** (decisão deliberada, diferente do padrão "1
+  classe por alerta" de GRD/19.7 — o catálogo já é uniforme via
+  `SituacaoGerencial`, 11 classes quase idênticas duplicariam estrutura
+  sem ganho). Recebe um `array $payload` JÁ RESOLVIDO EM TEXTO PURO no
+  momento da sincronização (título/mensagem/ícone/cor/tipo/severidade/
+  obra/ocorrência/motivo/episódio/entidade/contexto/deep_link) — nunca um
+  Model — ao contrário das notifications legadas (que recalculam texto
+  quando o job de fila roda, possivelmente bem depois), a mensagem
+  histórica NUNCA muda mesmo que a entidade de origem mude ou seja
+  excluída depois.
+
+### Alteração de severidade (Seção 15)
+
+Implementado exatamente como a preferência do usuário: escalada relevante
+(peso sobe) gera nova comunicação SEM criar nova ocorrência do fenômeno;
+queda nunca gera spam. Critério "relevante" = qualquer subida estrita de
+`SeveridadeSituacao::peso()` além do maior já comunicado no episódio —
+simples, claro e testável (Testes F/G), sem inventar um threshold
+arbitrário de "quão grande precisa ser a subida".
+
+### Central in-app (Seção 10) — evolução, não redesenho
+
+- Sino (`notificacoes-dropdown.blade.php`) e Central completa
+  (`pages/notificacoes/⚡index.blade.php`) **já existiam** antes desta
+  etapa — layout/estrutura intocados. Mudanças: `naoLidas()`/
+  `notificacoes()` passam por `App\Support\Gestao\ScopoNotificacoesObra::
+  aplicar()` (badge/lista respeitam acesso ATUAL à obra, Seção 12/23);
+  a Central ganhou 3 filtros (`obraFiltro`/`tipoFiltro`/`severidadeFiltro`,
+  via `data->obra_id`/`data->tipo`/`data->severidade`, sintaxe JSON do
+  Eloquent — funciona sobre a coluna `text` nativa sem precisar alterá-la)
+  e um badge de estado (Ativa/Resolvida) por notificação, resolvido em
+  LOTE (`estadosPorOcorrencia()`, 1 query pra toda a página, nunca 1 por
+  linha) via `ocorrencia_id` guardado no payload.
+- **Badge = comunicações não lidas, nunca "problemas ativos"** (Seção
+  12, confirmado com a arquitetura): `naoLidas()` continua
+  `read_at IS NULL`, só escopado por obra — o Cockpit (fase futura)
+  é quem mostrará contagem de situações ATIVAS.
+- **Ativa × não lida nunca misturados** (Seção 11): `read_at` (por
+  usuário, por comunicação) e `status` da ocorrência (global, derivado
+  de `SituacaoOcorrencia`) são lidos de fontes INDEPENDENTES na mesma
+  linha da Central — uma situação pode estar `Resolvida` e nunca lida,
+  ou `Ativa` e já lida, sem nenhuma inferência cruzada.
+- **`App\Support\Gestao\ScopoNotificacoesObra`**: `obraIdsAcessiveis()`
+  (`$user->works()->pluck('works.id')`) + `aplicar()` — tipado
+  `Builder|Relation` (achado de implementação: `$user->notifications()`
+  retorna `MorphMany`, não `Builder`; tipar só `Builder` quebra os dois
+  únicos chamadores reais com `TypeError` em runtime). Notificação sem
+  `obra_id` no payload (legado que nunca carregou esse conceito) nunca é
+  escondida — ausência é tratada como "sem obra pra restringir", nunca
+  como "obra inacessível".
+
+### Integração com legado 19.7 (Seção 18)
+
+- **Estratégia escolhida: menor mudança coerente** — `AlertaCadeiaSuprimento`/
+  `SincronizarCadeiaSuprimentoCommand`/`SincronizarRestricaoCadeiaSuprimento`
+  permanecem 100% intocados (continuam sendo o canal de ENVIO real pro
+  fato "Pedido atrasado", já em produção, já agendado). `SincronizarSituacoesGerenciais`
+  rastreia a OCORRÊNCIA de `TipoSituacaoGerencial::PedidoAtrasado`
+  normalmente (útil pro futuro Cockpit unificado), mas SUPRIME a
+  comunicação pra esse tipo especificamente (`TIPOS_SEM_COMUNICACAO`,
+  array pequeno e explícito) — o usuário nunca vê o sino duplicado pelos
+  dois sistemas pelo MESMO fato (Teste Q).
+- **`SituacoesGerenciaisQuery`/`AlertaCadeiaSuprimento` continuam
+  cobrindo domínios com granularidades DIFERENTES** (Pacote inteiro vs.
+  Material) — a supressão é só sobre o tipo que hoje colide
+  EXATAMENTE (mesmo Pedido, mesmo fato, mesma granularidade).
+
+### Não quebrar GED/digest existente (Seção 19)
+
+`GrdPendenciasDigestNotification`/`GrdCopiasObsoletasNotification`/
+`GrdCandidatosNovaEntregaNotification` e o restante do domínio GED nunca
+foram tocados — nenhum dos 11 tipos de `TipoSituacaoGerencial` deriva de
+fatos de GRD/GED, e `SincronizarSituacoesGerenciais` nunca lê/escreve
+nada desse domínio. `ScopoNotificacoesObra` é aditivo sobre QUALQUER
+notificação do usuário (legada ou nova) — confirmado por regressão que
+os digests/alertas de GED continuam passando sem alteração de
+comportamento.
+
+### Processamento (Seção 20)
+
+- **`App\Support\Gestao\SincronizarSituacoesGerenciais::sincronizarTenant()`/
+  `sincronizarObra()`**: Action/Service estático, testável diretamente,
+  sem Job/fila própria.
+- **`App\Console\Commands\SincronizarSituacoesGerenciaisCommand`**
+  (`gestao:sincronizar-situacoes`): unidade de execução manual —
+  **deliberadamente NÃO registrado em `Kernel.php`** (Seção 20: "Action/
+  Service + Command manual primeiro; automação de frequência fica pra
+  21.4 se necessário").
+
+### Achados de implementação (bugs reais corrigidos durante a construção, nunca mascarados em teste)
+
+1. **`DB::afterCommit()` nunca dispara sob `RefreshDatabase`** (ver Fresh-
+   read acima) — a primeira versão de `processarSituacao()` usava esse
+   padrão (mirando `SincronizarRestricaoCadeiaSuprimento`) e ZERO
+   comunicação era criada em qualquer teste, mesmo com a ocorrência
+   sendo persistida corretamente. **Corrigido removendo `DB::afterCommit()`
+   por completo**: a comunicação é despachada imediatamente depois que
+   `DB::transaction()` RETORNA (nunca dentro dela) — `processarSituacao()`
+   nunca é chamado de dentro de outra transação externa em nenhum
+   caminho de produção real (`Command → sincronizarTenant → actingAs →
+   sincronizarObra`, sem nenhuma transação por fora), então despachar
+   logo após o retorno é EQUIVALENTE a um `afterCommit()` de verdade
+   neste grafo de chamada específico, e continua correto sob teste: se a
+   transação lança, a comunicação nunca é despachada.
+2. **`$this->connection = 'redis'` hardcoded quebra testabilidade real**
+   — `App\Notifications\SituacaoGerencialNotification` DELIBERADAMENTE
+   não fixa a conexão (herda `config('queue.default')`, que já é
+   `redis` em produção e `sync` em teste via `phpunit.xml`) — permitindo
+   testar o CONTEÚDO real persistido em `notifications` sem
+   `Notification::fake()`, ao contrário do padrão legado.
+3. **Canal `broadcast` inalcançável em ambiente de teste/worker** (mesma
+   classe de achado já documentada em `Report::emitir()`, Ciclo
+   anterior) — o Reverb só resolve `localhost:8080` a partir do
+   NAVEGADOR. `enviarComIdempotencia()` ganhou um `catch (\Throwable $e)
+   { report($e); }` genérico (além do `catch (QueryException)`
+   específico pra 1062) — o canal `database` (sempre processado ANTES na
+   mesma chamada de `NotificationSender`) já persistiu a comunicação
+   nesse ponto; uma falha de infraestrutura de broadcast nunca pode
+   derrubar o sincronizador nem apagar essa escrita já concluída.
+4. **`ScopoNotificacoesObra::aplicar()` tipado só `Builder`** quebrava em
+   runtime os dois únicos chamadores reais (`$user->notifications()`
+   retorna `MorphMany`, não `Builder`) — corrigido pra `Builder|Relation`.
+5. **`SituacoesGerenciaisQuery::documentoBloqueante()` apontava pra uma
+   rota inexistente** (`'engenharia.documentos'`) — só descoberto agora
+   porque esta etapa é a primeira a transformar o deep-link em navegação
+   REAL; corrigido pra `'engenharia.pacotes'`.
+
+### Migrations (Seção 25/26)
+
+- **`situacao_ocorrencias`** (única tabela nova): `id` ulid PK,
+  `tenant_id`/`obra_id` (FK cascade), `tipo`, `chave_logica`, `status`,
+  `episodio`, `severidade_atual`, `severidade_peso_comunicado`,
+  `entidade_tipo`/`entidade_id` (referência solta, sem FK física — mesmo
+  padrão já usado em `SituacaoGerencial`, nunca aponta pra 2 tabelas
+  possíveis), `descricao_atual`, `contexto_atual` (json), 3 timestamps
+  de ciclo de vida (`primeira_deteccao_em`/`ultima_deteccao_em`/
+  `resolvida_em`), timestamps padrão.
+- **Índices** (Seção 26, só os 2 justificados pelas consultas reais):
+  `UNIQUE(tenant_id, chave_logica)` (identidade do fenômeno) e
+  `(obra_id, status)` (única consulta de ciclo de vida que
+  `SincronizarSituacoesGerenciais` realmente faz — "quais ocorrências
+  desta obra estão Ativas"). Nenhum índice "porque pode ajudar".
+- **`notifications` NUNCA alterada** — nenhuma coluna nova, schema 100%
+  nativo do Laravel preservado (Seção 25).
+
+### Retenção (Seção 27)
+
+Nenhuma exclusão automática implementada nesta etapa — situações
+resolvidas continuam em `situacao_ocorrencias`/`notifications` pra
+sempre, potencialmente importantes pra auditoria gerencial futura.
+Estratégia de retenção/arquivamento fica documentada aqui como pendência
+de decisão futura, não implementada.
+
+### Testes
+
+`tests/Feature/SincronizarSituacoesGerenciaisTest.php` (20 testes — A-Q
+completos da Seção 28, usando `DocumentoBloqueante` como veículo
+principal — mais barato de construir e com 2 níveis reais de severidade
+suficientes pra testar escalada sem precisar da cadeia completa de
+Suprimentos; o teste Q reaproveita a cadeia completa só onde
+genuinamente necessário pra `PedidoAtrasado`) + `tests/Feature/
+CentralNotificacoesTest.php` (12 testes — sino/badge/Central completa/
+filtros/estado/segurança/performance, Seções 10/12/23/24/29/30) + 1 novo
+em `TenantIsolationTest.php`. 33 testes novos no total, **100% verdes**
+depois de 5 achados corrigidos durante o desenvolvimento (documentados
+acima em "Achados de implementação" — nenhum deles foi contornado
+enfraquecendo um teste; todos são bugs reais de produção, corrigidos na
+produção).
+
+### Regressão
+
+Bucket Ciclo 21 + Notifications existentes + Suprimentos 19.7 + GED
+(`SincronizarSituacoesGerenciaisTest`/`CentralNotificacoesTest`/
+`SituacoesGerenciaisQueryTest`/`CoberturaMaterialAtividadeTest`/
+`ResumoFornecedorQueryTest`/`AlertaCadeiaSuprimentoTest`/
+`GrdNotificacaoTest`/`GrdDigestTest`/`BoasVindasNotificationTest`/
+`ProntidaoSemanalNotificationTest`): **214 passed** (595 assertions),
+zero regressão. Bucket Estoque/Suprimentos/Planejamento/Cronograma
+(`Estoque*`/`Inventario*`/`Suprimento*`/`RequisicaoPlanejamento*`/
+`RequisicaoCompra*`/`PedidoCompra*`/`Alocacao*`/`TakeOff*`/
+`ListaEngenharia*`, ~200 arquivos de teste): **990 passed / 4 failed /
+1 skipped** (2446 assertions) — as 4 falhas são TODAS em
+`SincronizarRestricaoSuprimentoTest` (fixture com data absoluta
+`Carbon::parse('2026-08-20')`, mesma classe de dívida de calendário já
+documentada repetidamente neste arquivo desde o Ciclo 20 — reproduzida
+de forma IDÊNTICA rodando esse arquivo sozinho, fora de qualquer bucket
+desta etapa, confirmando que não tem nenhuma relação com nenhum arquivo
+tocado em 21.3, cujo domínio nunca encosta em `ItemSuprimentoEtapa`/
+`SincronizarRestricaoSuprimento`). `TenantIsolationTest` isolado: **39
+passed** (76 assertions, incluindo o teste novo de `SituacaoOcorrencia`).
+
+### Full suite solo
+
+**3582 passed / 7 skipped / 6 failed / 9695 assertions** (de
+3549/7/6/9591 antes desta etapa — delta exato de +33 testes/+104
+assertions, batendo com os 20 de `SincronizarSituacoesGerenciaisTest` +
+12 de `CentralNotificacoesTest` + 1 novo em `TenantIsolationTest`). As
+mesmas 6 falhas pré-existentes e sem relação:
+`DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+`ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+(3 testes) — zero 7ª falha.
+
+- **Não configurar frequência automática do `gestao:sincronizar-situacoes`,
+  não iniciar e-mail/digest/push/WhatsApp pra situações gerenciais, não
+  iniciar o Cockpit, não fazer commit/push** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+## Automação, Políticas de Entrega e Digest de Situações Gerenciais (Ciclo 21, Etapa 21.4)
+
+- **Princípio central seguido à risca**: nenhum Job/Notification/Command
+  desta etapa recalcula risco — o fluxo é sempre `SituacoesGerenciaisQuery
+  (21.2) → SincronizarSituacoesGerenciais (21.3, ciclo de vida) → política
+  de entrega (nova) → canal`. `App\Jobs\SincronizarSituacaoObraJob` e os 2
+  Commands novos só orquestram chamadas a `SincronizarSituacoesGerenciais::
+  sincronizarObra()`/`sincronizarTenant()`, já existentes desde a 21.3 —
+  nenhuma regra de negócio duplicada.
+- **Fresh-read confirmou infraestrutura de fila real** (Seção 3 do pedido,
+  condição de STOP explicitamente satisfeita): `docker-compose.yml` já
+  tem um serviço `queue` dedicado (`queue:work redis --tries=3 --sleep=3`,
+  `restart: unless-stopped`) e um `reverb` — automação via Job real
+  (`ShouldQueue`) era segura de implementar, nunca precisou de solução
+  paralela nem de reportar bloqueio de infraestrutura.
+- **`App\Jobs\SincronizarSituacaoObraJob`** — primeiro uso de
+  `Illuminate\Contracts\Queue\ShouldBeUnique` no projeto (`uniqueId() =
+  obra->id`, `uniqueFor = 900`, `tries = 3`, batendo com o worker) — o
+  LOCK de "não processar a mesma obra 2x ao mesmo tempo" é 100%
+  estrutural (a própria infraestrutura de fila do Laravel recusa o
+  despacho, `PendingDispatch::shouldDispatch()` verifica `UniqueLock::
+  acquire()` ANTES de sequer enfileirar), nunca um `Cache::lock()`
+  manual — `handle()` reabre `TenantContext::actingAs($this->obra->tenant,
+  ...)` (mesmo padrão de `ImportarCronogramaJob` — dispatch e execução
+  são processos diferentes, sem usuário autenticado ambiente no worker).
+- **Frequência única de 15 minutos pra TODOS os 11 tipos** (Seção 5 —
+  decisão explícita do próprio pedido, "se uma única frequência de
+  sincronização for mais simples, tudo bem") — quem decide QUANDO avisar
+  de verdade é a política de entrega, nunca a cadência do scheduler.
+  `App\Console\Commands\SincronizarSituacoesGerenciaisCommand`
+  (`gestao:sincronizar-situacoes {--obra=} {--sync} {--dry-run}`) é o
+  ÚNICO ponto que decide despachar Job (produção real) vs. rodar `--sync`
+  (execução direta, sem fila — útil pra depuração/CI) vs. `--dry-run`
+  (100% leitura). Sem `--obra`, itera `Tenant::query()->each()` →
+  `TenantContext::actingAs()` → `Work::query()->each()` — nunca
+  pré-carrega todas as obras num array (Seção 26).
+- **`App\Support\Gestao\PoliticaEntregaSituacao`** — conceito explícito,
+  tipado e testável por `TipoSituacaoGerencial` (Seção 6): `elegivelImediato`,
+  `elegivelDigest`, `severidadeMinimaImediato`, `cooldownMinutos` (240min
+  pros tipos elegíveis a imediato), `escaladaBypassaCooldown`. Mapeamento
+  (`para()`, 11-way match): `MaterialCritico`/`InventarioAguardandoDecisao`/
+  `DocumentoBloqueante` elegíveis a imediato a partir de Alta; `ReservaDescoberta`
+  elegível a imediato só em Crítica (déficit físico real); `DesvioAplicacao`
+  **NUNCA elegível a imediato, mesmo em Crítica** (Seção 8/21 — nunca soar
+  como "a equipe aplicou errado"); `PedidoAtrasado` nem imediato nem
+  digest (Seção 18/legado — ver abaixo); os 5 tipos restantes
+  (`RecebimentoPendente`/`MaterialSemDestinacao`/`SaidaSemConciliacao`/
+  `IndustrializacaoPendente`/`MaterialParado`) sempre digest, nunca
+  imediato. `elegivelParaEmailAgora()` combina severidade≥mínima E
+  (fora do cooldown OU bypassando-o) — nenhum `if` espalhado em
+  Notification/Job.
+- **Reabertura TAMBÉM ultrapassa o cooldown, não só escalada** (achado
+  de implementação, refinamento sobre a Seção 11 do pedido — que só
+  citava escalada explicitamente): um episódio novo (reabertura,
+  `episodio > 1`) representa um problema que já tinha sido dado como
+  resolvido — esperar o cooldown de um episódio ANTERIOR já encerrado
+  faria o usuário nunca ser avisado da reabertura se ela acontecesse
+  dentro da mesma janela de 4h do e-mail anterior. `comunicarBase()`
+  calcula `$reaberta = $ocorrencia->episodio > 1` e passa isso como
+  bypass, exatamente como `comunicarEscalada()` já fazia.
+- **`ultimo_email_em`** (nova coluna em `situacao_ocorrencias`, nullable)
+  — único estado de cooldown necessário; marcado só quando o e-mail é de
+  fato incluído no array de canais, nunca antecipado.
+- **Canais implementados nesta etapa: in-app (existente) + `database`
+  (existente) + e-mail** — nunca WhatsApp/SMS/Slack/Teams (fora de
+  escopo explícito). `App\Notifications\SituacaoGerencialNotification::
+  via()` lê `$this->payload['canais']` (decidido no momento da
+  sincronização, nunca recalculado dentro da Notification).
+- **Achado real — ordem dos canais importa sob fila síncrona**:
+  `Illuminate\Notifications\NotificationSender::queueNotification()`
+  despacha 1 job POR CANAL, em ordem, no MESMO `foreach`; sob
+  `QUEUE_CONNECTION=sync` (ambiente de teste, e um cenário real possível
+  se a fila cair pra modo síncrono em produção), `Illuminate\Queue\
+  SyncQueue::handleException()` **relança** qualquer exceção não
+  tratada, abortando os canais SEGUINTES do array. Como `broadcast`
+  sempre lança (Reverb só resolve `localhost:8080` a partir do
+  navegador, mesmo achado já documentado em `Report::emitir()`),
+  colocá-lo ANTES do canal de e-mail fazia o e-mail NUNCA ser despachado
+  sob fila síncrona — confirmado empiricamente (zero e-mail processado
+  em qualquer teste até a correção). Corrigido em
+  `SincronizarSituacoesGerenciais::resolverCanais()` e em
+  `DigestSituacoesGerenciaisNotification::via()`: `broadcast` SEMPRE por
+  último no array (`['database', <mail-se-elegível>, 'broadcast']`) —
+  sob fila real (Redis), a ordem nunca importaria, mas essa ordem é
+  segura nos dois casos. **Achado registrado, não corrigido nesta
+  etapa** (fora do escopo autorizado): o mesmo padrão de risco existe em
+  `App\Notifications\GrdCopiasObsoletasNotification`/irmãs (Ciclo 18.5.6,
+  `via()` com `broadcast` antes do canal de mail/WhatsApp) — só sinalizado
+  aqui, nenhuma linha alterada nesse arquivo.
+- **`App\Notifications\Channels\SituacaoLedgerMailChannel`** +
+  **`situacao_comunicacao_entregas`** (nova tabela) — generalização
+  DIRETA do mecanismo já validado em produção pelo GRD
+  (`GrdLedgerMailChannel`/`grd_alerta_entregas`, Ciclo 18.5.6): checa
+  `exists()` em `(evento_usuario_id, canal)` ANTES de enviar, grava a
+  linha DEPOIS do `MailChannel::send()` retornar sem exceção, captura
+  `QueryException` 1062 (retry/corrida concorrente) como idempotência —
+  nunca erro. `TenantContext::actingAs((new Tenant())->forceFill(['id'
+  => ...]))` — nunca `new Tenant(['id' => ...])` (mesmo ACHADO C já
+  documentado e corrigido no GRD 18.5.6.HARDENING: `id` não é
+  `$fillable`, `new Tenant(['id' => ...])` descarta o valor em silêncio).
+- **Digest Operacional DIÁRIO, único** (Seção 9/10 — "nunca um segundo
+  digest sem necessidade"): `App\Console\Commands\
+  NotificarDigestSituacoesGerenciaisCommand` (`gestao:digest-situacoes`),
+  agendado `dailyAt('07:30')` — depois do bloco diário 05h-07h já
+  existente, antes dos digests semanais de segunda 08:00. Mesma
+  estrutura EXATA de `NotificarPendenciasGedCommand`/
+  `NotificarProntidaoSemanalCommand`: `Cache::lock()` (30s) + `Cache::put()`
+  marcador "já enviado hoje" (3 dias TTL, só gravado DEPOIS de todos os
+  envios tentados — falha no meio nunca marca o dia como entregue),
+  isolamento de falha por obra via try/catch. 1 e-mail por usuário por
+  obra, nunca por situação — agrupado por domínio
+  (`TipoSituacaoGerencial::dominio()`, 21.2), priorizado por severidade →
+  "é nova" → mais recente, com seção "Resolvidas recentemente" (últimas
+  24h). **Nunca lê `SituacoesGerenciaisQuery::porObra()` diretamente** —
+  só `App\Models\SituacaoOcorrencia` já mantida em dia pelo
+  sincronizador (rodando com muito mais frequência).
+- **`SituacoesGerenciaisQuery::perfisParaTipo(TipoSituacaoGerencial):
+  array`** (novo método público) — expõe a MESMA regra de destinatários
+  conceituais já usada internamente pelos 11 produtores privados, numa
+  segunda `match` DELIBERADAMENTE separada (nunca refatorando os 11
+  métodos já testados da 21.2, pra não arriscar regressão) — usada pelo
+  Digest, que só tem `tipo` salvo em `SituacaoOcorrencia` (nunca o
+  `SituacaoGerencial` completo). Risco de drift entre as duas fontes
+  fechado por teste permanente
+  (`SituacoesGerenciaisQueryTest::test_perfis_para_tipo_nunca_diverge_do_runtime_real`)
+  que compara, situação a situação, o resultado de `perfisParaTipo()`
+  contra o `destinatariosPerfis` REAL emitido em runtime.
+  `resolverDestinatariosPorPerfis(Work, array)` foi extraído de
+  `resolverDestinatarios()` (mesmo filtro, `$obra->users()->
+  where('ativo', true)`+`temPermissaoNaObra()`) pra reaproveitamento
+  pelo Digest sem duplicar a regra.
+- **Destinatários sempre revalidados no MOMENTO DO ENVIO** (Seção 17/18)
+  — nunca resolvidos uma vez e cacheados entre execuções: `HasObraPapel::
+  temPermissaoNaObra()` já cacheia por INSTÂNCIA de `User` (não entre
+  requests), então reusar os MESMOS objetos `$usuariosObra` dentro do
+  loop de um único tick evita N+1 (Seção 26) sem esconder mudança de
+  acesso — usuário que perdeu vínculo/ficou inativo entre um tick e o
+  próximo simplesmente não aparece mais na query fresca.
+- **Timezone: UTC, sem migration** (Seção 15) — `config('app.timezone')
+  = 'UTC'`, sem override em `.env`, sem coluna de timezone por
+  obra/usuário em nenhum lugar do schema — mesma convenção UTC já usada
+  por TODOS os outros comandos agendados do projeto, nenhuma exceção
+  criada aqui.
+- **Usuário sem e-mail (Seção 16)**: estruturalmente impossível neste
+  schema — `users.email` é `NOT NULL` desde a migration original do
+  Jetstream — documentado como caminho inalcançável, não uma lacuna.
+- **Retry sem duplicidade (Seção 13)**: identidade determinística
+  (UUIDv5, mesmo padrão de 19.7/18.5.5/21.3) atribuída a
+  `$notification->id` ANTES do envio — tanto pro e-mail imediato
+  (`enviarComIdempotencia()`, já existente na 21.3, reaproveitado sem
+  alteração de mecanismo) quanto pro digest
+  (`situacao-digest:{obra}:{ano-mes-dia}:{user}`). `notifications.id` é
+  PRIMARY KEY — uma 2ª tentativa nunca vira 2 linhas, mesmo sob corrida
+  real entre processos.
+- **`--dry-run`** (Seção 23/24): `SincronizarSituacoesGerenciais::preview(Work)`
+  — método 100% leitura, nunca chama `processarSituacao()`/escreve no
+  banco — compara a derivação atual contra `SituacaoOcorrencia` já
+  existente e projeta `motivo_previsto` (primeira_deteccao/reabertura/
+  escalada/nenhuma_comunicacao_nova), destinatários, canais elegíveis e
+  quais ocorrências SERIAM resolvidas — nunca resolve de verdade.
+- **Observabilidade (Seção 22)**: saída do próprio Command (obras
+  processadas, situações detectadas por tick, sucesso/erro por obra via
+  `$this->info()`/`$this->warn()`/`$this->error()`) — nenhum dashboard
+  novo nesta etapa, suficiente pra acompanhamento manual/logs.
+- **Preferências de usuário (Seção 28)**: nenhum painel novo — só o
+  default seguro já embutido em `PoliticaEntregaSituacao` (por tipo,
+  nunca por usuário) — usuário não pode desabilitar alerta crítico
+  nesta etapa (decisão de produto explícita, sem UI pra isso ainda).
+- **Migrations** (Seção 27): só 2, ambas aditivas na infraestrutura já
+  criada pela 21.3 (nunca em tabela operacional de domínio) —
+  `situacao_ocorrencias.ultimo_email_em` (cooldown) e
+  `situacao_comunicacao_entregas` (ledger por canal, generalização do
+  padrão GRD).
+- Testes: `tests/Feature/PoliticaEntregaSituacaoTest.php` (8, puro, sem
+  banco) + `tests/Feature/AutomacaoSituacoesGerenciaisTest.php` (16 —
+  Seção 25 A/A2/A3/B/B2/C/D/E/E2/F/G/H/I/P/Q/R) +
+  `tests/Feature/DigestSituacoesGerenciaisTest.php` (7 — Seção 25
+  J/K/L/M/N + N2/idempotência) + 1 novo em
+  `SituacoesGerenciaisQueryTest.php` (guarda de drift de
+  `perfisParaTipo()`) + 1 novo em `TenantIsolationTest.php`
+  (`situacao_comunicacao_entregas`). 33 testes novos no total. Regressão
+  direcionada: Ciclo 21 completo (92 passed), Notifications+19.7+GED
+  digest (173 passed), Suprimentos+Estoque+Planejamento (~40 arquivos,
+  953+ passed — as únicas 4 falhas são as mesmas 3 de
+  `SincronizarRestricaoSuprimentoTest` + 1 de `ItemSuprimentoStatusTest`
+  já documentadas como dívida pré-existente de calendário, reconfirmadas
+  isoladas), `TenantIsolationTest` (40 passed). Suíte completa (full
+  suite solo): **3615 passed / 7 skipped / 6 failed / 9785 assertions**
+  (de 3582/7/6/9695 antes desta etapa — delta exato de +33 testes/+90
+  assertions, batendo com os 33 testes novos. As mesmas 6 falhas
+  pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`/
+  `SincronizarRestricaoSuprimentoTest` (3 testes) — zero 7ª falha).
+- **Não implementado nesta etapa, por instrução explícita**: Cockpit,
+  WhatsApp/push/Slack/Teams/SMS, preferências de notificação por
+  usuário, correção do achado de ordenação de canais em
+  `GrdCopiasObsoletasNotification` (só sinalizado).
+- **Não avançar pro Cockpit, novos canais externos, preferências de
+  usuário, ou correção do achado sinalizado em GRD sem validação do
+  usuário** (instrução explícita) — aguardando aprovação desta etapa.
+
+## Cockpit Executivo da Obra (Ciclo 21, Etapa 21.5)
+
+- **5 perguntas gerenciais, respondidas em ~30s** (Seção 1 do pedido):
+  "o que pode parar minha obra?" (bloco Riscos), "onde preciso agir
+  hoje?" (bloco Ações), "as próximas semanas estão prontas pra
+  executar?" (Prontidão 2/4/8 semanas + Matriz), "onde Suprimentos está
+  comprometendo o cronograma?" (Suprimentos × Cronograma + Pipeline),
+  "quais decisões estão pendentes?" (Engenharia/Estoque/Inventário/
+  Industrialização). Página 100% SOMENTE LEITURA — nenhuma ação de
+  criar/editar/excluir, só deep-links pras telas operacionais reais.
+- **Princípio central seguido à risca**: `App\Support\Gestao\
+  CockpitObraQuery::resumo()` é o ÚNICO ponto que monta o read model
+  (`App\DTOs\Gestao\Cockpit\CockpitObra`) — nunca recalcula regra de
+  negócio, sempre COMPÕE serviços já existentes e já testados:
+  `SituacoesGerenciaisQuery::porObra()` (21.2, riscos/ações/estoque/
+  engenharia/inventário/industrialização), `CoberturaMaterialAtividadeQuery::
+  porObra()` (21.1, prontidão material), `App\Support\CentralProntidao\
+  CentralProntidaoQuery::paraObra()` (Ciclo 15, status operacional),
+  `PipelineMaterialQuery::porMateriais()` (21.1, pipeline por material),
+  `ResumoFornecedorQuery`/`ResumoIndustrializacaoQuery` (21.2). O
+  Livewire (`resources/views/pages/radar/⚡cockpit.blade.php`) só chama
+  `CockpitObraQuery::resumo()` dentro de 1 `#[Computed]` e formata — zero
+  loop/regra no Blade.
+- **Horizonte principal vs. horizonte de prontidão, nunca confundidos**:
+  `$horizontePrincipalDias` (filtro da tela, default 28/4 semanas) escopa
+  `SituacoesGerenciaisQuery::porObra()` (riscos/ações/suprimentos×
+  cronograma/engenharia/estoque/inventário/industrialização — mesma
+  janela já usada pelo sincronizador/digest desde 21.3/21.4, nunca uma
+  janela nova). A Matriz de Prontidão (2/4/8 semanas) usa SEMPRE os 56
+  dias mais largos — `CoberturaMaterialAtividadeQuery::porObra($obra,
+  56)` é chamada **uma única vez** (nunca 3x pra 14/28/56 — Seção 7 do
+  pedido) e os 3 buckets são filtrados EM MEMÓRIA sobre o mesmo
+  resultado.
+- **Riscos × Ações × Informativas — split determinístico, sem 2ª
+  ordenação inventada** (Seção 5/6): `riscos` = top 10 por
+  `chaveOrdenacao()` (JÁ calculada pela 21.2, nunca recalculada aqui)
+  com severidade Crítica/Alta; `acoesHoje` = toda situação NÃO
+  Informativa que ainda não apareceu em `riscos` (nunca duplicada entre
+  os 2 blocos); Informativa nunca entra em nenhum dos dois, só contada
+  (`totalInformativas`) — "informação gerencial" nunca vira "decisão"
+  (Seção 6/18/19).
+- **Prontidão 2/4/8 semanas — mapa de agrupamento editorial e
+  documentado** (`App\DTOs\Gestao\Cockpit\CockpitProntidaoHorizonte`,
+  docblock tem a tabela completa): `cobertas`=Coberto;
+  `parcial`=ParcialmenteCoberto+RecebidoAguardandoDisponibilizacao+
+  DeficitAposConsumoEmergencial; `descobertas`=SemCobertura+
+  AguardandoCompra+CompradoAguardandoRecebimento (honesto — Pedido
+  Emitido sem entrega física ainda conta como "descoberta", nunca
+  "coberta", Seção 32); `informacaoInsuficiente`=InformacaoInsuficiente
+  (NUNCA no numerador nem no denominador do percentual). **Fórmula do
+  percentual sempre explícita** (Seção 8):
+  `percentualCoberturaAvaliavel = cobertas / (total - informacaoInsuficiente)`,
+  `null` quando o denominador é zero — nunca 0%/100% inventado, exibido
+  na UI com a fórmula por extenso ao lado da barra.
+- **Matriz de Prontidão Futura — JOIN em memória, zero regra nova**
+  (Seção 9): `CockpitAtividadeLinha` combina, por `atividade_id`, a
+  cobertura MATERIAL (`CoberturaMaterialAtividadeQuery`) com a prontidão
+  OPERACIONAL (`CentralProntidaoQuery`, `statusOperacional`/`frenteNome`/
+  `pacoteNome`/`resumoMotivos` — nenhuma das 2 fontes é recalculada, só
+  cruzadas). `materiaisCriticos` lista cada par (Pacote,Material) do
+  Ciclo 21.1 não-Coberto, com `faltante = max(0, demanda -
+  reservado_pacote)`.
+- **Pipeline de Suprimentos — NUNCA um funil somado** (Seção 10): somar
+  quantidade entre Materiais de unidades diferentes (kg+m+un) seria
+  matematicamente inválido — mesmo princípio já estabelecido em toda a
+  Etapa 20/21. `pipelineMateriais` é a linha CRUA de `PipelineMaterialQuery::
+  porMateriais()` por Material (nunca somada), ordenada por déficit desc
+  → necessidade desc, cortada a 20 linhas — `pipelineTotalMateriais`
+  expõe o total real ANTES do corte, pra a UI nunca fingir "isto é
+  tudo". "Materiais relevantes à obra" = união de material_id em
+  `MovimentacaoEstoque`/`ReservaEstoque` da obra (mesmo padrão batch já
+  usado por `SituacoesGerenciaisQuery::materialParado()`/
+  `reservaDescoberta()`).
+- **Suprimentos × Cronograma — reaproveita `MaterialCritico` já
+  calculado, enriquecido com `folgaAtendimento()`** (Seção 11, semântica
+  AUTORITATIVA reutilizada, nunca recalculada): batch-load dos Pacotes
+  envolvidos com o MESMO eager-load já validado em
+  `ConciliacaoAlocacao::porPacote()` (Ciclo 19.3) —
+  `atividades`/`requisicoesCompra.pedidos`/`requisicoesCompra.etapas`.
+  **Gap documentado, não escondido**: cobre só os 3 estados que
+  `materialCritico()` (21.2) já trata como acionáveis — um Pacote
+  `CompradoAguardandoRecebimento` não gera `SituacaoGerencial` própria
+  (decisão da 21.2), mas continua visível na Matriz de Prontidão Futura.
+- **Fornecedores/Industrialização — mesma composição: anexar `nome`/
+  `numero`/`fornecedor_nome` via lookup batch adicional** (Seção 12/14):
+  `ResumoFornecedorQuery`/`ResumoIndustrializacaoQuery` (21.2) não
+  expõem esses campos nos próprios rows (serviços intocados desde a
+  21.2) — o Cockpit anexa via 1 query batch extra cada, puramente de
+  apresentação. Fornecedores ordenados por pedidos atrasados desc
+  (fato factual, nunca um "Top 5 piores" inventado — Seção 12).
+  Industrialização nunca chama nada de "atrasado" (`prazo_industrializacao
+  = 'desconhecido'`, herdado sem alteração da 21.2 — Seção 14).
+- **Estoque — contagens de situações, nunca totais físicos somados
+  entre materiais** (Seção 13): `reservas_descobertas`/
+  `materiais_sem_destinacao`/`saidas_sem_conciliacao`/
+  `desvios_aplicacao`/`materiais_parados`, cada um uma
+  `Collection<SituacaoGerencial>` já filtrada de `$situacoes` (21.2) —
+  zero query nova, zero soma de unidades incompatíveis.
+- **Inventário**: `em_contagem` (1 query pequena, obra-escopada,
+  `StatusInventarioEstoque::EmContagem`) + `aguardando_decisao`
+  (situações `InventarioAguardandoDecisao` já calculadas).
+- **Permissão dedicada, ÚNICA exceção do catálogo cujo `ver` não é
+  aberto por padrão** (Seção 34): `gestao.cockpit`, mínimo
+  `Papel::GerentePlanejamento` (persona "Gerente de Obra/Projeto" do
+  pedido). **Achado real de arquitetura**: `Perfil::seedPadrao()`
+  (`App\Models\Perfil.php`) SEMPRE concedia `ver` incondicionalmente pra
+  TODO perfil em TODO slug — não existia mecanismo pra restringir a
+  própria leitura de uma página (só `criar`/`editar`/`excluir`, via
+  `REGRAS_ESCRITA`). Corrigido tratando `REGRAS_ESCRITA[$slug]['ver']`,
+  quando presente, como um MÍNIMO — `gestao.cockpit` é o ÚNICO slug com
+  essa chave; todos os outros 40+ slugs continuam com `ver` concedido
+  incondicionalmente, comportamento bit-a-bit idêntico ao de antes
+  (reconfirmado por `MigracaoPerfisPadraoTest`, zero regressão).
+- **Filtros — deliberadamente mínimo** (Seção 20): só o horizonte
+  principal (2/4/8 semanas, `<select wire:model.live>`). Frente/
+  disciplina/pacote (também sugeridos na Seção 20) foram
+  **conscientemente NÃO implementados** nesta primeira versão — exigiriam
+  estender `CockpitObraQuery::resumo()` pra filtrar cada bloco por
+  frente/disciplina, mais plumbing que o "mínimo" pedido justificava
+  nesta entrega; decisão de escopo registrada aqui, não uma omissão
+  silenciosa.
+- **Deep-links (Seção 21)**: todo item de `riscos`/`acoesHoje`/
+  `suprimentosCronograma`/`engenharia`/`inventario['aguardando_decisao']`
+  reaproveita `SituacaoGerencial::$deepLink` (já validado desde a 21.2/
+  21.3 — rota nomeada + parâmetros, nunca URL montada à mão). Nenhuma
+  ação operacional (aprovar, resolver, editar) vive dentro do Cockpit —
+  só navegação.
+- **Segurança (Seção 33)**: toda query dentro de `CockpitObraQuery` é
+  `where('obra_id', $obra->id)`, nunca só o global scope de tenant.
+  Testado explicitamente: usuário autenticado no tenant A passando um
+  `Work` do tenant B pro read model (cenário "ID manipulado") recebe
+  `CockpitObra` com TODOS os blocos vazios (o global scope de
+  `BelongsToTenant` filtra tudo pra zero) — nunca uma exceção, nunca dado
+  vazado. `mount()` do componente checa `gestao.cockpit|ver` antes de
+  montar qualquer dado.
+- **Performance (Seção 27/37) — medido, não presumido**: `DELTA
+  CockpitObraQuery: 10 atividades -> 71 queries | 100 atividades -> 71
+  queries` — **exatamente igual**, O(1) real (nenhum dos serviços
+  compostos escala com o volume, todos já provados batch nas Etapas
+  21.1/21.2/Ciclo 15/19/20). 500 atividades **não testado** — cada
+  fixture de teste (`cenarioMaterialCritico()`) já é uma cadeia completa
+  RP→Alocação (~8 Actions/queries de ESCRITA), tornando um fixture de
+  500 impraticável no tempo desta suíte sem agregar nova evidência além
+  do que 10→100 já demonstrou (documentado no próprio teste).
+- **Sem cache** (Seção 28) — nenhum cache persistente adicionado;
+  `#[Computed]` do Livewire já memoiza por request, suficiente dado o
+  resultado O(1) medido. Trocar de horizonte (`updatedHorizontePrincipalDias()`)
+  invalida só o computed do resumo, nunca recomputa outras partes da
+  página sem necessidade.
+- **Sem histórico/tendência/snapshot** (Seção 26/38, instrução
+  explícita) — o Cockpit é sempre ESTADO ATUAL, nunca "melhorou X%" ou
+  "evolução dos últimos meses" (não existe snapshot gerencial histórico
+  no domínio — inventar um teria sido proibido explicitamente).
+- **Zero migration** (Seção 39) — confirmado: nenhuma tabela/coluna nova.
+  As únicas mudanças de schema-adjacente foram o slug novo no catálogo
+  (`app/Support/CatalogoFuncionalidades.php`, dado em código, não
+  tabela) e o gate de `ver` em `Perfil::seedPadrao()` (lógica, não
+  schema).
+- **UI**: rota `radar.cockpit` (mesmo padrão `obra.context` de toda
+  página `/app/radar/*`), item de menu "Cockpit Executivo" logo após
+  Dashboard (`resources/menu/verticalMenu.json`), reaproveitando
+  integralmente o shell visual já existente (cards Bootstrap/`bg-label-*`,
+  mesma paleta de severidade de `SeveridadeSituacao::cor()`/`icone()` já
+  usada na Central de Notificações desde a 21.3 — nenhum componente
+  visual novo, nenhuma segunda convenção de cor).
+- Testes: `tests/Feature/CockpitObraQueryTest.php` (20 — Cenários A-M/
+  O/P + 4 testes de consistência contra as fontes de origem + 1 de
+  performance) + `tests/Feature/CockpitPageTest.php` (10 — permissão
+  dedicada nos 4 papéis + sem vínculo + cross-tenant + Cenário N
+  deep-link + filtro de horizonte + estado vazio). 30 testes novos no
+  total, **100% verdes já na primeira rodada real** (só correções de
+  assinatura de Action feitas ANTES de rodar, nunca depois de um teste
+  falhar por bug de produção). Regressão: Ciclo 21 completo (134
+  passed), Central de Prontidão + Lookahead/Cronograma (337 passed),
+  Suprimentos+Estoque+GED+Industrialização+Inventário (60+ arquivos,
+  1430 passed / 1 skipped / 4 failed — as MESMAS 4 falhas pré-existentes
+  de calendário já documentadas em `SincronizarRestricaoSuprimentoTest`
+  (3) + `ItemSuprimentoStatusTest` (1), reconfirmadas isoladas, zero
+  relação com esta etapa), `TenantIsolationTest` (40 passed — nenhuma
+  entrada nova necessária, já que o Cockpit não criou nenhuma tabela).
+  Suíte completa (full suite solo): **3645 passed / 7 skipped / 6 failed
+  / 9874 assertions** (de 3615/7/6/9785 antes desta etapa — delta exato
+  de +30 testes/+89 assertions, batendo com os 30 testes novos do
+  Cockpit. As mesmas 6 falhas pré-existentes e sem relação:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (3 testes) — zero 7ª falha, reconfirmado via grep no log completo).
+- **Não implementado nesta etapa, por instrução explícita**: Cockpit
+  especializado de Suprimentos/Engenharia/Estoque, histórico/tendências,
+  filtros de frente/disciplina/pacote (documentado como decisão de
+  escopo acima), qualquer ação de escrita dentro do Cockpit.
+- **Não avançar pra Cockpits especializados, histórico/tendências, ou
+  qualquer nova fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+## Cockpit de Suprimentos e Abastecimento (Ciclo 21, Etapa 21.6)
+
+- **9 perguntas gerenciais** (Seção 1): "o que precisa ser comprado?",
+  "o que já deveria ter sido comprado e não foi?", "o que foi comprado
+  mas não chegou?", "o que chegará depois da necessidade?", "quais
+  atividades estão ameaçadas?", "quais fornecedores exigem ação?", "onde
+  há déficit/recomposição?", "que material está parado/sem destinação?",
+  "quanto da necessidade já percorreu cada etapa?" — cada uma mapeada a
+  um bloco da tela.
+- **Auditoria adversarial OBRIGATÓRIA do mecanismo de `ver` restrito da
+  21.5, feita ANTES de criar a nova permissão** (Seção 30):
+  `tests/Feature/PermissaoVerGateAuditTest.php` — varredura EXAUSTIVA
+  (não amostral) confirmando que TODOS os 5 papéis continuam com `ver`
+  em TODOS os slugs que nunca declararam um mínimo próprio (comportamento
+  bit-a-bit idêntico ao pré-21.5), que o slug com mínimo restringe
+  corretamente nos 2 sentidos (abaixo/no-e-acima do limiar), e isolamento
+  de tenant. Mecanismo comprovado seguro — reaproveitado sem alteração.
+- **`gestao.suprimentos`, mesmo mecanismo/limiar do Cockpit Executivo**
+  (Seção 31): mínimo `Papel::GerentePlanejamento` — decisão explícita de
+  NÃO restringir só à equipe de Suprimentos (não existe Papel dedicado
+  "Suprimentos" no projeto; é um Cockpit de DECISÃO, mesma seniority do
+  Executivo, distinto das telas operacionais `suprimentos.mapa`/
+  `estoque.*`, essas sim abertas a Encarregado/Engenheiro).
+- **Princípio central seguido à risca — NUNCA duplica `CockpitObraQuery`**
+  (Seção 4): 8 métodos `private static` de `CockpitObraQuery` (21.5)
+  foram promovidos a `public static` (`porTipo`/`montarProntidaoPorHorizonte`/
+  `carregarMateriaisEnvolvidos`/`montarMatrizAtividades`/
+  `montarPipelineMateriais`/`montarSuprimentosCronograma`/
+  `montarFornecedores`/`montarIndustrializacao`) — mudança de
+  visibilidade PURA, zero alteração de comportamento (reconfirmado sem
+  nenhuma edição nos testes já existentes da 21.5) — `App\Support\Gestao\
+  CockpitSuprimentosQuery` chama esses métodos DIRETAMENTE, nunca recopia
+  a composição. Os blocos exclusivos deste Cockpit
+  (`comprasPendentes`/`pedidosCriticos`/`recebimentos`/
+  `chegaTardeDemais`/fornecedores enriquecidos) são compostos sobre os
+  MESMOS serviços de base (`SituacoesGerenciaisQuery`,
+  `CoberturaMaterialAtividadeQuery`, `PipelineMaterialQuery`,
+  `ItemSuprimento::necessidade()`/`dataProjetadaAtendimento()`/
+  `folgaAtendimento()`), nunca uma segunda regra.
+- **Achado real corrigido durante a implementação — eager-load
+  insuficiente pra `folgaAtendimento()`/`necessidade()`**: 2 pontos novos
+  (`carregarPedidosRelevantes()`, `montarFornecedoresEnriquecidos()`)
+  chamam `ItemSuprimento::folgaAtendimento()` sobre Pacotes resolvidos via
+  cadeia FK profunda (`PedidoCompraItem→requisicaoCompraItem→alocacao→
+  pacote`) — os dois métodos leem `$this->atividades`/`$this->
+  requisicoesCompra->pedidos` internamente, e `Model::preventLazyLoading()`
+  está ativo fora de produção. Faltava eager-load de `atividades`/
+  `requisicoesCompra.pedidos` no `pacote` carregado — corrigido
+  estendendo o `with([...])`. **Achado semântico relacionado, corrigido
+  na mesma correção**: a primeira versão de `montarFornecedoresEnriquecidos()`
+  eager-carregava `atividades` JÁ FILTRADA por horizonte (pra montar
+  "materiais de atividades próximas") — mas `folgaAtendimento()`
+  internamente usa a MESMA coleção pra calcular `necessidade()` (a menor
+  data entre TODAS as atividades ativas do Pacote, nunca só as
+  próximas de uma janela arbitrária) — filtrar a relação eager-loaded
+  corromperia esse cálculo. Corrigido carregando `atividades` SEMPRE sem
+  filtro (correção pra `folgaAtendimento()`) e filtrando EM MEMÓRIA,
+  depois, só pra montar a lista de exibição "materiais_atividades_proximas".
+- **Bloco 5 ("o que precisa da minha ação") — `necessidadesCriticas`**:
+  filtro dos MESMOS tipos já calculados por `SituacoesGerenciaisQuery`
+  (21.2) — `MaterialCritico`/`ReservaDescoberta`/`PedidoAtrasado`/
+  `MaterialSemDestinacao`/`IndustrializacaoPendente`, excluindo
+  Informativa — nunca uma segunda prioridade (a ordem já vem de
+  `chaveOrdenacao()`, herdada da coleção original).
+- **Criticidade temporal — Suprimentos + Cronograma combinados** (Seção
+  6): `folgaAtendimento()` (semântica autoritativa da 19.5) é SEMPRE
+  reaproveitada, nunca recalculada. `montarPedidosCriticos()` prioriza
+  por IMPACTO (menor folga associada primeiro), nunca só pelo maior
+  atraso — um Pedido atrasado sem nenhuma atividade próxima nunca
+  "sobe" artificialmente na lista.
+- **`App\Enums\FaixaFolgaAtendimento`** (Seção 7) — threshold EXPLÍCITO
+  e nomeado (`CockpitSuprimentosQuery::LIMIAR_FOLGA_PEQUENA_DIAS = 7`,
+  parametrizável, nunca hardcoded numa cor): Positiva (folga >
+  threshold) / Pequena (0 ≤ folga ≤ threshold) / Atrasada (folga < 0) /
+  SemPrevisaoConfiavel (`folgaAtendimento() === null` — Pedido nunca
+  emitido, ou nenhuma RC formal ainda).
+- **Necessidade × Cobertura, nunca somados como equivalentes** (Seção
+  8): `funilAbastecimento` expõe necessidade/requisitado/alocado/em_rc/
+  em_pedido/recebido/físico/reservado/disponível/aplicado/déficit
+  SEPARADOS, linha crua de `PipelineMaterialQuery::porMateriais()`
+  (reaproveitada via `CockpitObraQuery::montarPipelineMateriais()`,
+  nunca somada entre Materiais — Seção 23).
+- **Pipeline (Seção 9) — sem componente de funil** (mesma decisão já
+  documentada na 21.5): os estágios não são subconjuntos monotônicos
+  perfeitos entre si (ex.: `em_pedido` pode exceder `necessidade` se um
+  Pacote comprar além do estritamente necessário) — tabela comparativa,
+  nunca gráfico de funil.
+- **"Demanda ainda não comprada" (Seção 10) — `comprasPendentes`**:
+  mesma subtração em cascata já usada e testada em `App\Support\
+  Suprimentos\ConciliacaoRecebimento::cadeiaCompletaPorItemTakeOff()`
+  (Ciclo 19.6, doc explícita "uso pontual, nunca listagem em massa"),
+  aqui aplicada em memória sobre a linha JÁ AGREGADA por Material de
+  `PipelineMaterialQuery` — zero query nova, zero regra duplicada:
+  `saldo_a_requisitar`/`saldo_a_alocar`/`saldo_a_colocar_em_rc`/
+  `saldo_a_colocar_em_pedido`/`percentual_comprado`.
+- **Pedidos (Seção 11)**: fornecedor/pedido/quantidade pendente/data
+  prevista/dias de atraso/folga mínima associada/atividades ameaçadas/
+  percentual recebido médio — top 20 por (folga mínima asc, atraso
+  desc), nunca só pelo maior atraso.
+- **Recebimentos (Seção 12) — sempre exceções, nunca agenda completa**:
+  previsto hoje/próximos 7 dias/vencidos/parciais/sem destinação (esse
+  último reaproveita a situação `MaterialSemDestinacao` já calculada,
+  nunca uma 2ª regra), 1 única query batch pra Pedidos Emitido
+  reaproveitada por `montarPedidosCriticos()` E `montarRecebimentos()`
+  (Seção 28 — "considere composição/read context compartilhado").
+- **GAP DA 21.5 RESOLVIDO — fornecedor → atividades próximas, cadeia
+  100% determinística confirmada por fresh-read** (Seção 14): `Fornecedor
+  → PedidoCompra → PedidoCompraItem → RequisicaoCompraItem →
+  AlocacaoRequisicaoPacote → (pacote → ItemSuprimento::atividades() |
+  requisicaoItem → ItemTakeOff → Material)` — 100% por FK viva, ZERO
+  casamento por texto/descrição, confirmado relação a relação antes de
+  implementar. `montarFornecedoresEnriquecidos()` resolve isso em lote
+  (nunca 1 query por fornecedor). **"Documentos pendentes" continua
+  gap** — `Fornecedor` nunca se relaciona com `DocumentoEngenharia` em
+  nenhum ponto do domínio (reconfirmado, não uma suposição herdada).
+- **Valores financeiros — investigado e confirmado AUSENTE do domínio**
+  (Seção 22): fresh-read de `PedidoCompra`/`PedidoCompraItem`/
+  `RequisicaoCompraItem`/`Fornecedor` confirma ZERO campo de valor/
+  preço/moeda em qualquer fillable dessas 4 tabelas — bloco financeiro
+  NUNCA implementado (não é uma decisão de escopo, é ausência real de
+  dado), documentado como gap explícito. Teste permanente
+  (`test_y_nenhum_campo_financeiro_e_exposto`) confirma que nenhuma
+  chave `valor`/`moeda` aparece em nenhuma linha do DTO.
+- **Estoque excedente — investigado e NÃO implementado** (Seção 17): as
+  5 perguntas de semântica (horizonte? reserva conta como compromisso?
+  destinado-mas-não-reservado conta? demanda concluída excluída? terceiro
+  conta?) não têm resposta clara/determinística no domínio hoje —
+  continua usando só "material parado" (`MaterialParadoQuery`, 21.2,
+  intocado), mesma decisão já documentada lá.
+- **"O que chega tarde demais?" (Seção 19) — `chegaTardeDemais`**:
+  Pacotes com `folgaAtendimento() < 0` cuja necessidade cai dentro do
+  horizonte principal, batch (`whereHas('atividades', ...)` só filtra
+  QUAIS Pacotes entram, nunca filtra a relação eager-loaded usada por
+  `folgaAtendimento()` — mesmo cuidado do achado acima).
+- **Unidades/moedas nunca somadas** (Seção 23/24): `panorama` é SEMPRE
+  contagem de situações/exceções (inteiros), nunca soma de quantidade
+  física — testado explicitamente (`test_x_unidades_diferentes_nunca_somadas`).
+- **UI**: reaproveita 100% o padrão visual do Cockpit Executivo (mesmos
+  cards/badges/paleta de `SeveridadeSituacao`/`FaixaFolgaAtendimento`),
+  link cruzado pro Cockpit Executivo no cabeçalho. Rota
+  `radar.cockpit-suprimentos`, item de menu logo após "Cockpit
+  Executivo".
+- **Performance — profiling REAL** (Seção 26/27/37, não só query count):
+  `DELTA CockpitSuprimentosQuery: 10 atividades -> 114 queries, 125ms |
+  100 atividades -> 114 queries (IDÊNTICO), 459ms | pior query
+  10=1.8ms, 100=2.4ms` — O(1) de queries confirmado; o crescimento de
+  tempo (125→459ms) é esperado (mais linhas processadas em memória por
+  Collection, não N+1) e nunca preocupante nessa escala. **500
+  atividades** (fixture leve — só RP+Alocação, cadeia completa de
+  Pedido/RC seria proibitiva em tempo de suíte pra 500 iterações, mesma
+  limitação já documentada na 21.5): **71 queries, 634ms, pior query
+  18.8ms** — ainda saudável. Nenhuma consulta lenta o suficiente pra
+  justificar índice novo (Seção 29 — nenhuma migration de índice criada,
+  sem evidência que a justificasse).
+- **Migrations**: **zero** (confirmado, Seção 39) — nenhum relacionamento
+  de domínio novo, só o slug de permissão (código) + mudança de
+  visibilidade `private`→`public` em métodos já existentes.
+- Testes: `tests/Feature/PermissaoVerGateAuditTest.php` (5, auditoria
+  adversarial) + `tests/Feature/CockpitSuprimentosQueryTest.php` (25 —
+  cenários A-Y do pedido + consistência + profiling 10/100/500) +
+  `tests/Feature/CockpitSuprimentosPageTest.php` (8 — permissão/filtro/
+  estado vazio/deep-link). 38 testes novos no total. **2 achados reais**
+  corrigidos durante a implementação (documentados acima), nunca
+  mascarados enfraquecendo asserção de teste. Regressão: Cockpit
+  Suprimentos+Executivo+Ciclo 21 completo (171 passed), bucket amplo
+  Suprimentos+Estoque+Planejamento+Central de Prontidão+Industrialização+
+  Notifications (60+ arquivos, 1220 passed / 1 skipped / 4 failed — as
+  MESMAS 4 falhas pré-existentes de calendário já documentadas em
+  `SincronizarRestricaoSuprimentoTest` (3) + `ItemSuprimentoStatusTest`
+  (1), reconfirmadas isoladas, zero relação com esta etapa),
+  `TenantIsolationTest` (40 passed — nenhuma entrada nova necessária,
+  zero tabela criada). Suíte completa (full suite solo): **3682 passed /
+  7 skipped / 6 failed / 10132 assertions** (de 3645/7/6/9874 antes desta
+  etapa — delta exato de +37 testes/+258 assertions, batendo com os 37
+  testes novos: 5 de auditoria + 24 de `CockpitSuprimentosQueryTest.php`
+  + 8 de `CockpitSuprimentosPageTest.php`. As mesmas 6 falhas
+  pré-existentes e sem relação: `DocumentosEngenhariaDashboardTest`/
+  `ItemSuprimentoStatusTest`/`ProgramacaoSemanalSnapshotTest`/
+  `SincronizarRestricaoSuprimentoTest` (3 testes) — zero 7ª falha,
+  reconfirmado via grep no log completo).
+- **Não implementado nesta etapa, por instrução explícita**: Cockpit de
+  Engenharia/Estoque/Planejamento separados, histórico/tendências,
+  forecasting probabilístico, IA, score de fornecedor/saúde, alteração
+  operacional dentro do Cockpit, Power BI, novos canais de Notification.
+- **Não avançar pra outro Cockpit especializado, histórico/tendências,
+  ou qualquer nova fase sem validação do usuário** (instrução
+  explícita) — aguardando aprovação desta etapa.
+
+## Auditoria Integrada do Ciclo 21 (Etapa 21.7) + correção do Achado C (21.7.CORREÇÃO)
+
+- **21.7 foi auditoria pura** (fresh-read + probes descartáveis + prova de
+  código, zero refactor cosmético, zero código de produção alterado) de
+  toda a cadeia `PipelineMaterialQuery → CoberturaMaterialAtividadeQuery
+  → SituacoesGerenciaisQuery → SituacaoGerencial → SituacaoOcorrencia →
+  comunicação → PoliticaEntregaSituacao → Central de Notificações →
+  automação/digest → CockpitObraQuery → CockpitSuprimentosQuery → UI`.
+  Resultado: 1 único Achado C, 0 Achados B novos, 2 Achados D (contexto
+  de leitura compartilhado `ContextoGerencialObra` — recomendado, não
+  implementado; índices — nenhuma query do profiling justificou um novo).
+  Todo o resto: Aprovado.
+- **Achado C — `CentralProntidaoQuery::carregarAtividades()` (Ciclo 15)
+  corrompia `ItemSuprimento::necessidade()`**: o eager-load
+  `'itensSuprimento.atividades:id,inicio_planejado'` omitia a coluna
+  `fora_do_cronograma` — `necessidade()` (`$this->atividades->reject(fn
+  ($a) => $a->fora_do_cronograma)->min('inicio_planejado')`) lê essa
+  coluna pra excluir atividade arquivada do cálculo; coluna ausente no
+  select limitado chega como `null` (falsy), o `reject()` nunca rejeita
+  nada, e uma atividade arquivada mais cedo passava a antecipar
+  incorretamente a necessidade do Pacote exibida em
+  `⚡central-prontidao.blade.php` (via `SuprimentoAlerta::$necessidade`).
+  Provado empiricamente por probe descartável (removido após extração
+  da evidência): relação completa → data correta; eager-load limitado →
+  data da atividade arquivada. Grep exaustivo confirmou ser o **único**
+  ponto do código com esse padrão — os 2 eager-loads equivalentes em
+  `CockpitSuprimentosQuery` (21.6) sempre carregam `atividades` sem
+  limitação de coluna, nunca afetados.
+- **Correção mínima aplicada (21.7.CORREÇÃO)**: `CentralProntidaoQuery.php`
+  — select estendido pra `'itensSuprimento.atividades:id,inicio_planejado,
+  fora_do_cronograma'`. Nenhuma outra linha de `necessidade()`/
+  `CentralProntidaoQuery`/Cockpits/`PipelineMaterialQuery`/
+  `CoberturaMaterialAtividadeQuery`/`SituacoesGerenciaisQuery`/
+  Notifications/scheduler/permissões/reserva/estoque/industrialização
+  foi tocada — a semântica de "atividade fora do cronograma" e a fórmula
+  de `necessidade()` permanecem exatamente como eram.
+- **Teste permanente**: `tests/Feature/CentralProntidaoQueryTest.php`
+  ganhou 5 testes (`test_c_.../test_c5_...`) — cenário principal
+  (atividade arquivada mais cedo + ativa posterior, necessidade nunca
+  antecipada pela arquivada), só atividade ativa, múltiplas ativas (usa
+  a menor data), todas fora do cronograma (preserva o comportamento
+  ATUAL de `necessidade()` = `null`, sem inventar semântica nova), e um
+  teste de convergência que compara — sem reimplementar a fórmula — o
+  mesmo `necessidade()` chamado sobre a relação completa, sobre o
+  resultado hidratado pela `CentralProntidaoQuery` (agora corrigida) e
+  sobre um eager-load sem limitação de coluna (padrão já usado em
+  `CockpitSuprimentosQuery`) — os 3 convergem pra mesma data.
+- **Regressão**: 41/41 em `CentralProntidaoQueryTest` (zero regressão),
+  35/36 em `ItemSuprimentoNecessidadeTest`+`ItemSuprimentoStatusTest`+
+  `AlocacaoRequisicaoPacoteTest` (a única falha, `test_status_em_andamento_
+  quando_alguma_etapa_realizada_sem_risco`, é a MESMA dívida histórica já
+  documentada — fixture com data absoluta perto do calendário real,
+  arquivo já listado nas falhas pré-existentes aceitas desde antes deste
+  ciclo — sem nenhuma relação com `necessidade()`/`fora_do_cronograma`),
+  30/30 em `CockpitObraQueryTest`+`CockpitPageTest`, 37/37 em
+  `CockpitSuprimentosQueryTest`+`CockpitSuprimentosPageTest`+
+  `PermissaoVerGateAuditTest`, 144/144 no restante do Ciclo 21 gerencial +
+  `TenantIsolationTest`. Suíte completa (full suite solo): baseline
+  3682/7/6/10132 preservado com as mesmas 6 falhas históricas (nenhuma
+  7ª), delta exato de +5 testes/+10 assertions batendo com os 5 testes
+  novos de `CentralProntidaoQueryTest`.
+- **Ressalva do Achado C encerrada** — Ciclo 21 fecha sem nenhum C aberto.
+- **Não avançar pra nova etapa, novo Cockpit, otimização de queries, ou
+  `ContextoGerencialObra` sem validação do usuário** (instrução
+  explícita).
+
+## Camada Gerencial de Engenharia (Ciclo 22, Etapa 22.1)
+
+- **Fonte única da verdade — zero regra duplicada do GED (Ciclo 18)**:
+  toda a camada nova (`app/Support/Engenharia/*`, `app/DTOs/Engenharia/*`)
+  só COMPÕE regras já autoritativas, nunca reimplementa: documento
+  vigente (`DocumentoEngenharia::latestRevisao()`/`revisaoVigente()`),
+  liberação para construção (`DocumentoEngenharia::
+  estaLiberadoParaConstrucao()`/`motivoLiberacao()`/`scopeNaoLiberados()`,
+  Ciclo 18.4 — histórico append-only via `RevisaoLiberacao::
+  ultimaLiberacao()`, nunca uma coluna `liberado=true` nova), GRD
+  (`DetectorCopiasObsoletasGrd::porObra()`, Ciclo 18.5.1, reaproveitado
+  literalmente), industrialização (`ProdutoIndustrializado::
+  documentoRevisao()`, Ciclo 20.5) — nenhuma migration nesta etapa
+  (confirmado: zero ambiguidade que exigisse STOP/schema novo).
+- **Achado que redesenhou o escopo**: `Atividade::scopeProntas()` (Ciclo
+  18.4.CORREÇÃO) JÁ bloqueia prontidão operacional por QUALQUER documento
+  não liberado vinculado — o "documento bloqueante" binário já é
+  100% resolvido e já em produção (Plano Semanal/Lookahead/Central de
+  Prontidão). Esta etapa não duplica esse bloqueio — adiciona a
+  granularidade RICA que o binário não expõe (Seção 8: 4/5 documentos
+  liberados nunca pode virar "totalmente liberada", mas
+  `scopeProntas()` só sabe dizer "bloqueada", não "quase lá").
+- **`App\Enums\EstadoProntidaoEngenharia`** (Liberada/Parcial/Bloqueada/
+  InformacaoInsuficiente) — 4 estados, sem "NãoAplicável" (decisão
+  deliberada, Seção 7: "não introduzir estado sem necessidade"; o
+  domínio não tem nenhum sinal de "esta atividade definitivamente não
+  precisa de documento", só ausência de vínculo — que já é
+  `InformacaoInsuficiente`, mesma filosofia de `EstadoCoberturaMaterial`
+  do Ciclo 21.1). `InformacaoInsuficiente` NUNCA é confundido com
+  "saudável" (Seção 6/15/25-P).
+- **`App\Support\Engenharia\ProntidaoDocumentalAtividadeQuery::porObra()`**:
+  mesmo filtro de horizonte já canônico desde o Ciclo 21
+  (`fora_do_cronograma=false`, `status != Concluido`, `inicio_planejado`
+  inclusivo via `whereBetween`) — nunca uma segunda convenção. Batch:
+  eager-load `documentosEngenharia.latestRevisao.ultimaLiberacao` uma
+  vez por obra, nunca 1 query por atividade/documento — medido
+  empiricamente: **8 queries fixas pra 10 OU 100 atividades**.
+- **Revisão substituída (Seção 11, R1 liberada + R2 criada)**: resolvido
+  pelo próprio domínio, não inventado aqui — `scopeNaoLiberados()`
+  (18.4.CORREÇÃO) já define que R2 sem liberação própria torna o
+  Documento inteiro NÃO liberado, mesmo com a liberação de R1 intacta no
+  histórico dela (ela só deixa de controlar o Documento). Confirmado por
+  teste (`test_h_r1_liberada_r2_criada_bloqueia_conforme_dominio_real`).
+- **`App\Support\Engenharia\GrdGerencialQuery`** — 2 fatos GRD novos
+  (nunca existiam como leitura gerencial antes desta etapa):
+  `aguardandoAceite()` (GrdDestinatario de GRD Emitida sem
+  `GrdAceiteEntrega::estaAtivo()`, Ciclo 18.5.9, reaproveitado) e
+  `copiasObsoletasPendentes()` (delega 100% pra
+  `DetectorCopiasObsoletasGrd::porObra()`, zero SQL duplicado). **Achado
+  documentado, não um bug (Seção 12/14)**: "distribuição física
+  pendente" como estado PRÓPRIO não existe no domínio — `Grd::
+  estaEmitida()` já É o evento de entrega física (docblock de
+  `GrdDistribuicao`, 18.5.1: "emissão == entrega, neste domínio"); uma
+  GRD ainda Rascunho é só pendência DOCUMENTAL (Seção 16), nunca listada
+  como fato acionável aqui.
+- **`App\Support\Engenharia\IndustrializacaoDocumentalQuery::
+  comMudancaDeRevisao()`** (Seção 17): compara `ProdutoIndustrializado::
+  documentoRevisao()` (congelada na fabricação, Ciclo 20.5) contra
+  `documento->latestRevisao` (vigente agora) — expõe a divergência como
+  FATO NEUTRO ("Produto associado à revisão R1; revisão atual R2"),
+  **nunca invalidação automática** — decisão explícita do pedido, porque
+  essa regra de Engenharia/Qualidade não existe no domínio (confirmado
+  por fresh-read, não presumido). Testado que a descrição nunca contém
+  "inválid"/"erro".
+- **`App\Support\Engenharia\SuprimentoDocumentalQuery::
+  pacotesBloqueadosPorDocumento()`** (Seção 18): reaproveita
+  `ItemSuprimento::documentosEngenharia()` — pivô real
+  (`item_suprimento_documentos`) já em produção desde o Ciclo 18.4 e já
+  consumido por `CentralProntidaoQuery` — **nenhum casamento textual**,
+  nenhuma segunda cadeia inventada via TakeOff/Material (essa cadeia
+  estabelece ORIGEM documental de um item, direção diferente da pergunta
+  "este Pacote depende de um Documento não liberado?").
+- **`App\DTOs\Engenharia\FatoEngenharia`** — forma DELIBERADAMENTE
+  compatível com `App\DTOs\Gestao\SituacaoGerencial` (Ciclo 21) — mesmos
+  campos (tipo/severidade/entidade/obra/impacto/data/atividade/perfis/
+  deepLink/contexto), **decisão explícita de arquitetura (Seção 20,
+  Opção C)**: só read-model nesta etapa, nunca um segundo motor de
+  alertas — `SituacoesGerenciaisQuery`/`TipoSituacaoGerencial`/
+  Notifications/scheduler/digest do Ciclo 21 **não foram tocados**. Uma
+  fase futura decide se/como emendar isso na Central de Notificações.
+  Severidade reaproveita `SeveridadeSituacao` (Ciclo 21) — nunca um score
+  novo (Seção 21).
+- **`App\Support\Engenharia\InteligenciaEngenhariaQuery::porObra(Work,
+  int $horizonteDias)`** — fachada única (Seção 23), retorna
+  `App\DTOs\Engenharia\InteligenciaEngenharia` (prontidaoDocumental +
+  4 coleções de `FatoEngenharia`). Sem UI, sem Cockpit, sem Notification
+  (Seção 29).
+- **Deep-links**: reaproveitam rotas REAIS já existentes
+  (`engenharia.pacotes`/`engenharia.grds`, ambas confirmadas em
+  `routes/web.php`) — `engenharia.grds` exige `?obra=`+`?grd=`/`?aba=`
+  (mesmo padrão já usado pelas Notifications de GRD do Ciclo 18.5.5/
+  18.5.6), nunca um segundo esquema de parâmetro.
+- **Permissões**: nenhuma nova (Seção 27) — segurança de query é só
+  obra/tenant/IDs relacionados, confirmado por teste cross-obra e
+  cross-tenant.
+- **Migrations**: **zero** (Seção 28) — nenhuma ambiguidade real
+  encontrada que justificasse STOP/schema novo.
+- **Consistência com Central de Prontidão**: teste dedicado
+  (`test_consistencia_bloqueio_bate_com_scopeprontas`) prova que, pra
+  qualquer atividade, `EstadoProntidaoEngenharia` ∈ {Bloqueada, Parcial}
+  ⟺ `Atividade::estaPronta() === false` (na dimensão documental) — os
+  dois nunca divergem.
+- Testes: `tests/Feature/InteligenciaEngenhariaQueryTest.php` (19 testes
+  — A-P do pedido + Engenharia×Suprimentos + consistência + performance).
+  Regressão: GED completo 566/566, Central de Prontidão/Cronograma/
+  Lookahead 385/385, Industrialização/Suprimentos 457 passed/4 failed
+  (as mesmas 4 falhas históricas já conhecidas dentro deste filtro —
+  `ItemSuprimentoStatusTest`/`SincronizarRestricaoSuprimentoTest` ×3),
+  Ciclo 21 gerencial + Central de Prontidão + TenantIsolation 247/247.
+- **Não implementado nesta etapa, por instrução explícita**: Cockpit de
+  Engenharia, charts/dashboard, Notification nova, jobs/scheduler/digest,
+  snapshot/tendência histórica, IA, score documental, edição operacional,
+  wiring em `SituacoesGerenciaisQuery`.
+- **Não avançar pro Cockpit visual, criar schema pra preencher gaps, ou
+  qualquer nova fase sem validação do usuário** (instrução explícita) —
+  aguardando aprovação desta etapa.
+
+## Cockpit de Engenharia e Liberação para Construção (Ciclo 22, Etapa 22.2)
+
+- **Perguntas respondidas**: o que a Engenharia precisa liberar pra obra
+  executar; quais atividades das próximas semanas estão bloqueadas por
+  documentação; quais documentos/revisões exigem ação agora; quais GRDs/
+  aceites/recolhimentos estão pendentes; onde mudança de revisão merece
+  atenção em industrialização/Suprimentos; quanto da programação futura
+  está documentalmente pronta. Arquitetura obrigatória respeitada: `GED/
+  Cronograma/Suprimentos/Industrialização → InteligenciaEngenhariaQuery
+  (22.1) → App\Support\Gestao\CockpitEngenhariaQuery (22.2, só
+  composição/apresentação) → Livewire → Blade` — Blade nunca recalcula
+  revisão vigente/liberação/documento bloqueante/prontidão documental/
+  GRD pendente/cópia obsoleta/mudança de revisão/criticidade temporal.
+- **Revalidação semântica de "revisão" (Seção 4)**: `revisaoVigente()`
+  = qual revisão GOVERNA o Documento agora (ordenação por
+  `data_emissao`/`created_at`/`id`, nada a ver com liberação);
+  `scopeNaoLiberados()` = Documento sem liberação na revisão vigente.
+  **"Não liberada" e "substituída" NÃO são equivalentes** — confirmado
+  por fresh-read: criar R2 nunca invalida a liberação de R1 no histórico
+  dela (`RevisaoLiberacao` append-only), só tira de R1 o controle sobre
+  o Documento. Por isso a UI NUNCA diz "revisão substituída"/"documento
+  desatualizado"/"revisão anterior inválida" — usa linguagem neutra
+  (`{doc}::estaLiberadoParaConstrucao()===false`): "aguardando liberação
+  para construção" quando é a única revisão já existente, ou "existe uma
+  revisão mais recente ainda não liberada" quando há 2+ revisões — a
+  distinção exige saber `totalRevisoesDocumento` (extensão ADITIVA,
+  justificada por esta etapa, em `DocumentoDependenciaAtividade`/
+  `ProntidaoDocumentalAtividadeQuery`, Ciclo 22.1 — `withCount('revisoes')`,
+  zero query extra, zero mudança na regra de liberação em si).
+- **Informação Insuficiente nunca é "saudável"** (Seção 5/35): bloco
+  visual PRÓPRIO, sempre visível, distinto do bloco "sem bloqueio" — os
+  dois testados como estados que NUNCA se confundem (uma atividade sem
+  nenhum documento vinculado aparece em "Informação Insuficiente", nunca
+  contabilizada em "atividades_bloqueadas", nunca verde/liberada/100%).
+- **Layout** (Seção 6): resumo executivo (6 indicadores objetivos, nunca
+  score) → "O que precisa da minha ação?" (bloco mais importante,
+  prioridade por `diasParaRelevante` real) → Prontidão Documental 2/4/8
+  semanas (denominador explícito, Informação Insuficiente sempre fora do
+  numerador/denominador de "liberado") → Matriz de Atividades (expand
+  sem N+1, documentos já vêm no read model) → GRD/cópias obsoletas →
+  Industrialização/Suprimentos (fatos neutros) → Informação Insuficiente.
+- **`App\Support\Gestao\CockpitEngenhariaQuery::resumo()`**: chama
+  `InteligenciaEngenhariaQuery::porObra()` (22.1) com o horizonte MAIS
+  LARGO uma única vez (56 dias) e `SituacoesGerenciaisQuery::porObra()`
+  (21.2) uma vez — nunca recalcula nenhuma das duas, só bucketiza em
+  memória (mesmo princípio de `CockpitObraQuery`, 21.5) e cruza por
+  `atividade_id` pra "dupla restrição" (Seção 21: uma atividade com
+  documento bloqueante E `TipoSituacaoGerencial::MaterialCritico` ganha
+  um badge informativo — nunca recalcula a regra de material).
+- **`FatoEngenharia` continua Opção C** (Seção 22, reafirmado): read-model
+  especializado, nunca integrado a `SituacoesGerenciaisQuery` nesta
+  etapa — o Cockpit consome os 2 lados (fatos da 22.1 + situações do
+  Ciclo 21) só por leitura, sem criar segunda verdade.
+- **Achado real, corrigido nesta etapa —
+  `SituacoesGerenciaisQuery::documentoBloqueante()` (Ciclo 21.2) tinha
+  N+1 pré-existente**: o eager-load de `atividades` nunca incluía
+  `latestRevisao.ultimaLiberacao`; como `motivo:`/`contexto['motivo_liberacao']`
+  chamam `$doc->motivoLiberacao()` (2x por documento), cada chamada sem
+  eager-load cai no fallback `DocumentoEngenharia::revisaoVigente()`
+  → `$this->latestRevisao()->first()` — uma query NOVA a cada chamada,
+  nunca cacheada (chamar a relação via método explícito NUNCA aciona o
+  guard de `Model::preventLazyLoading()`, que só intercepta a
+  propriedade mágica `__get` — por isso nunca lançava exceção em teste,
+  só rodava silenciosamente). Nunca detectado antes porque nenhum teste
+  de performance anterior escalava o NÚMERO de documentos bloqueantes
+  distintos além de poucas unidades — só o Cockpit de Engenharia
+  (Seção 28: medir 10/100 atividades) expôs isso em escala real. Mesma
+  classe de bug já corrigida em `CentralProntidaoQuery` (Ciclo
+  21.7.CORREÇÃO, Achado C) — corrigido com a mesma técnica (estender o
+  eager-load pra incluir `latestRevisao.ultimaLiberacao`), zero mudança
+  de regra/semântica. Performance antes/depois: **41→23 queries (10
+  atividades) e 221→23 queries (100 atividades)** — O(1) restaurado.
+- **Permissão**: `gestao.engenharia|ver`, mesmo mecanismo/limiar dos 2
+  Cockpits irmãos (`GerentePlanejamento`) — decisão deliberada de NÃO
+  usar `Papel::Engenheiro` como mínimo (Seção 25: é uma tela de decisão
+  gerencial MULTI-DOMÍNIO — Cronograma+GED+GRD+Industrialização+
+  Suprimentos —, não uma tela operacional do GED). `PermissaoVerGateAuditTest`
+  estendido pro 3º slug gated (varredura exaustiva + contagem total
+  revalidadas).
+- **Deep-links**: reaproveitam rotas reais já confirmadas na 22.1
+  (`engenharia.pacotes`/`engenharia.grds`) — nenhuma rota nova.
+- **Performance final**: **23 queries fixas para 10 ou 100 atividades**
+  (após a correção do N+1 acima) — O(1) preservado end-to-end.
+- **Gaps documentados, não implementados**: "distribuição física
+  pendente" continua inexistente como estado próprio (emissão==entrega,
+  Ciclo 18.5.1); filtro por Disciplina não incluído (sem eager-load
+  batch barato disponível pra essa dimensão nesta etapa).
+- Testes: `tests/Feature/CockpitEngenhariaQueryTest.php` (20 testes —
+  A-Q + consistência + performance) + `tests/Feature/
+  CockpitEngenhariaPageTest.php` (11 testes — R + render/permissão/
+  filtro/estado vazio/deep-link/multi-obra). `PermissaoVerGateAuditTest`
+  ganhou 2 testes novos pro 3º slug. Regressão completa sem nenhuma
+  falha nova além das 6 históricas já conhecidas.
+- **Não avançar pra novos fatos no motor de situações, histórico/
+  tendências, Cockpit de Estoque, schema novo, ou commit/push sem
+  validação do usuário** (instrução explícita).
+
+## Integração Seletiva da Engenharia ao Motor Gerencial (Ciclo 22, Etapa 22.3)
+
+- **Princípio seguido à risca**: "não promover tudo" — litmus test da
+  Seção 2 ("existe algo que exige ação de alguém e cuja ausência pode
+  afetar a obra/governança documental/obrigação operacional?") aplicado
+  a cada um dos fatos da 22.1/22.2. Resultado: **1 único tipo novo**
+  promovido, de 8 fatos investigados.
+- **Inventário de fatos** (Fato | Acionável? | Já comunicado por
+  legado? | Candidato?):
+  - Documento bloqueando atividade futura → SIM/SIM/**JÁ INTEGRADO**
+    (`TipoSituacaoGerencial::DocumentoBloqueante`, Ciclo 21.2 — nunca
+    duplicado, só reafirmado como já cobrindo exatamente este fato).
+  - GRD aguardando aceite → SIM/**NÃO** (grep confirmou zero Notification
+    legada cobrindo "aceite")/**PROMOVIDO** (`GrdAguardandoAceite`, novo).
+  - Cópia obsoleta pendente de recolhimento → SIM/**SIM**
+    (`GrdCopiasObsoletasNotification`+`GrdPendenciasDigestNotification`,
+    Ciclo 18.5.5/18.5.7, cobertura completa: detecção+in-app+e-mail+
+    digest)/**NÃO PROMOVIDO** — Opção A do pedido (Seção 11): manter
+    legado como único canal, nunca duplicar. Continua exposto SÓ no
+    Cockpit de Engenharia (via `GrdGerencialQuery`, 22.1), nunca também
+    como `SituacaoGerencial`.
+  - Revisão mais recente não liberada, sem atividade/fabricação/Suprimentos
+    afetados → NÃO acionável isoladamente/**NÃO PROMOVIDO** — sem
+    impacto operacional comprovado, permanece Cockpit-only.
+  - Produto industrializado vinculado a revisão anterior → SIM (fato),
+    mas SEM regra formal de Qualidade que torne isso uma AÇÃO exigida
+    (confirmado por fresh-read, 22.1)/**NÃO PROMOVIDO** — permanece
+    Cockpit-only, linguagem sempre neutra.
+  - Item de Suprimentos ligado a documento não liberado → pivô real
+    existe, mas SEM regra operacional que ligue liberação documental a
+    bloqueio de compra/fabricação (nenhum código gate isso — confirmado)
+    /**NÃO PROMOVIDO** — nunca inventar causalidade (Seção 14).
+  - Informação insuficiente (atividade sem documento vinculado) → sem
+    responsável/ação objetiva determinável (pode ser legítimo "não
+    precisa de documento" ou "esqueceram de vincular" — domínio não
+    distingue)/**NÃO PROMOVIDO** — permanece Cockpit-only.
+  - Documento não liberado sem atividade → nunca existiu como fato
+    autônomo em 22.1/22.2 (só existe atrelado a atividade/pacote) —
+    nada a promover ou suprimir, confirmado correto por design.
+- **`TipoSituacaoGerencial::GrdAguardandoAceite`** (único tipo novo):
+  - Definição: destinatário de uma GRD Emitida sem `GrdAceiteEntrega::
+    estaAtivo()` (Ciclo 18.5.9, nunca redefinido).
+  - Identidade lógica: `grd_aguardando_aceite:{grd_destinatario_id}` —
+    estável por destinatário, nunca por texto/timestamp (Seção 17).
+  - Lifecycle: aparece na 1ª sincronização sem aceite ativo → resolve
+    quando `RegistrarAceiteEntrega` roda → REABRE (novo episódio) se o
+    aceite for invalidado depois (`InvalidarAceiteEntrega`) — mesma
+    infraestrutura de episódio/ocorrência do Ciclo 21.3, zero tabela
+    nova.
+  - Severidade: sempre `Informativa` (sem prazo/SLA formal no domínio,
+    confirmado por fresh-read) — nunca escala, testado explicitamente.
+  - Destinatários: `PERFIS_ENGENHARIA_PLANEJAMENTO` (mesmo conjunto já
+    usado por `DocumentoBloqueante`) — nenhum novo perfil inventado.
+  - Deep-link: `engenharia.grds` com `obra`+`grd` (rota real, já
+    confirmada na 22.1/22.2).
+  - Política de entrega: digest-only, nunca imediato (mesmo grupo de
+    `RecebimentoPendente`/`MaterialSemDestinacao`/`SaidaSemConciliacao`/
+    `IndustrializacaoPendente`/`MaterialParado` em `PoliticaEntregaSituacao`)
+    — sem urgência temporal real que justifique e-mail imediato.
+  - Cooldown/dedup/reabertura: 100% reaproveitados de
+    `SincronizarSituacoesGerenciais` (Ciclo 21.3) — zero implementação
+    nova, zero tabela nova.
+  - **Zero duplicidade com legado**: nenhuma Notification GRD menciona
+    "aceite" (confirmado por teste permanente que varre
+    `app/Notifications/Grd*.php`); `SincronizarSituacoesGerenciais::
+    TIPOS_SEM_COMUNICACAO` NUNCA precisou incluir este tipo (nada a
+    suprimir).
+  - **Zero duplicidade dentro dos Cockpits**: `CockpitObraQuery`
+    (Executivo, 21.5) filtra seu bucket `engenharia` explicitamente por
+    `DocumentoBloqueante` (nunca por `dominio()` genérico) — o novo tipo
+    NUNCA aparece ali; por ser `Informativa`, também nunca entra em
+    `riscos`/`acoesHoje`, só é contado em `totalInformativas` — sem
+    nenhuma mudança de código necessária, confirmado por teste.
+    `CockpitEngenhariaQuery` (22.2) continua lendo GRD aguardando aceite
+    DIRETO de `InteligenciaEngenhariaQuery`/`GrdGerencialQuery` (22.1),
+    nunca da nova `SituacaoGerencial` — as duas fontes nunca se misturam
+    no mesmo bloco, testado explicitamente (zero duplicação na "ação
+    prioritária").
+  - Digest: agrupa automaticamente sob `dominio() => 'engenharia'`
+    (mesmo domínio de `DocumentoBloqueante`) — `NotificarDigestSituacoesGerenciaisCommand`
+    já agrupa genericamente por `dominio()`, zero código novo.
+  - Central de Notificações: filtro de tipo (`TipoSituacaoGerencial::cases()`)
+    já é genérico — o novo tipo aparece automaticamente, zero código novo.
+- **Performance**: `SituacoesGerenciaisQuery::grdAguardandoAceite()`
+  delega 100% pra `GrdGerencialQuery::aguardandoAceite()` (já batch,
+  22.1) — **14 queries fixas pra 10 ou 100 GRDs**, O(1) preservado.
+- **Migrations**: zero — toda a infraestrutura (ocorrência/comunicação/
+  episódio/cooldown/digest) já existia desde o Ciclo 21.3/21.4.
+- **Gaps reafirmados, não implementados**: cópia obsoleta/industrialização/
+  Suprimentos/informação insuficiente permanecem deliberadamente fora do
+  motor global — decisão de "gestão por exceção", não uma lacuna técnica.
+- Testes: `tests/Feature/GrdAguardandoAceiteSituacaoTest.php` (17 testes
+  — H-T + Q [documentado como N/A] + R [50x] + S + negativos de não-
+  promoção + consistência com os 2 Cockpits + performance). Regressão
+  completa (952 testes no bucket amplo) sem nenhuma falha nova.
+- **Não avançar pra novo Cockpit, histórico/tendências, schema novo, ou
+  commit/push sem validação do usuário** (instrução explícita).
+
+## Auditoria Integrada do Ciclo 22 (Etapa 22.4) + correção do Achado B (22.4.CORREÇÃO) — fechamento do Ciclo 22
+
+- **22.4 auditou toda a cadeia** `DocumentoEngenharia → revisão vigente →
+  histórico de liberação → atividade → scopeProntas() →
+  ProntidaoDocumentalAtividadeQuery → InteligenciaEngenhariaQuery →
+  CockpitEngenhariaQuery → SituacoesGerenciaisQuery → SituacaoGerencial →
+  SituacaoOcorrencia → comunicação → política de entrega → Central/Digest`
+  (mais GRD/aceite/cópia obsoleta/Industrialização/Suprimentos/Central de
+  Prontidão/Cockpit Executivo) via fresh-read + probes descartáveis
+  (removidos ao final, nenhum teste permanente sobrou da 22.4 em si).
+  Resultado: **1 Achado B, 3 Achados D** (classificação normalizada —
+  ver abaixo), todo o resto Aprovado (revisão vigente ≠ liberada,
+  identidade/lifecycle de GRD, múltiplos destinatários resolvendo
+  independentemente, isolamento de falha por produtor/obra em
+  `SincronizarSituacoesGerenciais`, multi-obra/tenant, permissões).
+- **Achado B — `SuprimentoDocumentalQuery::pacotesBloqueadosPorDocumento()`
+  (Ciclo 22.1) tinha eager-load insuficiente pra `DocumentoEngenharia::
+  motivoLiberacao()`**: o `with(['documentosEngenharia' => ...naoLiberados()])`
+  nunca incluía `latestRevisao.ultimaLiberacao` — `motivoLiberacao()`
+  (chamado no `contexto['motivo_liberacao']`) cai no fallback
+  `revisaoVigente() → $this->latestRevisao()->first()` (query nova, nunca
+  cacheada) e depois `estaLiberadaParaConstrucao()` lê `$this->
+  ultimaLiberacao` como PROPRIEDADE — sem essa relação carregada, aciona
+  `Model::preventLazyLoading()` e lança `LazyLoadingViolationException`
+  fora de produção (N+1 silencioso em produção). **3ª ocorrência da MESMA
+  classe de bug neste projeto** (`CentralProntidaoQuery`, Ciclo
+  21.7.CORREÇÃO; `SituacoesGerenciaisQuery::documentoBloqueante()`, Ciclo
+  22.2) — mesma correção: estender o eager-load pra
+  `documentosEngenharia.latestRevisao.ultimaLiberacao`.
+- **Grep direcionado (Seção 8 da 22.4.CORREÇÃO) confirmou os outros 3
+  call sites de `motivoLiberacao()` já são seguros** — nenhum novo
+  ofensor: `ProntidaoDocumentalAtividadeQuery` (22.1, já eager-carrega a
+  cadeia correta), `CentralProntidaoQuery` (Ciclo 18.4, sempre carregou
+  `documentosEngenharia.latestRevisao.ultimaLiberacao` corretamente),
+  `SituacoesGerenciaisQuery::documentoBloqueante()` (já corrigido em
+  22.2).
+- **Correção mínima**: 1 linha adicionada ao `with()` de
+  `SuprimentoDocumentalQuery::pacotesBloqueadosPorDocumento()`. Nenhuma
+  mudança de filtro/semântica/scope — `naoLiberados()`/restrição por
+  obra/revisão vigente/histórico append-only intactos.
+- **Teste permanente** (`tests/Feature/SuprimentoDocumentalQueryTest.php`,
+  6 testes): reproduz o cenário real (múltiplos Pacotes/documentos na
+  mesma obra) — **provado empiricamente que falha ANTES da correção**
+  (revertida temporariamente pra confirmar, restaurada em seguida) **e
+  passa depois**; valida conteúdo (documento/pacote/motivo), nunca só
+  "não lançou exceção"; teste de convergência confirma que o
+  `motivo_liberacao` do fato bate com uma chamada direta e totalmente
+  carregada do mesmo método; performance **4 queries fixas pra 10, 100 e
+  500 Pacotes/documentos** — O(1) confirmado inclusive em escala maior.
+- **Classificação normalizada da auditoria 22.4** (correção documental,
+  Seção 10 — nenhuma mudança de comportamento): **1×B** — eager-load de
+  `SuprimentoDocumentalQuery` (corrigido nesta etapa). **3×D** — recipients
+  conceituais (`PERFIS_ENGENHARIA_PLANEJAMENTO` notifica staff interno,
+  nunca o destinatário físico da GRD — mesma convenção arquitetural do
+  projeto inteiro, não uma falha específica); `totalInformativas` sem
+  drill-down no Cockpit Executivo (pré-existente desde 21.5, vale pros
+  outros 9 tipos Informativa também); backfill de permissão em tenant
+  criado antes de um slug novo existir (pré-existente desde 21.5,
+  mitigado pela tela "Perfis de Acesso", self-service). **Nenhum dos 3 D
+  foi implementado** — permanecem dívida consciente, fora de escopo.
+- **Regressão**: bucket amplo 1210 passed/4 failed (as mesmas 4
+  históricas dentro deste filtro); full suite completa sem nenhuma
+  falha nova além das 6 já conhecidas.
+- **Migrations**: zero.
+- **FECHAMENTO DO CICLO 22**: **ENCERRADO SEM RESSALVA CRÍTICA** — o
+  único Achado B foi corrigido, protegido por teste permanente, com
+  performance O(1) preservada e nenhum ofensor equivalente novo
+  encontrado. Os 3 D permanecem dívida consciente documentada, não
+  bloqueiam o fechamento.
+- **Não iniciar Ciclo 23, histórico, Cockpit de Estoque, atacar os 3 D,
+  ou commit/push sem validação do usuário** (instrução explícita).
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:

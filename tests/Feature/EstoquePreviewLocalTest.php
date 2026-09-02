@@ -518,7 +518,10 @@ class EstoquePreviewLocalTest extends TestCase
         // ex.: "quando uma fase futura adicionar Saída/Ajuste/Estorno").
         $base = base_path('app');
         $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS));
-        $proibidos = ['case Inventario', 'case AjusteEstoque', 'case Estorno', 'TransferenciaInterna', 'CodigoBarras1D'];
+        // Ciclo 21, Etapa 21.2 — espaço à direita exige o nome EXATO do
+        // case, fechando colisão de prefixo com `case InventarioAguardandoDecisao`
+        // de App\Enums\TipoSituacaoGerencial (enum não relacionado).
+        $proibidos = ['case Inventario ', 'case AjusteEstoque', 'case Estorno', 'TransferenciaInterna', 'CodigoBarras1D'];
 
         $encontrados = [];
         foreach ($iterator as $file) {

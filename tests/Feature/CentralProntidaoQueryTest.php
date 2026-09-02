@@ -669,4 +669,117 @@ class CentralProntidaoQueryTest extends TestCase
         $this->assertNull($view->frenteNome);
         $this->assertNull($view->responsavelNome);
     }
+
+    // =========================================================================
+    // 9) EAGER-LOAD DE NECESSIDADE (Achado C, Ciclo 21 — Etapa 21.7.CORREÇÃO)
+    //
+    // `carregarAtividades()` eager-carrega `itensSuprimento.atividades` com
+    // select limitado — precisa incluir TODA coluna que
+    // `ItemSuprimento::necessidade()` lê (`inicio_planejado` E
+    // `fora_do_cronograma`), senão a coluna omitida chega como `null`
+    // (falsy) e o `reject(fn($a) => $a->fora_do_cronograma)` interno nunca
+    // rejeita nada — uma atividade arquivada passa a contar na
+    // necessidade do Pacote.
+    // =========================================================================
+
+    public function test_c_necessidade_ignora_atividade_arquivada_mais_cedo(): void
+    {
+        $atividadeArquivadaCedo = $this->criarAtividade([
+            'inicio_planejado' => now()->addDays(3),
+            'fora_do_cronograma' => true,
+        ]);
+        $atividadeAtivaPosterior = $this->criarAtividade([
+            'inicio_planejado' => now()->addDays(10),
+            'fora_do_cronograma' => false,
+        ]);
+
+        $item = $this->criarItemSuprimento(['status' => StatusItemSuprimento::Atrasado->value]);
+        $item->atividades()->attach($atividadeArquivadaCedo->id, ['tenant_id' => $this->tenant->id]);
+        $item->atividades()->attach($atividadeAtivaPosterior->id, ['tenant_id' => $this->tenant->id]);
+
+        // A atividade ativa posterior precisa estar visível na Central
+        // pra `itensSuprimento` ser resolvido dentro do eager-load real —
+        // usamos ela mesma como o "nó" cuja view carrega o Pacote.
+        $view = $this->viewDe($atividadeAtivaPosterior);
+
+        $this->assertNotEmpty($view->suprimentos);
+        $this->assertTrue(
+            $atividadeAtivaPosterior->inicio_planejado->isSameDay($view->suprimentos[0]->necessidade),
+            'A necessidade nunca pode ser antecipada por uma atividade fora do cronograma.'
+        );
+        $this->assertFalse(
+            $atividadeArquivadaCedo->inicio_planejado->isSameDay($view->suprimentos[0]->necessidade),
+            'A atividade arquivada não pode determinar a necessidade do Pacote.'
+        );
+    }
+
+    public function test_c2_necessidade_somente_atividade_ativa(): void
+    {
+        $ativa = $this->criarAtividade(['inicio_planejado' => now()->addDays(5), 'fora_do_cronograma' => false]);
+        $item = $this->criarItemSuprimento(['status' => StatusItemSuprimento::Atrasado->value]);
+        $item->atividades()->attach($ativa->id, ['tenant_id' => $this->tenant->id]);
+
+        $view = $this->viewDe($ativa);
+
+        $this->assertTrue($ativa->inicio_planejado->isSameDay($view->suprimentos[0]->necessidade));
+    }
+
+    public function test_c3_necessidade_multiplas_atividades_ativas_usa_menor_data(): void
+    {
+        $maisTarde = $this->criarAtividade(['inicio_planejado' => now()->addDays(20), 'fora_do_cronograma' => false]);
+        $maisCedo = $this->criarAtividade(['inicio_planejado' => now()->addDays(2), 'fora_do_cronograma' => false]);
+        $item = $this->criarItemSuprimento(['status' => StatusItemSuprimento::Atrasado->value]);
+        $item->atividades()->attach($maisTarde->id, ['tenant_id' => $this->tenant->id]);
+        $item->atividades()->attach($maisCedo->id, ['tenant_id' => $this->tenant->id]);
+
+        $view = $this->viewDe($maisTarde);
+
+        $this->assertTrue($maisCedo->inicio_planejado->isSameDay($view->suprimentos[0]->necessidade));
+    }
+
+    public function test_c4_necessidade_todas_fora_do_cronograma_preserva_comportamento_atual(): void
+    {
+        // Não inventa semântica nova: prova o comportamento ATUAL de
+        // `necessidade()` (min() sobre coleção vazia após reject() = null).
+        $arquivadaA = $this->criarAtividade(['inicio_planejado' => now()->addDays(3), 'fora_do_cronograma' => true]);
+        $arquivadaB = $this->criarAtividade(['inicio_planejado' => now()->addDays(8), 'fora_do_cronograma' => true]);
+        $item = $this->criarItemSuprimento(['status' => StatusItemSuprimento::Atrasado->value]);
+        $item->atividades()->attach($arquivadaA->id, ['tenant_id' => $this->tenant->id]);
+        $item->atividades()->attach($arquivadaB->id, ['tenant_id' => $this->tenant->id]);
+
+        // Nenhuma das duas atividades passa pelo filtro
+        // `where('fora_do_cronograma', false)` da query principal — o
+        // Pacote nunca aparece vinculado a nenhuma view. Confirma direto
+        // sobre o model, com a relação completa (sem select limitado).
+        $this->assertNull($item->fresh()->necessidade());
+    }
+
+    public function test_c5_convergencia_necessidade_entre_relacao_completa_e_central_prontidao(): void
+    {
+        $arquivadaCedo = $this->criarAtividade(['inicio_planejado' => now()->addDays(1), 'fora_do_cronograma' => true]);
+        $ativaPosterior = $this->criarAtividade(['inicio_planejado' => now()->addDays(15), 'fora_do_cronograma' => false]);
+        $item = $this->criarItemSuprimento(['status' => StatusItemSuprimento::Atrasado->value]);
+        $item->atividades()->attach($arquivadaCedo->id, ['tenant_id' => $this->tenant->id]);
+        $item->atividades()->attach($ativaPosterior->id, ['tenant_id' => $this->tenant->id]);
+
+        // 1) Relação completa, sem select limitado — sempre a fonte de
+        // verdade (nenhuma fórmula reimplementada aqui).
+        $necessidadeCompleta = $item->fresh()->necessidade();
+
+        // 2) Resultado consumido pela CentralProntidaoQuery (mesmo select
+        // limitado real do produto, agora corrigido).
+        $necessidadeCentral = $this->viewDe($ativaPosterior)->suprimentos[0]->necessidade;
+
+        // 3) Mesma leitura, via um eager-load SEM nenhuma limitação de
+        // coluna (idêntico ao padrão já usado em CockpitSuprimentosQuery,
+        // que nunca foi afetado pelo Achado C) — terceiro ponto de
+        // convergência, sem tocar nenhum arquivo de Gestão/Cockpit.
+        $itemSemLimite = ItemSuprimento::with('atividades')->findOrFail($item->id);
+        $necessidadeSemLimite = $itemSemLimite->necessidade();
+
+        $this->assertNotNull($necessidadeCompleta);
+        $this->assertTrue($necessidadeCompleta->isSameDay($necessidadeCentral));
+        $this->assertTrue($necessidadeCompleta->isSameDay($necessidadeSemLimite));
+        $this->assertTrue($necessidadeCompleta->isSameDay($ativaPosterior->inicio_planejado));
+    }
 }

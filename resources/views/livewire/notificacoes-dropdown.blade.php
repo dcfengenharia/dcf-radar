@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\Gestao\ScopoNotificacoesObra;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 
@@ -7,13 +8,21 @@ new class extends Component {
     #[Computed]
     public function notificacoes(): \Illuminate\Support\Collection
     {
-        return auth()->user()->notifications()->latest()->limit(20)->get();
+        return ScopoNotificacoesObra::aplicar(auth()->user()->notifications()->latest(), auth()->user())
+            ->limit(20)
+            ->get();
     }
 
+    /**
+     * Ciclo 21, Etapa 21.3 — o badge é sempre COMUNICAÇÕES não lidas,
+     * nunca "quantidade de problemas ativos" (isso é papel de um futuro
+     * Cockpit, não desta Central) — mesma contagem de `read_at IS NULL`
+     * de sempre, só escopada pra obras que o usuário ainda acessa.
+     */
     #[Computed]
     public function naoLidas(): int
     {
-        return auth()->user()->unreadNotifications()->count();
+        return ScopoNotificacoesObra::aplicar(auth()->user()->unreadNotifications(), auth()->user())->count();
     }
 
     public function marcarLida(string $id): void

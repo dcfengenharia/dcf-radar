@@ -485,6 +485,8 @@ new class extends Component {
     {
         $this->garantirPermissao('criar');
         $this->resetErrorBag();
+        $this->scanErro = null;
+        $this->scanAviso = null;
 
         $this->recebimentoEntradaId = $recebimentoId;
         $this->entradaLocalId = null;
@@ -581,7 +583,15 @@ new class extends Component {
         $this->garantirPermissao('editar');
         $this->resetErrorBag();
 
-        $recebimento = RecebimentoPedido::findOrFail($recebimentoId);
+        // Ciclo 20, Etapa 20.9.CORREÇÃO — Achado C1: antes, RecebimentoPedido
+        // era resolvido sem nenhum escopo de obra (só o global scope de
+        // tenant protegia) — um recebimentoId de OUTRA obra do mesmo tenant
+        // era aceito. Mesma cadeia já usada em RegistrarEntradaEstoque pra
+        // derivar a obra de um RecebimentoPedido (pedidoCompraItem->pedidoCompra->obra_id).
+        $recebimento = RecebimentoPedido::whereHas(
+            'pedidoCompraItem.pedidoCompra',
+            fn ($q) => $q->where('obra_id', $this->obra->id)
+        )->findOrFail($recebimentoId);
         $itemTakeOff = ResolverMaterialDaCadeia::itemTakeOff($recebimento);
         abort_if(! $itemTakeOff, 404, 'Não foi possível localizar o item de Take Off de origem deste recebimento.');
 
@@ -608,7 +618,13 @@ new class extends Component {
             $item = ItemTakeOff::findOrFail($this->itemTakeOffAssociarId);
             $material = Material::findOrFail($this->materialSelecionadoId);
 
-            app(AssociarMaterialAoItemTakeOff::class)->execute($item, $material);
+            // Ciclo 20, Etapa 20.9.CORREÇÃO — $this->obra é sempre repassado
+            // pra Action validar internamente (defesa em profundidade real:
+            // itemTakeOffAssociarId é propriedade PÚBLICA do componente — um
+            // payload Livewire manipulado poderia setá-la direto, sem nunca
+            // passar por abrirModalAssociarMaterial(); só a validação DENTRO
+            // da Action fecha esse vetor de verdade).
+            app(AssociarMaterialAoItemTakeOff::class)->execute($this->obra, $item, $material);
 
             $this->modalAssociarAberto = false;
             unset($this->recebimentosPendentes);
@@ -853,6 +869,8 @@ new class extends Component {
     {
         $this->garantirPermissaoReserva();
         $this->resetErrorBag();
+        $this->scanErro = null;
+        $this->scanAviso = null;
 
         $this->reservaDestinacaoId = $destinacaoId;
         if ($destinacaoId) {
@@ -1157,6 +1175,8 @@ new class extends Component {
     {
         $this->garantirPermissao('criar');
         $this->resetErrorBag();
+        $this->scanErro = null;
+        $this->scanAviso = null;
 
         $this->saidaReservaId = null;
         $this->saidaPacoteId = null;
@@ -1317,6 +1337,8 @@ new class extends Component {
     {
         $this->garantirPermissao('criar');
         $this->resetErrorBag();
+        $this->scanErro = null;
+        $this->scanAviso = null;
 
         $this->transferenciaMaterialId = null;
         $this->transferenciaLocalOrigemId = null;
@@ -2452,6 +2474,8 @@ new class extends Component {
     public function abrirInventarioDetalhe(string $id): void
     {
         $this->inventarioDetalheId = $id;
+        $this->scanErro = null;
+        $this->scanAviso = null;
     }
 
     public function fecharInventarioDetalhe(): void
@@ -2666,6 +2690,236 @@ new class extends Component {
             $this->addError('cancelarInventarioGeral', $e->getMessage());
         }
     }
+
+    // =========================================================
+    // Ciclo 20, Etapa 20.8 — Identificação por QR/Código de Barras
+    // =========================================================
+
+    public ?string $scanErro = null;
+    public ?string $scanAviso = null;
+
+    /**
+     * Método CENTRAL de resolução de scan — reaproveitado por TODOS os
+     * modais (Entrada/Saída/Transferência/Reserva), nunca duplicado por
+     * tela (Seção 14/28 do pedido). Só PREENCHE o campo já existente do
+     * modal já aberto — nunca dispara nenhuma Action sozinho (Seção 23:
+     * "escanear nunca gera evento físico automaticamente" — a confirmação
+     * final continua sendo sempre o botão "Confirmar" de cada modal, já
+     * existente).
+     *
+     * `$tipoEsperado` (opcional): quando informado, rejeita um código que
+     * resolve pra um tipo diferente (ex.: escanear um Material onde se
+     * esperava um Local) com mensagem clara, em vez de setar o campo
+     * errado silenciosamente.
+     */
+    public function resolverEAplicarScan(string $codigo, string $campoAlvo, ?string $tipoEsperado = null): void
+    {
+        $this->scanErro = null;
+        $this->scanAviso = null;
+
+        try {
+            $resultado = \App\Support\Estoque\ResolverCodigoEstoque::resolver($codigo, $this->obra->id);
+        } catch (\App\Exceptions\CodigoEstoqueInvalidoException $e) {
+            $this->scanErro = $e->getMessage();
+
+            return;
+        }
+
+        if ($tipoEsperado !== null && $resultado->tipo !== $tipoEsperado) {
+            $this->scanErro = "Este código identifica um(a) {$resultado->tipo} — esperado um(a) {$tipoEsperado}. Verifique se escaneou o item certo.";
+
+            return;
+        }
+
+        $this->{$campoAlvo} = $resultado->entidade->id;
+
+        // Livewire não dispara updated{Campo}() automaticamente quando a
+        // propriedade é setada via PHP direto (só quando vem de wire:model
+        // do front-end) — chamamos manualmente pra invalidar os mesmos
+        // computeds que já seriam invalidados se o operador tivesse usado
+        // o <select> manual, sem duplicar nenhuma lógica de cache.
+        $metodoUpdated = 'updated' . ucfirst($campoAlvo);
+        if (method_exists($this, $metodoUpdated)) {
+            $this->$metodoUpdated();
+        }
+
+        if ($resultado->ativo === false) {
+            $this->scanAviso = 'Atenção: esta entidade está INATIVA no cadastro — a operação pode ser bloqueada pela regra de negócio.';
+        }
+    }
+
+    /**
+     * Scan dedicado do fluxo de Inventário (Seção 20) — diferente dos
+     * demais porque não preenche um campo solto: localiza o
+     * `InventarioItem` já esperado (do snapshot) pro Material/Unidade
+     * escaneado e abre o modal de contagem dele. Serial inesperado NUNCA
+     * é resolvido automaticamente aqui — segue a mesma decisão da 20.7,
+     * o operador usa "Registrar serial inesperado" manualmente.
+     */
+    /**
+     * Ciclo 20, Etapa 20.8 — variante do scan pro par "Material/Lote-
+     * Bobina-Serial" já existente em Saída/Transferência/Reserva: o
+     * MESMO campo de scan aceita tanto um código de Material (materiais
+     * Quantitativos) quanto de Unidade (Lote/Bobina/Serial) — quando é
+     * Unidade, preenche o Material dela automaticamente também (Seção
+     * 6/7 do pedido: "scan Material/Unidade" é tratado como um único
+     * passo do fluxo).
+     */
+    public function resolverEAplicarScanMaterialOuUnidade(string $codigo, string $campoMaterial, ?string $campoUnidade = null): void
+    {
+        $this->scanErro = null;
+        $this->scanAviso = null;
+
+        try {
+            $resultado = \App\Support\Estoque\ResolverCodigoEstoque::resolver($codigo, $this->obra->id);
+        } catch (\App\Exceptions\CodigoEstoqueInvalidoException $e) {
+            $this->scanErro = $e->getMessage();
+
+            return;
+        }
+
+        if (! in_array($resultado->tipo, ['material', 'unidade'], true)) {
+            $this->scanErro = "Este código identifica um(a) {$resultado->tipo} — esperado um Material ou Lote/Bobina/Serial.";
+
+            return;
+        }
+
+        $materialId = $resultado->tipo === 'material' ? $resultado->entidade->id : $resultado->entidade->material_id;
+        $unidadeId = $resultado->tipo === 'unidade' ? $resultado->entidade->id : null;
+
+        // ORDEM IMPORTA: setar o Material e disparar seu hook PRIMEIRO —
+        // updated{Material}() já reseta {Unidade} pra null como efeito
+        // colateral esperado (mesmo comportamento de uma troca manual no
+        // <select>, ver updatedTransferenciaMaterialId()/updatedSaidaMaterialId()).
+        // Só DEPOIS setamos a Unidade de verdade, sobrescrevendo esse
+        // reset — inverter a ordem apaga silenciosamente a Unidade
+        // resolvida pelo scan (achado real desta etapa, coberto por
+        // teste de regressão).
+        $this->{$campoMaterial} = $materialId;
+        $metodoMaterial = 'updated' . ucfirst($campoMaterial);
+        if (method_exists($this, $metodoMaterial)) {
+            $this->$metodoMaterial();
+        }
+
+        if ($campoUnidade) {
+            $this->{$campoUnidade} = $unidadeId;
+            $metodoUnidade = 'updated' . ucfirst($campoUnidade);
+            if (method_exists($this, $metodoUnidade)) {
+                $this->$metodoUnidade();
+            }
+        }
+
+        if ($resultado->tipo === 'material' && $resultado->ativo === false) {
+            $this->scanAviso = 'Atenção: este Material está INATIVO no cadastro — a operação pode ser bloqueada pela regra de negócio.';
+        }
+    }
+
+    public function processarScanInventario(string $codigo): void
+    {
+        $this->scanErro = null;
+        $this->scanAviso = null;
+
+        $inventario = $this->inventarioDetalhe;
+        if (! $inventario) {
+            return;
+        }
+
+        try {
+            $resultado = \App\Support\Estoque\ResolverCodigoEstoque::resolver($codigo, $this->obra->id);
+        } catch (\App\Exceptions\CodigoEstoqueInvalidoException $e) {
+            $this->scanErro = $e->getMessage();
+
+            return;
+        }
+
+        if ($resultado->tipo === 'local') {
+            $this->scanErro = "Este é um código de Local — o Inventário já está fixado no Local \"{$inventario->localEstoque?->nome}\".";
+
+            return;
+        }
+
+        $materialId = $resultado->tipo === 'material' ? $resultado->entidade->id : $resultado->entidade->material_id;
+        $unidadeId = $resultado->tipo === 'unidade' ? $resultado->entidade->id : null;
+
+        $item = \App\Models\InventarioItem::where('inventario_estoque_id', $inventario->id)
+            ->where('material_id', $materialId)
+            ->where('unidade_estoque_id', $unidadeId)
+            ->first();
+
+        if (! $item) {
+            $this->scanErro = 'Este item não faz parte do snapshot deste Inventário — se for um serial físico inesperado, use "Registrar serial inesperado".';
+
+            return;
+        }
+
+        $this->abrirModalContagem($item->id);
+    }
+
+    /**
+     * Ciclo 20, Etapa 20.8 — "Imprimir etiqueta" (Seção 10/29). Sempre
+     * `estoque.movimentacao|ver` (mesmo slug que já cobre visualizar
+     * Material/Local/Unidade — nenhum slug novo, Seção 27). Nunca imprime
+     * saldo/quantidade/Local atual (Seção 10/1) — só identidade.
+     */
+    public function exportarEtiquetaMaterial(string $materialId, string $tamanho = 'pequena')
+    {
+        abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'estoque.movimentacao', 'ver'), 403);
+        $material = Material::findOrFail($materialId);
+        $etiquetas = \App\Support\Estoque\MontarDadosEtiquetaEstoque::paraEntidades(collect([$material]));
+
+        return response()->streamDownload(function () use ($etiquetas, $tamanho) {
+            echo \Barryvdh\DomPDF\Facade\Pdf::loadView('exports.etiqueta-estoque-pdf', ['etiquetas' => $etiquetas, 'tamanho' => $tamanho])->output();
+        }, "etiqueta-material-{$material->codigo}.pdf");
+    }
+
+    public function exportarEtiquetaLocal(string $localId, string $tamanho = 'pequena')
+    {
+        abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'estoque.movimentacao', 'ver'), 403);
+        $local = LocalEstoque::where('obra_id', $this->obra->id)->findOrFail($localId);
+        $etiquetas = \App\Support\Estoque\MontarDadosEtiquetaEstoque::paraEntidades(collect([$local]));
+
+        return response()->streamDownload(function () use ($etiquetas, $tamanho) {
+            echo \Barryvdh\DomPDF\Facade\Pdf::loadView('exports.etiqueta-estoque-pdf', ['etiquetas' => $etiquetas, 'tamanho' => $tamanho])->output();
+        }, "etiqueta-local-{$local->nome}.pdf");
+    }
+
+    public function exportarEtiquetaUnidade(string $unidadeId, string $tamanho = 'pequena')
+    {
+        abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'estoque.movimentacao', 'ver'), 403);
+        $unidade = \App\Models\UnidadeEstoque::findOrFail($unidadeId);
+        $etiquetas = \App\Support\Estoque\MontarDadosEtiquetaEstoque::paraEntidades(collect([$unidade]));
+
+        return response()->streamDownload(function () use ($etiquetas, $tamanho) {
+            echo \Barryvdh\DomPDF\Facade\Pdf::loadView('exports.etiqueta-estoque-pdf', ['etiquetas' => $etiquetas, 'tamanho' => $tamanho])->output();
+        }, 'etiqueta-unidade.pdf');
+    }
+
+    /**
+     * Impressão em lote (Seção 29) — todos os Materiais ativos da obra
+     * (catálogo do tenant, mas só os já usados/visíveis nesta tela) numa
+     * única listagem A4.
+     */
+    public function exportarEtiquetasMateriaisLote()
+    {
+        abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'estoque.movimentacao', 'ver'), 403);
+        $materiais = Material::where('ativo', true)->orderBy('codigo')->get();
+        $etiquetas = \App\Support\Estoque\MontarDadosEtiquetaEstoque::paraEntidades($materiais);
+
+        return response()->streamDownload(function () use ($etiquetas) {
+            echo \Barryvdh\DomPDF\Facade\Pdf::loadView('exports.etiqueta-estoque-pdf', ['etiquetas' => $etiquetas, 'tamanho' => 'a4'])->output();
+        }, 'etiquetas-materiais.pdf');
+    }
+
+    public function exportarEtiquetasLocaisLote()
+    {
+        abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'estoque.movimentacao', 'ver'), 403);
+        $locais = LocalEstoque::where('obra_id', $this->obra->id)->where('ativo', true)->orderBy('nome')->get();
+        $etiquetas = \App\Support\Estoque\MontarDadosEtiquetaEstoque::paraEntidades($locais);
+
+        return response()->streamDownload(function () use ($etiquetas) {
+            echo \Barryvdh\DomPDF\Facade\Pdf::loadView('exports.etiqueta-estoque-pdf', ['etiquetas' => $etiquetas, 'tamanho' => 'a4'])->output();
+        }, 'etiquetas-locais.pdf');
+    }
 }
 ?>
 <div>
@@ -2722,9 +2976,14 @@ new class extends Component {
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Catálogo de Materiais</h5>
-        <button type="button" class="btn btn-primary btn-sm" wire:click="abrirModalMaterial">
-          <i class="bx bx-plus"></i> Novo Material
-        </button>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm" wire:click="exportarEtiquetasMateriaisLote" title="Imprimir etiquetas de todos os Materiais ativos (Ciclo 20, Etapa 20.8)">
+            <i class="bx bx-qr"></i> Etiquetas (lote)
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" wire:click="abrirModalMaterial">
+            <i class="bx bx-plus"></i> Novo Material
+          </button>
+        </div>
       </div>
       <div class="table-responsive">
         <table class="table table-hover mb-0">
@@ -2757,6 +3016,9 @@ new class extends Component {
                   @endif
                 </td>
                 <td class="text-end">
+                  <button type="button" class="btn btn-sm btn-icon" wire:click="exportarEtiquetaMaterial('{{ $linha['material']->id }}')" title="Imprimir etiqueta">
+                    <i class="bx bx-qr"></i>
+                  </button>
                   <button type="button" class="btn btn-sm btn-icon" wire:click="abrirModalMaterial('{{ $linha['material']->id }}')" title="Editar">
                     <i class="bx bx-edit"></i>
                   </button>
@@ -2835,9 +3097,14 @@ new class extends Component {
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Locais de Estoque</h5>
-        <button type="button" class="btn btn-primary btn-sm" wire:click="abrirModalLocal">
-          <i class="bx bx-plus"></i> Novo Local
-        </button>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm" wire:click="exportarEtiquetasLocaisLote" title="Imprimir etiquetas de todos os Locais ativos (Ciclo 20, Etapa 20.8)">
+            <i class="bx bx-qr"></i> Etiquetas (lote)
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" wire:click="abrirModalLocal">
+            <i class="bx bx-plus"></i> Novo Local
+          </button>
+        </div>
       </div>
       <div class="table-responsive">
         <table class="table table-hover mb-0">
@@ -2862,6 +3129,9 @@ new class extends Component {
                   @endif
                 </td>
                 <td class="text-end">
+                  <button type="button" class="btn btn-sm btn-icon" wire:click="exportarEtiquetaLocal('{{ $local->id }}')" title="Imprimir etiqueta">
+                    <i class="bx bx-qr"></i>
+                  </button>
                   <button type="button" class="btn btn-sm btn-icon" wire:click="abrirModalLocal('{{ $local->id }}')" title="Editar">
                     <i class="bx bx-edit"></i>
                   </button>
@@ -2971,6 +3241,9 @@ new class extends Component {
             </div>
             <div class="modal-body">
               @error('entradaGeral') <div class="alert alert-danger">{{ $message }}</div> @enderror
+              @if ($scanErro) <div class="alert alert-warning">{{ $scanErro }}</div> @endif
+
+              @include('pages::radar._partials.escanear-codigo', ['campoAlvo' => 'entradaLocalId', 'tipoEsperado' => 'local', 'label' => 'Local'])
 
               <div class="mb-3">
                 <label class="form-label">Local de Estoque</label>
@@ -3096,6 +3369,17 @@ new class extends Component {
             </div>
             <div class="modal-body">
               @error('saidaGeral') <div class="alert alert-danger">{{ $message }}</div> @enderror
+              @if ($scanErro) <div class="alert alert-warning">{{ $scanErro }}</div> @endif
+              @if ($scanAviso) <div class="alert alert-warning">{{ $scanAviso }}</div> @endif
+
+              <div class="row g-2 mb-2">
+                <div class="col-md-6">
+                  @include('pages::radar._partials.escanear-codigo', ['campoAlvo' => 'saidaLocalId', 'tipoEsperado' => 'local', 'label' => 'Local'])
+                </div>
+                <div class="col-md-6">
+                  @include('pages::radar._partials.escanear-codigo', ['campoAlvo' => 'saidaMaterialId', 'campoUnidadeAlvo' => 'saidaUnidadeId', 'label' => 'Material/Lote/Serial'])
+                </div>
+              </div>
 
               <div class="row g-3">
                 <div class="col-md-6">
@@ -3303,6 +3587,20 @@ new class extends Component {
             </div>
             <div class="modal-body">
               @error('transferenciaGeral') <div class="alert alert-danger">{{ $message }}</div> @enderror
+              @if ($scanErro) <div class="alert alert-warning">{{ $scanErro }}</div> @endif
+              @if ($scanAviso) <div class="alert alert-warning">{{ $scanAviso }}</div> @endif
+
+              <div class="row g-2 mb-2">
+                <div class="col-md-4">
+                  @include('pages::radar._partials.escanear-codigo', ['campoAlvo' => 'transferenciaLocalOrigemId', 'tipoEsperado' => 'local', 'label' => 'Local de origem'])
+                </div>
+                <div class="col-md-4">
+                  @include('pages::radar._partials.escanear-codigo', ['campoAlvo' => 'transferenciaMaterialId', 'campoUnidadeAlvo' => 'transferenciaUnidadeId', 'label' => 'Material/Lote/Serial'])
+                </div>
+                <div class="col-md-4">
+                  @include('pages::radar._partials.escanear-codigo', ['campoAlvo' => 'transferenciaLocalDestinoId', 'tipoEsperado' => 'local', 'label' => 'Local de destino'])
+                </div>
+              </div>
 
               <div class="row g-3">
                 <div class="col-md-6">
@@ -3643,6 +3941,12 @@ new class extends Component {
             </div>
             <div class="modal-body">
               @error('reservaGeral') <div class="alert alert-danger">{{ $message }}</div> @enderror
+              @if ($scanErro) <div class="alert alert-warning">{{ $scanErro }}</div> @endif
+
+              {{-- Ciclo 20.8 — só o Local é escaneável aqui: Pacote/Material
+                   já chegam FIXOS pela Destinação/Demanda (20.2.CORREÇÃO,
+                   Achado B1), nunca um select livre. --}}
+              @include('pages::radar._partials.escanear-codigo', ['campoAlvo' => 'reservaLocalId', 'tipoEsperado' => 'local', 'label' => 'Local'])
 
               {{-- Ciclo 20.2.CORREÇÃO (Achado B1): Pacote e Material são
                    SEMPRE conhecidos ao chegar aqui (via Destinação ou via
@@ -4510,11 +4814,17 @@ new class extends Component {
         </div>
         <div class="card-body">
           @error('inventarioDetalheGeral') <div class="alert alert-danger">{{ $message }}</div> @enderror
+          @if ($scanErro) <div class="alert alert-warning">{{ $scanErro }}</div> @endif
 
           @if ($inv->status->value === 'rascunho')
             <p class="text-muted">Este Inventário ainda não foi iniciado — nenhum snapshot foi tirado. Ao iniciar, o sistema registra a foto do saldo atual de cada Material/Unidade neste Local.</p>
             <button type="button" class="btn btn-primary" wire:click="confirmarIniciarInventario">Iniciar Inventário</button>
           @else
+            @if ($inv->status->value === 'em_contagem' || $inv->status->value === 'em_analise')
+              <div style="max-width: 420px;">
+                @include('pages::radar._partials.escanear-codigo', ['metodoCustom' => 'processarScanInventario', 'campoAlvo' => null, 'label' => 'item (Material ou Lote/Bobina/Serial)'])
+              </div>
+            @endif
             <div class="d-flex gap-2 mb-3">
               @if ($inv->status->value === 'em_contagem' || $inv->status->value === 'em_analise')
                 <button type="button" class="btn btn-outline-primary btn-sm" wire:click="abrirModalItemInesperado">

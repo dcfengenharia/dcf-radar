@@ -123,6 +123,27 @@ class Perfil extends Model
         'cadastros.fluxos_suprimento' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         'cadastros.status_documentos' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         'engenharia.pacotes' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
+        // Ciclo 21, Etapa 21.5 — ÚNICO slug do catálogo cujo 'ver' NÃO é
+        // aberto por padrão (Seção 34 do pedido: "não conceder
+        // automaticamente pra todo usuário da obra"). `seedPadrao()`
+        // (abaixo) trata a chave 'ver' aqui como um MÍNIMO, nunca mais
+        // "grátis pra todo mundo" — GerentePlanejamento é o nível mínimo
+        // (Gerente de Obra/Projeto, a persona do pedido); Admin (nível 5)
+        // sempre passa por já ser >= GerentePlanejamento (nível 4).
+        // Sem 'criar'/'editar'/'excluir' — o Cockpit é 100% somente-leitura.
+        'gestao.cockpit' => ['ver' => Papel::GerentePlanejamento],
+        // Ciclo 21, Etapa 21.6 — Cockpit de Suprimentos e Abastecimento.
+        // Mesmo mecanismo/limiar do Cockpit Executivo (Seção 31 do pedido) —
+        // 100% somente-leitura, sem criar/editar/excluir.
+        'gestao.suprimentos' => ['ver' => Papel::GerentePlanejamento],
+        // Ciclo 22, Etapa 22.2 — Cockpit de Engenharia e Liberação para
+        // Construção. Mesmo mecanismo/limiar dos 2 Cockpits irmãos — 100%
+        // somente-leitura, decisão gerencial (Seção 1/25 do pedido: perfis
+        // reais lidos em `App\Enums\Papel`, não assumidos — Engenheiro
+        // sozinho NÃO é o mínimo aqui, pela mesma razão de sempre: é uma
+        // tela de decisão gerencial de MÚLTIPLOS domínios, não uma tela
+        // operacional do GED).
+        'gestao.engenharia' => ['ver' => Papel::GerentePlanejamento],
     ];
 
     public function permissoes(): HasMany
@@ -152,16 +173,38 @@ class Perfil extends Model
                 ]);
 
                 foreach (CatalogoFuncionalidades::slugs() as $slug) {
-                    PerfilPermissao::create([
-                        'tenant_id' => $tenant->id,
-                        'perfil_id' => $perfil->id,
-                        'funcionalidade' => $slug,
-                        'acao' => 'ver',
-                    ]);
+                    // Ciclo 21, Etapa 21.5 — achado real: 'ver' era SEMPRE
+                    // concedido a todo Papel pra todo slug, sem exceção —
+                    // não existia nenhum mecanismo pra restringir a própria
+                    // leitura de uma página (só criar/editar/excluir, via
+                    // REGRAS_ESCRITA). O Cockpit Executivo exige exatamente
+                    // isso (Seção 34: "não conceder automaticamente"), então
+                    // REGRAS_ESCRITA[$slug]['ver'], quando presente, passou a
+                    // ser tratado como um MÍNIMO — nunca mais "grátis" pra
+                    // esse slug específico. Nenhum outro slug do catálogo
+                    // tem essa chave (confirmado acima), então o
+                    // comportamento de TODOS os outros 40+ slugs já
+                    // existentes fica bit-a-bit idêntico ao de antes desta
+                    // etapa — `$minimoVer` é sempre `null` pra eles, e o
+                    // `ver` continua concedido incondicionalmente.
+                    $minimoVer = self::REGRAS_ESCRITA[$slug]['ver'] ?? null;
+
+                    if ($minimoVer === null || $papel->nivel() >= $minimoVer->nivel()) {
+                        PerfilPermissao::create([
+                            'tenant_id' => $tenant->id,
+                            'perfil_id' => $perfil->id,
+                            'funcionalidade' => $slug,
+                            'acao' => 'ver',
+                        ]);
+                    }
                 }
 
                 foreach (self::REGRAS_ESCRITA as $slug => $acoes) {
                     foreach ($acoes as $acao => $minimo) {
+                        if ($acao === 'ver') {
+                            continue; // já resolvido no loop acima
+                        }
+
                         if ($papel->nivel() >= $minimo->nivel()) {
                             PerfilPermissao::create([
                                 'tenant_id' => $tenant->id,

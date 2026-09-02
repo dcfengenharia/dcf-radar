@@ -29,6 +29,27 @@ class CatalogoFuncionalidades
     {
         return [
             ['slug' => 'dashboard.gerencial', 'nome' => 'Dashboard', 'secao' => 'Dashboard', 'escopo' => self::ESCOPO_OBRA],
+            // Ciclo 21, Etapa 21.5 — Cockpit Executivo da Obra. Único slug do
+            // catálogo cujo 'ver' não é aberto por padrão a todo perfil com
+            // vínculo na obra (ver App\Models\Perfil::seedPadrao() — mecanismo
+            // novo, `REGRAS_ESCRITA['gestao.cockpit']['ver']`) — decisão
+            // explícita do pedido ("não conceder automaticamente pra todo
+            // usuário da obra"), já que a página consolida dado gerencial de
+            // TODOS os domínios (Suprimentos/Estoque/Engenharia/Industrialização/
+            // Inventário/Planejamento) numa visão única pensada pra
+            // Gerente de Obra/Projeto.
+            ['slug' => 'gestao.cockpit', 'nome' => 'Cockpit Executivo', 'secao' => 'Dashboard', 'escopo' => self::ESCOPO_OBRA],
+            // Ciclo 21, Etapa 21.6 — Cockpit de Suprimentos e Abastecimento.
+            // Mesmo mecanismo de gate de 'ver' da 21.5 (Seção 31 do pedido:
+            // "não assuma que só a equipe de Suprimentos deve visualizar" —
+            // mesmo público de decisão do Cockpit Executivo, mesmo limiar).
+            ['slug' => 'gestao.suprimentos', 'nome' => 'Cockpit de Suprimentos', 'secao' => 'Dashboard', 'escopo' => self::ESCOPO_OBRA],
+            // Ciclo 22, Etapa 22.2 — Cockpit de Engenharia e Liberação para
+            // Construção. Mesmo mecanismo/limiar dos 2 Cockpits irmãos (Seção
+            // 25 do pedido: "reutilizar o mecanismo `ver` já auditado na
+            // 21.6/21.7" — auditoria estendida em `PermissaoVerGateAuditTest`
+            // pra cobrir o 3º slug gated).
+            ['slug' => 'gestao.engenharia', 'nome' => 'Cockpit de Engenharia', 'secao' => 'Dashboard', 'escopo' => self::ESCOPO_OBRA],
 
             ['slug' => 'obras.minhas_obras', 'nome' => 'Minhas Obras', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],
             // Página com seletor múltiplo de obras (compara 2+ ao mesmo

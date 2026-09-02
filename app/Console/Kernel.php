@@ -50,6 +50,29 @@ class Kernel extends ConsoleKernel
 
         $schedule->command('backup:run --only-db')->dailyAt('03:00');
         $schedule->command('backup:clean')->dailyAt('04:00');
+
+        // Ciclo 21, Etapa 21.4 — sincronizador de Situações Gerenciais.
+        // Frequência única de 15 minutos pra TODOS os 11 tipos (Seção 5 do
+        // pedido: "se uma única frequência de sincronização for mais
+        // simples, tudo bem — a política de comunicação decide quando
+        // avisar de verdade", ver App\Support\Gestao\PoliticaEntregaSituacao).
+        // 15 min é o equilíbrio escolhido entre "quase tempo real" pros
+        // tipos acionáveis agora (Material Crítico/Reserva Descoberta/etc.)
+        // e não sobrecarregar a fila — o Command só DESPACHA 1 Job por obra
+        // (App\Jobs\SincronizarSituacaoObraJob, com lock de unicidade
+        // próprio via ShouldBeUnique), nunca processa nada diretamente.
+        // withoutOverlapping() aqui é só defesa em profundidade no nível do
+        // Scheduler (o Command coordenador é rápido — só itera e despacha);
+        // a proteção real contra 2 execuções da MESMA obra é o lock do Job.
+        $schedule->command('gestao:sincronizar-situacoes')->everyFifteenMinutes()->withoutOverlapping();
+
+        // Ciclo 21, Etapa 21.4 — Digest Operacional diário (Seção 10:
+        // "apenas um digest simples, nunca um segundo digest sem
+        // necessidade"). 07:30 — depois do bloco diário 05h-07h já
+        // existente, antes dos digests semanais de segunda-feira 08:00 —
+        // nunca colide com nenhum agendamento já existente. Mesmo padrão
+        // UTC/lock por Command de sempre (ver docblock do Command).
+        $schedule->command('gestao:digest-situacoes')->dailyAt('07:30')->withoutOverlapping();
     }
 
     /**
