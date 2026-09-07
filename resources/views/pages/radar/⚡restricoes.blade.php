@@ -2055,7 +2055,14 @@ new class extends Component {
                           placeholder="Ex: Material entregue pelo fornecedor em 28/06..."></textarea>
                 <x-input-error for="acaoTexto" />
             </div>
-            <div class="modal-footer">
+            <div class="modal-footer flex-wrap">
+                @can('create', [\App\Models\LicaoAprendida::class, $obra])
+                    <a href="{{ route('gestao.licoes-aprendidas', ['origem_tipo' => 'restricao', 'origem_id' => $resolvendoId]) }}"
+                       wire:navigate
+                       class="btn btn-outline-warning me-auto">
+                        <i class="bx bx-bulb me-1"></i>Registrar como lição aprendida
+                    </a>
+                @endcan
                 <button type="button" class="btn btn-outline-secondary" wire:click="$set('resolvendoId', null)">Cancelar</button>
                 <button type="button" class="btn btn-success"
                         wire:click="resolver"
@@ -2147,12 +2154,22 @@ new class extends Component {
        z-index:1075 — sem isso o botão fechar do canva ficava inacessível,
        coberto pela navbar) e ABAIXO dos modais do Bootstrap (z-index:1090
        — pra um modal aberto a partir do canva, ex. "Nova Restrição",
-       continuar aparecendo por cima dele). */
+       continuar aparecendo por cima dele).
+       Bug de teste manual, 2026-09-02 — `top: 0` fazia o canva cobrir
+       também a FAIXA da navbar (0 a 3.875rem, mesma altura de
+       $navbar-height no tema), e como o z-index dele é MAIOR que o da
+       navbar, um clique no sino/perfil/app-grid nessa faixa era
+       inteiramente engolido pelo canva aberto — confirmado com
+       document.elementFromPoint() retornando o header do canva em vez do
+       ícone da navbar. Corrigido começando o canva ABAIXO da navbar
+       (nunca sobre ela), sem mudar o z-index (ainda precisa ficar acima
+       da navbar pro botão fechar do canva/pull-tab nunca ficarem
+       cobertos por ela) nem a navbar em si. */
     .canva-filtros-restricoes {
         position: fixed;
-        top: 0;
+        top: 3.875rem;
         right: -360px;
-        height: 100%;
+        height: calc(100% - 3.875rem);
         z-index: 1080;
         display: flex;
         flex-direction: column;

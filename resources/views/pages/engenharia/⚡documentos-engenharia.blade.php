@@ -1930,7 +1930,14 @@ new class extends Component {
                     </div>
                     @endif
                 </div>
-                <div class="modal-footer">
+                <div class="modal-footer flex-wrap">
+                    @can('create', [\App\Models\LicaoAprendida::class, \App\Models\Work::find($obraId)])
+                        <a href="{{ route('gestao.licoes-aprendidas', ['origem_tipo' => 'documento_engenharia', 'origem_id' => $doc->id]) }}"
+                           wire:navigate
+                           class="btn btn-outline-warning me-auto">
+                            <i class="bx bx-bulb me-1"></i>Registrar como lição aprendida
+                        </a>
+                    @endcan
                     <button class="btn btn-outline-secondary" wire:click="fecharRevisoes">Fechar</button>
                 </div>
             </div>

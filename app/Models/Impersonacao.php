@@ -21,6 +21,7 @@ class Impersonacao extends Model
     protected $fillable = [
         'admin_user_id',
         'tenant_id',
+        'motivo',
         'iniciado_em',
         'finalizado_em',
         'ip',

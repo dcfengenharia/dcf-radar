@@ -57,6 +57,20 @@ class CatalogoFuncionalidades
             // ESCOPO_TENANT: não faz sentido travado na obra ativa da
             // sessão.
             ['slug' => 'gestao.benchmarking', 'nome' => 'Benchmarking entre Obras', 'secao' => 'Obras', 'escopo' => self::ESCOPO_TENANT],
+            // Ciclo 23, Etapa 23.1 — Memória Operacional Corporativa
+            // (Lições Aprendidas). ESCOPO_TENANT: mesma razão de
+            // gestao.benchmarking/engenharia.pacotes — a biblioteca
+            // corporativa ("Todas as obras") não faz sentido travada na
+            // obra ativa da sessão, tem seletor de obra próprio. 'ver'
+            // aberto por padrão (nunca gated como os 3 Cockpits) — é uma
+            // biblioteca de conhecimento, quanto mais gente consultar
+            // melhor. Mapa de ação aprovado pelo usuário: 'criar' cria
+            // rascunho, 'editar' edita+envia pra validação, 'excluir'
+            // cobre publicar/arquivar/devolver pra rascunho (as 3
+            // transições de governança) + exclusão de rascunho/em-
+            // validação — mesmo limiar mais alto já usado em toda
+            // funcionalidade do catálogo.
+            ['slug' => 'gestao.licoes-aprendidas', 'nome' => 'Lições Aprendidas', 'secao' => 'Obras', 'escopo' => self::ESCOPO_TENANT],
             ['slug' => 'obras.importar_cronograma', 'nome' => 'Importar Cronograma', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'obras.linhas_base', 'nome' => 'Linhas de Base', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],
             ['slug' => 'obras.curvas', 'nome' => 'Curvas S', 'secao' => 'Obras', 'escopo' => self::ESCOPO_OBRA],

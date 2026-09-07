@@ -88,6 +88,7 @@ use App\Support\Estoque\PoliticaConciliacaoAplicacao;
 use App\Support\Estoque\ResolverMaterialDaCadeia;
 use App\Support\Estoque\SaldoEstoque;
 use App\Support\Estoque\SaldoReserva;
+use App\Support\LicoesAprendidas\LicoesContextuaisQuery;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
@@ -108,7 +109,7 @@ use Livewire\Component;
  * App\Support\Estoque\SaldoEstoque, já testados isoladamente.
  */
 new class extends Component {
-    use ExecutaComTransacaoSegura;
+    use ExecutaComTransacaoSegura, \App\Support\Concerns\LidaComReaplicacaoLicao;
 
     public Work $obra;
 
@@ -122,6 +123,9 @@ new class extends Component {
     public ?string $materialUnidadeMedidaId = null;
     public ?string $materialFamiliaId = null;
     public string $materialModoRastreabilidade = 'quantitativo';
+
+    // ---- Modal Experiência de Obras Anteriores (23.4) ----
+    public ?string $licoesContextuaisMaterialId = null;
 
     // ---- Modal Local ----
     public bool $modalLocalAberto = false;
@@ -249,6 +253,99 @@ new class extends Component {
             'material' => $m,
             'saldo' => (float) ($saldos[$m->id] ?? 0.0),
         ]);
+    }
+
+    /**
+     * Ciclo 23, Etapa 23.4 — 1 chamada batch pra TODOS os Materiais já
+     * listados nesta página (nunca 1 query por linha) — só roda quando o
+     * usuário tem permissão de ver a biblioteca corporativa
+     * (`LicaoAprendidaPolicy::viewAny()`), mesma pré-condição usada pra
+     * qualquer consulta de lições publicadas cross-obra.
+     */
+    #[Computed]
+    public function licoesContextuaisPorMaterial()
+    {
+        // Checagem via temPermissaoNaObra() (Eloquent), nunca
+        // LicaoAprendidaPolicy::viewAny() (App\Models\Concerns\HasObraPapel::
+        // temPermissaoEmAlgumaObraDoTenant(), que usa DB::table() cru) —
+        // equivalente na prática (todo usuário que chega nesta página já
+        // tem vínculo com $this->obra, e `ver` é concedido por padrão a
+        // todo perfil em gestao.licoes-aprendidas), e evita 1 query
+        // adicional a cada render do popup/tabela.
+        if (! Auth::user()->temPermissaoNaObra($this->obra->id, 'gestao.licoes-aprendidas', 'ver')) {
+            return collect();
+        }
+
+        return LicoesContextuaisQuery::porMateriais($this->obra, $this->materiais->pluck('material.id'));
+    }
+
+    public function abrirLicoesContextuaisMaterial(string $materialId): void
+    {
+        $this->licoesContextuaisMaterialId = $materialId;
+    }
+
+    public function fecharLicoesContextuaisMaterial(): void
+    {
+        $this->licoesContextuaisMaterialId = null;
+    }
+
+    #[Computed]
+    public function licoesContextuaisMaterialAberta()
+    {
+        if (! $this->licoesContextuaisMaterialId) {
+            return collect();
+        }
+
+        return $this->licoesContextuaisPorMaterial->get($this->licoesContextuaisMaterialId, collect());
+    }
+
+    /**
+     * Ciclo 23, Etapa 23.5.B (Seção 28) — "quais destas lições já foram
+     * reaplicadas NESTA obra?", em lote (1 query por abertura de modal,
+     * nunca 1 por card).
+     */
+    #[Computed]
+    public function reaplicacoesLicoesContextuaisMaterial()
+    {
+        return \App\Support\LicoesAprendidas\ReaplicacaoLicaoQuery::porObraELicoes(
+            $this->obra,
+            $this->licoesContextuaisMaterialAberta->pluck('licaoId')
+        );
+    }
+
+    /**
+     * Registra a reaplicação com a obra ATIVA da página como destino e o
+     * Material do modal aberto como contexto opcional (Seção 5/20).
+     */
+    public function registrarReaplicacaoAqui(string $licaoId): void
+    {
+        $contextos = $this->licoesContextuaisMaterialId
+            ? [['tipo' => \App\Enums\TipoEntidadeVinculoLicao::Material, 'id' => $this->licoesContextuaisMaterialId]]
+            : [];
+
+        if ($this->registrarReaplicacaoLicao($licaoId, $this->obra->id, null, $contextos)) {
+            unset($this->reaplicacoesLicoesContextuaisMaterial);
+        }
+    }
+
+    /** Wrapper local — chama o método do trait e invalida o computed certo desta tela. */
+    public function confirmarAvaliar(): void
+    {
+        if ($this->confirmarAvaliarReaplicacao()) {
+            unset($this->reaplicacoesLicoesContextuaisMaterial);
+        }
+    }
+
+    #[Computed]
+    public function licoesContextuaisMaterialNome(): ?string
+    {
+        if (! $this->licoesContextuaisMaterialId) {
+            return null;
+        }
+
+        $linha = $this->materiais->firstWhere('material.id', $this->licoesContextuaisMaterialId);
+
+        return $linha ? $linha['material']->codigo.' - '.$linha['material']->descricao : null;
     }
 
     #[Computed]
@@ -2996,6 +3093,9 @@ new class extends Component {
               <th>Rastreabilidade</th>
               <th>Saldo</th>
               <th>Status</th>
+              @if (Auth::user()->temPermissaoNaObra($obra->id, 'gestao.licoes-aprendidas', 'ver'))
+                <th>Experiência</th>
+              @endif
               <th></th>
             </tr>
           </thead>
@@ -3015,6 +3115,18 @@ new class extends Component {
                     <span class="badge bg-label-secondary">Inativo</span>
                   @endif
                 </td>
+                @if (Auth::user()->temPermissaoNaObra($obra->id, 'gestao.licoes-aprendidas', 'ver'))
+                  <td>
+                    @php $sugestoesLicoesMaterial = $this->licoesContextuaisPorMaterial->get($linha['material']->id, collect()); @endphp
+                    @if ($sugestoesLicoesMaterial->isNotEmpty())
+                      <button type="button" class="btn btn-sm btn-label-info" wire:click="abrirLicoesContextuaisMaterial('{{ $linha['material']->id }}')" title="Experiência de obras anteriores">
+                        <i class="bx bx-bulb-line me-1"></i>{{ $sugestoesLicoesMaterial->count() }}
+                      </button>
+                    @else
+                      <span class="text-muted">—</span>
+                    @endif
+                  </td>
+                @endif
                 <td class="text-end">
                   <button type="button" class="btn btn-sm btn-icon" wire:click="exportarEtiquetaMaterial('{{ $linha['material']->id }}')" title="Imprimir etiqueta">
                     <i class="bx bx-qr"></i>
@@ -3025,10 +3137,17 @@ new class extends Component {
                   <button type="button" class="btn btn-sm btn-icon" wire:click="alternarStatusMaterial('{{ $linha['material']->id }}')" title="{{ $linha['material']->ativo ? 'Inativar' : 'Reativar' }}">
                     <i class="bx {{ $linha['material']->ativo ? 'bx-block' : 'bx-check-circle' }}"></i>
                   </button>
+                  @can('create', [\App\Models\LicaoAprendida::class, $obra])
+                    <a href="{{ route('gestao.licoes-aprendidas', ['origem_tipo' => 'material', 'origem_id' => $linha['material']->id, 'origem_obra' => $obra->id]) }}"
+                       wire:navigate
+                       class="btn btn-sm btn-icon" title="Registrar como lição aprendida">
+                      <i class="bx bx-bulb text-warning"></i>
+                    </a>
+                  @endcan
                 </td>
               </tr>
             @empty
-              <tr><td colspan="8" class="text-center text-muted py-4">Nenhum Material cadastrado ainda.</td></tr>
+              <tr><td colspan="{{ Auth::user()->temPermissaoNaObra($obra->id, 'gestao.licoes-aprendidas', 'ver') ? 9 : 8 }}" class="text-center text-muted py-4">Nenhum Material cadastrado ainda.</td></tr>
             @endforelse
           </tbody>
         </table>
@@ -3085,6 +3204,66 @@ new class extends Component {
             <div class="modal-footer">
               <button type="button" class="btn btn-outline-secondary" wire:click="fecharModalMaterial">Cancelar</button>
               <button type="button" class="btn btn-primary" wire:click="salvarMaterial">Salvar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    @endif
+
+    {{-- Ciclo 23, Etapa 23.4 — Experiência de obras anteriores (Memória Corporativa) --}}
+    @if ($licoesContextuaisMaterialId)
+      <div class="modal fade show d-block" tabindex="-1" style="background: rgba(0,0,0,.5)">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title"><i class="bx bx-bulb-line text-info me-1"></i> Experiência de obras anteriores</h5>
+              <button type="button" class="btn-close" wire:click="fecharLicoesContextuaisMaterial"></button>
+            </div>
+            <div class="modal-body">
+              <p class="text-muted small mb-3">{{ $this->licoesContextuaisMaterialNome }}</p>
+              @forelse ($this->licoesContextuaisMaterialAberta as $sugestao)
+                <div class="border rounded p-3 mb-3" wire:key="sugestao-material-{{ $sugestao->licaoId }}">
+                  <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                    <strong>{{ $sugestao->titulo }}</strong>
+                    <span class="badge bg-label-{{ $sugestao->criticidade->cor() }}">{{ $sugestao->criticidade->label() }}</span>
+                  </div>
+                  <div class="d-flex gap-2 flex-wrap mb-2">
+                    <span class="badge bg-label-{{ $sugestao->tipo->cor() }}"><i class="bx {{ $sugestao->tipo->icone() }} me-1"></i>{{ $sugestao->tipo->label() }}</span>
+                    <span class="badge bg-label-secondary">{{ $sugestao->areaFuncional->label() }}</span>
+                    <span class="badge bg-label-secondary"><i class="bx bx-buildings me-1"></i>{{ $sugestao->obraOrigemNome ?? 'Obra não identificada' }}</span>
+                  </div>
+                  <p class="mb-2 small">{{ Str::limit($sugestao->situacaoObservada, 220) }}</p>
+                  <div class="alert alert-primary py-2 px-3 mb-2 small"><strong>Recomendação:</strong> {{ $sugestao->recomendacaoFutura }}</div>
+                  <p class="text-muted small mb-0">
+                    <i class="bx bx-info-circle me-1"></i>Por que esta lição apareceu?
+                    {{ collect($sugestao->motivos)->map(fn ($m) => $m['motivo']->label().($m['contexto'] ? ": {$m['contexto']}" : ''))->implode(' · ') }}
+                  </p>
+
+                  {{-- Ciclo 23, Etapa 23.5.B (Seção 20) --}}
+                  @php $reaplicacaoAqui = $this->reaplicacoesLicoesContextuaisMaterial->get($sugestao->licaoId); @endphp
+                  <div class="d-flex align-items-center gap-2 mt-2 pt-2 border-top">
+                    @if ($reaplicacaoAqui)
+                      <span class="badge bg-label-success"><i class="bx bx-check me-1"></i>Reaplicada nesta obra</span>
+                      @can('avaliar', $reaplicacaoAqui)
+                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" wire:click="abrirAvaliarReaplicacao('{{ $reaplicacaoAqui->id }}')">
+                          Avaliar resultado
+                        </button>
+                      @endcan
+                    @else
+                      @can('registrar', [\App\Models\LicaoAprendidaReaplicacao::class, $obra])
+                        <button type="button" class="btn btn-xs btn-outline-primary py-0 px-2" wire:click="registrarReaplicacaoAqui('{{ $sugestao->licaoId }}')">
+                          <i class="bx bx-repost me-1"></i>Registrar reaplicação nesta obra
+                        </button>
+                      @endcan
+                    @endif
+                  </div>
+                </div>
+              @empty
+                <p class="text-muted mb-0">Nenhuma experiência de outras obras encontrada para este material.</p>
+              @endforelse
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" wire:click="fecharLicoesContextuaisMaterial">Fechar</button>
             </div>
           </div>
         </div>
@@ -5079,4 +5258,6 @@ new class extends Component {
       </div>
     @endif
   @endif
+
+  @include('components.licoes-aprendidas.reaplicacao-avaliar-modal')
 </div>

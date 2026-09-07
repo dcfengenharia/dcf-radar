@@ -64,11 +64,34 @@ Nos termos da LGPD, você pode solicitar a qualquer momento:
 Para exercer esses direitos, entre em contato pelo canal descrito na
 seção 7.
 
-## 6. Cookies
+## 6. Cookies e tecnologias necessárias
 
-Usamos cookies estritamente necessários para manter sua sessão autenticada
-e suas preferências (como tema claro/escuro). Não utilizamos cookies de
-rastreamento publicitário.
+> **SUJEITO A REVISÃO JURÍDICA.** A descrição abaixo é factual/técnica —
+> revisada em auditoria de código (Pré-produção, Etapa 2) — e substitui a
+> versão anterior deste item, mais genérica. Não constitui texto jurídico
+> definitivo.
+
+Usamos apenas 3 cookies, todos estritamente necessários ao funcionamento
+da plataforma — nenhum deles depende de consentimento opcional, e nenhum
+é usado para publicidade, analytics ou rastreamento entre sites:
+
+- **Sessão** (`dcf_eng_session`): identifica sua sessão autenticada
+  (usuário logado, empresa/obra ativa). Sem ele, não é possível permanecer
+  logado entre páginas.
+- **Segurança/CSRF** (`XSRF-TOKEN`): protege contra ataques de falsificação
+  de requisição entre sites. É técnico, não contém dado pessoal.
+- **"Manter conectado"** (`remember_web_*`): criado só se você marcar essa
+  opção no login, para não precisar digitar a senha a cada visita.
+
+Suas preferências de interface (tema claro/escuro, forma de visualização
+de listas) são guardadas no seu navegador via `localStorage`, não por
+cookie — e também nunca saem do seu navegador.
+
+Não usamos Google Analytics, Google Tag Manager, Meta/Facebook Pixel,
+Hotjar, Mixpanel ou qualquer ferramenta de rastreamento/publicidade.
+Nossas fontes de texto (tipografia da interface) são hospedadas nos
+nossos próprios servidores — nunca carregadas de um provedor externo a
+cada visita.
 
 ## 7. Contato
 

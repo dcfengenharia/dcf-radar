@@ -1662,13 +1662,19 @@ new class extends Component {
 
         {{-- z-index:1080 fica ACIMA da navbar fixa do template (.layout-navbar,
              z-index:1075) e ABAIXO dos modais do Bootstrap (z-index:1090) — ver
-             explicação completa no mesmo bloco em ⚡restricoes.blade.php. --}}
+             explicação completa no mesmo bloco em ⚡restricoes.blade.php.
+             Bug de teste manual, 2026-09-02 — `top: 0` fazia o canva cobrir a
+             faixa da navbar fixa (0 a 3.875rem, = $navbar-height do tema);
+             como o z-index do canva é maior, um clique no sino/perfil/
+             app-grid nessa faixa era engolido pelo canva aberto (mesmo bug
+             nos 8 arquivos que usam este padrão). Corrigido começando o
+             canva abaixo da navbar. --}}
         <style>
         .canva-filtros-plano {
             position: fixed;
-            top: 0;
+            top: 3.875rem;
             right: -360px;
-            height: 100%;
+            height: calc(100% - 3.875rem);
             z-index: 1080;
             display: flex;
             flex-direction: column;

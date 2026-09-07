@@ -139,6 +139,20 @@ $customizerHidden = 'customizer-hide';
           </div>
           @endif
 
+          {{-- Pré-produção, Etapa 2 (seção 13) — mensagem amigável de
+               sessão expirada (419), nunca a página técnica crua do
+               Laravel. `blankLayout` (usado por esta página) não inclui
+               <x-banner>, então o flash é lido diretamente aqui, com o
+               mesmo par de chaves já usado em BloquearUsuarioInativo/
+               impersonation ("flash.banner"/"flash.bannerStyle"). --}}
+          @if (session('flash.banner'))
+          <div class="alert alert-{{ session('flash.bannerStyle', 'warning') }} mb-1 rounded-0" role="alert">
+            <div class="alert-body">
+              {{ session('flash.banner') }}
+            </div>
+          </div>
+          @endif
+
           <form id="formAuthentication" class="mb-3" action="{{ route('login') }}" method="POST">
             @csrf
             <div class="mb-3">

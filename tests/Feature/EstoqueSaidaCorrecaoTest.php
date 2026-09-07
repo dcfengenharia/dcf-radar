@@ -599,29 +599,26 @@ class EstoqueSaidaCorrecaoTest extends TestCase
      */
     public function test_y_zero_conceito_pos_20_4(): void
     {
-        $base = base_path('app');
-        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS));
         // Ciclo 21, Etapa 21.2 — mesmo achado/mesma correção de
-        // EstoqueSaidaTest::test_ar_...(): espaço à direita exige o nome
-        // EXATO do case, fechando a colisão de prefixo com
-        // App\Enums\TipoSituacaoGerencial (enum não relacionado, catálogo
-        // de situações gerenciais) sem enfraquecer o invariante real.
+        // EstoqueSaidaTest::test_ar_...(): espaço à direita exigiu o nome
+        // EXATO do case, fechando a colisão de PREFIXO com
+        // App\Enums\TipoSituacaoGerencial. Ciclo 23 (Lições Aprendidas)
+        // achou uma 2ª colisão, agora de NOME EXATO (não só prefixo):
+        // `App\Enums\AreaFuncionalLicao::Industrializacao`, enum
+        // totalmente não relacionado. Escopado pra ler só o arquivo real
+        // que este guard audita (`TipoMovimentacaoEstoque`), nunca mais
+        // um scan cego de todo `app/` — mais preciso e mais barato, sem
+        // enfraquecer o invariante real (nunca antecipar Industrialização/
+        // Inventário/Transferência/Ajuste em TipoMovimentacaoEstoque).
+        $arquivoReal = base_path('app/Enums/TipoMovimentacaoEstoque.php');
+        $this->assertFileExists($arquivoReal);
+
+        $conteudo = file_get_contents($arquivoReal);
         $proibidos = ['case Industrializacao ', 'case Divergencia ', 'case Inventario ', 'case Transferencia ', 'case Ajuste '];
 
-        $encontrados = [];
-        foreach ($iterator as $file) {
-            if ($file->getExtension() !== 'php') {
-                continue;
-            }
-            $conteudo = file_get_contents($file->getPathname());
-            foreach ($proibidos as $termo) {
-                if (str_contains($conteudo, $termo)) {
-                    $encontrados[] = $file->getPathname() . ' :: ' . $termo;
-                }
-            }
-        }
+        $encontrados = array_values(array_filter($proibidos, fn ($termo) => str_contains($conteudo, $termo)));
 
-        $this->assertEmpty($encontrados, 'Conceitos da 20.4 encontrados prematuramente: ' . implode(', ', $encontrados));
+        $this->assertEmpty($encontrados, 'Conceitos da 20.4 encontrados prematuramente em TipoMovimentacaoEstoque: ' . implode(', ', $encontrados));
     }
 
     public function test_zero_alteracao_em_restricao_prontidao(): void

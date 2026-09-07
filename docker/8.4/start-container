@@ -9,6 +9,24 @@ if [ ! -z "$WWWUSER" ]; then
     usermod -u $WWWUSER sail
 fi
 
+# Bug de teste manual, 2026-09-02 — `tempnam(): file created in the
+# system's temporary directory` ao compilar um componente Livewire pela
+# primeira vez (achado real: storage/framework/views/livewire/{views,
+# classes,scripts,styles} tinham virado root:root, porque QUALQUER
+# processo root-context (ex.: `docker exec` sem `-u sail`, comum neste
+# fluxo de dev) que compile um componente Livewire ANTES do servidor web
+# real fica dono do diretório pra sempre — o servidor web de verdade
+# (php artisan serve/php-fpm, sempre `gosu $WWWUSER` abaixo) nunca mais
+# consegue escrever ali). Corrige de propósito a cada START do container
+# — self-heal, nunca depende de chmod manual que se perde ao recriar o
+# container — sem tocar em `storage/framework/{cache,sessions,testing}`
+# nem `bootstrap/cache`, que já nascem sail:sail (só corrige o que
+# existir, silencioso se ainda não existir nada — mesma tolerância já
+# usada pro `/.composer` logo abaixo).
+if [ -d /var/www/html/storage ]; then
+    chown -R sail:sail /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
+fi
+
 if [ ! -d /.composer ]; then
     mkdir /.composer
 fi

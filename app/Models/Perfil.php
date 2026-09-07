@@ -144,6 +144,16 @@ class Perfil extends Model
         // tela de decisão gerencial de MÚLTIPLOS domínios, não uma tela
         // operacional do GED).
         'gestao.engenharia' => ['ver' => Papel::GerentePlanejamento],
+        // Ciclo 23, Etapa 23.1 — Lições Aprendidas. Mapa aprovado pelo
+        // usuário: 'criar' (Encarregado, autor de campo) < 'editar'
+        // (Engenheiro, edita+envia pra validação) < 'excluir'
+        // (GerentePlanejamento, cobre publicar/arquivar/devolver pra
+        // rascunho — as 3 transições de governança — e a exclusão de
+        // rascunho/em-validação). Mesmo padrão de 3 tiers já usado em
+        // 'suprimentos.mapa'/'estoque.inventario'. Sem 'ver' aqui — fica
+        // aberto por padrão a todo perfil vinculado à obra, como a
+        // maioria do catálogo.
+        'gestao.licoes-aprendidas' => ['criar' => Papel::Encarregado, 'editar' => Papel::Engenheiro, 'excluir' => Papel::GerentePlanejamento],
     ];
 
     public function permissoes(): HasMany

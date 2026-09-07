@@ -1084,39 +1084,34 @@ class EstoqueSaidaTest extends TestCase
      */
     public function test_ar_zero_conceito_pos_20_4_no_codigo_de_producao(): void
     {
-        $base = base_path('app');
-        $arquivos = array_merge(
-            glob($base . '/**/*.php'),
-            glob($base . '/*.php')
-        );
-
         // Ciclo 21, Etapa 21.2 — achado real: `str_contains()` sem
         // delimitador casava por PREFIXO com `App\Enums\TipoSituacaoGerencial`
         // (`case IndustrializacaoPendente`/`case InventarioAguardandoDecisao`
         // — enum de domínio TOTALMENTE diferente, catálogo de situações
         // gerenciais, sem nenhuma relação com `TipoMovimentacaoEstoque`).
-        // Espaço à direita exige o nome EXATO do case — a guarda continua
-        // protegendo o mesmo invariante real ("TipoMovimentacaoEstoque
+        // Espaço à direita exigiu o nome EXATO do case — resolveu aquele
+        // caso de PREFIXO, mas Ciclo 23 (Lições Aprendidas) introduziu
+        // `App\Enums\AreaFuncionalLicao::Industrializacao` — um enum
+        // TOTALMENTE não relacionado cujo case tem o MESMO NOME EXATO
+        // (não só o mesmo prefixo), voltando a colidir com um scan cego
+        // de todo `app/`. Achado 2026-09-03: a guarda em si só precisa
+        // proteger UM arquivo — o enum real que ela audita
+        // (`TipoMovimentacaoEstoque`) — nunca "qualquer arquivo de
+        // `app/` que contenha a substring". Escopar a leitura a esse
+        // único arquivo é mais preciso E mais barato que um scan
+        // recursivo, sem enfraquecer o invariante real ("TipoMovimentacaoEstoque
         // nunca ganha esses cases — Transferência/Remessa/Ajuste são
         // sempre pares Entrada+Saida correlacionados, nunca um tipo
-        // novo"), só deixou de colidir com enums não relacionados.
+        // novo").
+        $arquivoReal = base_path('app/Enums/TipoMovimentacaoEstoque.php');
+        $this->assertFileExists($arquivoReal);
+
+        $conteudo = file_get_contents($arquivoReal);
         $proibidos = ['case Industrializacao ', 'case Divergencia ', 'case Inventario ', 'case Transferencia ', 'case Ajuste '];
 
-        $encontrados = [];
-        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS));
-        foreach ($iterator as $file) {
-            if ($file->getExtension() !== 'php') {
-                continue;
-            }
-            $conteudo = file_get_contents($file->getPathname());
-            foreach ($proibidos as $termo) {
-                if (str_contains($conteudo, $termo)) {
-                    $encontrados[] = $file->getPathname() . ' :: ' . $termo;
-                }
-            }
-        }
+        $encontrados = array_values(array_filter($proibidos, fn ($termo) => str_contains($conteudo, $termo)));
 
-        $this->assertEmpty($encontrados, 'Conceitos da 20.4 encontrados prematuramente: ' . implode(', ', $encontrados));
+        $this->assertEmpty($encontrados, 'Conceitos da 20.4 encontrados prematuramente em TipoMovimentacaoEstoque: ' . implode(', ', $encontrados));
     }
 
     // =========================================================

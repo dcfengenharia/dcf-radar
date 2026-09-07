@@ -51,6 +51,13 @@
       "funcionalidade": "gestao.benchmarking"
     },
     {
+      "url": "/app/gestao/licoes-aprendidas",
+      "name": "Lições Aprendidas",
+      "icon": "menu-icon tf-icons bx bx-bulb",
+      "slug": "gestao.licoes-aprendidas",
+      "funcionalidade": "gestao.licoes-aprendidas"
+    },
+    {
       "url": "/app/radar/cronograma",
       "name": "Importar Cronograma",
       "icon": "menu-icon tf-icons bx bx-upload",

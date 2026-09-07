@@ -1056,12 +1056,18 @@ new class extends Component {
        z-index:1075) e ABAIXO dos modais do Bootstrap (z-index:1090) —
        mesmo mecanismo já usado em Restrições/Lookahead/Plano Semanal/
        Suprimentos/Minhas Obras. IMPORTANTE: precisa ficar DENTRO da <div>
-       raiz do componente Livewire, senão nunca chega no DOM do navegador. */
+       raiz do componente Livewire, senão nunca chega no DOM do navegador.
+       Bug de teste manual, 2026-09-02 — `top: 0` fazia o canva cobrir a
+       faixa da navbar fixa (0 a 3.875rem, = $navbar-height do tema); como
+       o z-index do canva é maior, um clique no sino/perfil/app-grid nessa
+       faixa era engolido pelo canva aberto (mesmo bug nos 8 arquivos que
+       usam este padrão — ver ⚡restricoes.blade.php pro diagnóstico
+       completo). Corrigido começando o canva abaixo da navbar. */
     .canva-filtros-curvas {
         position: fixed;
-        top: 0;
+        top: 3.875rem;
         right: -360px;
-        height: 100%;
+        height: calc(100% - 3.875rem);
         z-index: 1080;
         display: flex;
         flex-direction: column;

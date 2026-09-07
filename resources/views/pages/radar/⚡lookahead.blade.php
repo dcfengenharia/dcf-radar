@@ -50,7 +50,7 @@ use Livewire\WithFileUploads;
 use Maatwebsite\Excel\Facades\Excel;
 
 new class extends Component {
-  use ExecutaComTransacaoSegura, WithFileUploads;
+  use ExecutaComTransacaoSegura, WithFileUploads, \App\Support\Concerns\LidaComReaplicacaoLicao;
 
   // Mesmo formato "MÊS/AA" já usado em ⚡curvas.blade.php::dadosGraficoCurvaS()
   // e ⚡dashboard.blade.php::formatarPeriodoPt() — duplicado aqui por
@@ -1376,7 +1376,7 @@ new class extends Component {
     $this->modalGranularidade = 'semanal';
     $this->modalTendenciaImportacaoId = $this->tendenciaIdEfetiva();
     $this->reset('novoAnexo');
-    unset($this->atividadeDetalhe, $this->modalCurvaAtividade, $this->modalTendenciaSnapshot, $this->modalTotalHhPrevistoProjeto, $this->modalPeso, $this->modalAnexos);
+    unset($this->atividadeDetalhe, $this->modalCurvaAtividade, $this->modalTendenciaSnapshot, $this->modalTotalHhPrevistoProjeto, $this->modalPeso, $this->modalAnexos, $this->modalLicoesContextuais);
     // Ciclo 17, A.3 — o <canvas> da Curva S vive dentro de um wire:ignore
     // (ver Blade), então o Livewire nunca mais o desenha sozinho: todo
     // (re)desenho, inclusive o da primeira abertura do popup, passa por
@@ -1533,6 +1533,72 @@ new class extends Component {
    * ponto da série), nunca de um cálculo paralelo — evita divergência
    * entre a curva e os números do resumo.
    */
+  /**
+   * Ciclo 23, Etapa 23.4 — "Experiência de obras anteriores" desta
+   * atividade: lições `Publicada` de OUTRAS obras do tenant relacionadas
+   * ao mesmo Material corporativo (via Pacote/Take Off, cadeia
+   * determinística do Ciclo 21.1) ou à mesma Disciplina (tenant-wide).
+   * Nunca abre sozinho — só computado quando o popup de UMA atividade já
+   * está aberto (mesmo padrão de escopo de `modalCurvaAtividade()`, zero
+   * risco de N+1 na listagem — `LicoesContextuaisQuery::porAtividade()`
+   * já é batch-safe por baixo, testado a 10/100 atividades).
+   */
+  #[Computed]
+  public function modalLicoesContextuais()
+  {
+    $atividade = $this->atividadeDetalhe['atividade'] ?? null;
+
+    // Checagem via temPermissaoNaObra() (Eloquent), nunca
+    // LicaoAprendidaPolicy::viewAny() (HasObraPapel::
+    // temPermissaoEmAlgumaObraDoTenant(), que usa DB::table() cru) — mesma
+    // decisão/motivo documentado em ⚡estoque.blade.php::
+    // licoesContextuaisPorMaterial() desta mesma etapa.
+    if (!$atividade || !Auth::user()->temPermissaoNaObra($this->obra->id, 'gestao.licoes-aprendidas', 'ver')) {
+      return collect();
+    }
+
+    return \App\Support\LicoesAprendidas\LicoesContextuaisQuery::porAtividade($this->obra, $atividade);
+  }
+
+  /**
+   * Ciclo 23, Etapa 23.5.B (Seção 28) — "quais destas lições já foram
+   * reaplicadas NESTA obra?", em lote (1 query, nunca 1 por card) —
+   * usado pelo CTA "Registrar reaplicação"/"Reaplicada nesta obra" de
+   * cada sugestão do popup.
+   */
+  #[Computed]
+  public function reaplicacoesLicoesContextuais()
+  {
+    return \App\Support\LicoesAprendidas\ReaplicacaoLicaoQuery::porObraELicoes(
+      $this->obra,
+      $this->modalLicoesContextuais->pluck('licaoId')
+    );
+  }
+
+  /**
+   * Registra a reaplicação com a obra ATIVA da própria página como
+   * destino (nunca um seletor — Seção 20: "não transformar o card em
+   * formulário pesado") e a Atividade do popup como contexto opcional
+   * (Seção 5).
+   */
+  public function registrarReaplicacaoAqui(string $licaoId): void
+  {
+    $atividade = $this->atividadeDetalhe['atividade'] ?? null;
+    $contextos = $atividade ? [['tipo' => \App\Enums\TipoEntidadeVinculoLicao::Atividade, 'id' => $atividade->id]] : [];
+
+    if ($this->registrarReaplicacaoLicao($licaoId, $this->obra->id, null, $contextos)) {
+      unset($this->reaplicacoesLicoesContextuais);
+    }
+  }
+
+  /** Wrapper local — chama o método do trait e invalida o computed certo desta tela. */
+  public function confirmarAvaliar(): void
+  {
+    if ($this->confirmarAvaliarReaplicacao()) {
+      unset($this->reaplicacoesLicoesContextuais);
+    }
+  }
+
   #[Computed]
   public function modalCurvaAtividade(): array
   {
@@ -2655,6 +2721,75 @@ new class extends Component {
                 @endif
             </div>
 
+            {{-- Ciclo 23, Etapa 23.4 — Experiência de obras anteriores (Memória
+                 Corporativa). Discreto e informativo, nunca um alerta de risco
+                 (nunca aumenta badge/cor de alerta da atividade). Alpine puro
+                 pra abrir/fechar (nunca data-bs-toggle="collapse" dentro de
+                 conteúdo remontado pelo Livewire, mesmo motivo já documentado
+                 em health-check-findings.blade.php). --}}
+            @if ($this->modalLicoesContextuais->isNotEmpty())
+            <div class="px-4 py-3 border-bottom bg-light" x-data="{ licoesAbertas: false }">
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bx bx-bulb-line text-info fs-4"></i>
+                        <div>
+                            <div class="fw-semibold">Experiência de obras anteriores</div>
+                            <div class="small text-muted">
+                                @if ($this->modalLicoesContextuais->count() === 1)
+                                    1 lição publicada de outra obra pode ser útil neste contexto.
+                                @else
+                                    {{ $this->modalLicoesContextuais->count() }} lições publicadas de outras obras podem ser úteis neste contexto.
+                                @endif
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-info" @click="licoesAbertas = !licoesAbertas">
+                        <span x-text="licoesAbertas ? 'Ocultar' : 'Consultar experiências'"></span>
+                    </button>
+                </div>
+                <div x-show="licoesAbertas" x-cloak x-transition class="mt-3">
+                    @foreach ($this->modalLicoesContextuais as $sugestao)
+                        <div class="border rounded p-3 mb-2 bg-white" wire:key="sugestao-atividade-{{ $sugestao->licaoId }}">
+                            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                                <strong>{{ $sugestao->titulo }}</strong>
+                                <span class="badge bg-label-{{ $sugestao->criticidade->cor() }}">{{ $sugestao->criticidade->label() }}</span>
+                            </div>
+                            <div class="d-flex gap-2 flex-wrap mb-2">
+                                <span class="badge bg-label-{{ $sugestao->tipo->cor() }}"><i class="bx {{ $sugestao->tipo->icone() }} me-1"></i>{{ $sugestao->tipo->label() }}</span>
+                                <span class="badge bg-label-secondary">{{ $sugestao->areaFuncional->label() }}</span>
+                                <span class="badge bg-label-secondary"><i class="bx bx-buildings me-1"></i>{{ $sugestao->obraOrigemNome ?? 'Obra não identificada' }}</span>
+                            </div>
+                            <p class="mb-2 small">{{ Str::limit($sugestao->situacaoObservada, 220) }}</p>
+                            <div class="alert alert-primary py-2 px-3 mb-2 small"><strong>Recomendação:</strong> {{ $sugestao->recomendacaoFutura }}</div>
+                            <p class="text-muted small mb-0">
+                                <i class="bx bx-info-circle me-1"></i>Por que esta lição apareceu?
+                                {{ collect($sugestao->motivos)->map(fn ($m) => $m['motivo']->label().($m['contexto'] ? ": {$m['contexto']}" : ''))->implode(' · ') }}
+                            </p>
+
+                            {{-- Ciclo 23, Etapa 23.5.B (Seção 20) --}}
+                            @php $reaplicacaoAqui = $this->reaplicacoesLicoesContextuais->get($sugestao->licaoId); @endphp
+                            <div class="d-flex align-items-center gap-2 mt-2 pt-2 border-top">
+                                @if ($reaplicacaoAqui)
+                                    <span class="badge bg-label-success"><i class="bx bx-check me-1"></i>Reaplicada nesta obra</span>
+                                    @can('avaliar', $reaplicacaoAqui)
+                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" wire:click="abrirAvaliarReaplicacao('{{ $reaplicacaoAqui->id }}')">
+                                            Avaliar resultado
+                                        </button>
+                                    @endcan
+                                @else
+                                    @can('registrar', [\App\Models\LicaoAprendidaReaplicacao::class, $obra])
+                                        <button type="button" class="btn btn-xs btn-outline-primary py-0 px-2" wire:click="registrarReaplicacaoAqui('{{ $sugestao->licaoId }}')">
+                                            <i class="bx bx-repost me-1"></i>Registrar reaplicação nesta obra
+                                        </button>
+                                    @endcan
+                                @endif
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+            </div>
+            @endif
+
             <div class="modal-body p-0">
                 <div class="row g-0">
                     <div class="{{ $checklist->isNotEmpty() ? 'col-md-8 border-end' : 'col-12' }}">
@@ -2896,10 +3031,17 @@ new class extends Component {
                 </div>
             </div>
 
-            <div class="modal-footer">
+            <div class="modal-footer flex-wrap">
                 <small class="text-muted me-auto">
                     {{ $atividadePronta ? '✅ Pode ser comprometida no Plano Semanal' : '⚠ Pendências impedem o comprometimento' }}
                 </small>
+                @can('create', [\App\Models\LicaoAprendida::class, $obra])
+                    <a href="{{ route('gestao.licoes-aprendidas', ['origem_tipo' => 'atividade', 'origem_id' => $at->id]) }}"
+                       wire:navigate
+                       class="btn btn-outline-warning btn-sm">
+                        <i class="bx bx-bulb me-1"></i>Registrar como lição aprendida
+                    </a>
+                @endcan
                 <button class="btn btn-secondary" wire:click="$set('modalAtividadeId', null)">Fechar</button>
             </div>
             @endif
@@ -3216,12 +3358,19 @@ new class extends Component {
        compositor (GPU), nunca depende de reflow — mesmo motivo pelo qual
        o comentário original deste bloco (replicado de
        ⚡restricoes.blade.php) já dizia "transform:translateX" mesmo a
-       implementação antiga não usando de fato. */
+       implementação antiga não usando de fato.
+       Bug de teste manual, 2026-09-02 — `top: 0` fazia o canva cobrir a
+       faixa da navbar fixa (0 a 3.875rem, = $navbar-height do tema); como
+       o z-index do canva é maior, um clique no sino/perfil/app-grid nessa
+       faixa era engolido pelo canva aberto (mesmo bug nos 8 arquivos que
+       usam este padrão — ver ⚡restricoes.blade.php pro diagnóstico
+       completo). Corrigido começando o canva abaixo da navbar — nunca
+       interfere com o translateX (eixos independentes). */
     .canva-filtros-lookahead {
         position: fixed;
-        top: 0;
+        top: 3.875rem;
         right: 0;
-        height: 100%;
+        height: calc(100% - 3.875rem);
         z-index: 1080;
         display: flex;
         flex-direction: column;
@@ -3270,6 +3419,8 @@ new class extends Component {
     }
     </style>
 </div>
+
+@include('components.licoes-aprendidas.reaplicacao-avaliar-modal')
 
 </div>
 

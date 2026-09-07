@@ -7,5 +7,5 @@
   <span class="text-muted fw-light">Planejamento /</span> Requisições do Planejamento
 </h4>
 
-<livewire:pages::planejamento.requisicoes-planejamento />
+<livewire:pages::planejamento.requisicoes-planejamento :obra="$obraAtual" />
 @endsection

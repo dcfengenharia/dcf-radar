@@ -6,8 +6,11 @@ use App\Models\Atividade;
 use App\Models\CategoriaRestricao;
 use App\Models\Client;
 use App\Models\CronogramaImportacao;
+use App\Models\CandidatoLicaoAprendida;
 use App\Models\Disciplina;
 use App\Models\InconsistenciaAvanco;
+use App\Models\LicaoAprendida;
+use App\Models\LicaoAprendidaReaplicacao;
 use App\Models\PacoteTrabalho;
 use App\Models\PlanoAcao;
 use App\Models\Report;
@@ -20,6 +23,8 @@ use App\Policies\ClientPolicy;
 use App\Policies\CronogramaImportacaoPolicy;
 use App\Policies\DisciplinaPolicy;
 use App\Policies\InconsistenciaAvancoPolicy;
+use App\Policies\LicaoAprendidaPolicy;
+use App\Policies\LicaoAprendidaReaplicacaoPolicy;
 use App\Policies\PacoteTrabalhoPolicy;
 use App\Policies\PlanoAcaoPolicy;
 use App\Policies\ReportPolicy;
@@ -47,6 +52,15 @@ class AuthServiceProvider extends ServiceProvider
         PlanoAcao::class => PlanoAcaoPolicy::class,
         InconsistenciaAvanco::class => InconsistenciaAvancoPolicy::class,
         RequisicaoPlanejamento::class => RequisicaoPlanejamentoPolicy::class,
+        LicaoAprendida::class => LicaoAprendidaPolicy::class,
+        // Ciclo 23, Etapa 23.3 — mesma Policy governa os dois models
+        // (candidato é mecanismo de revisão do mesmo domínio de
+        // governança, reaproveita o slug gestao.licoes-aprendidas).
+        CandidatoLicaoAprendida::class => LicaoAprendidaPolicy::class,
+        // Ciclo 23, Etapa 23.5.B — Policy própria (reaproveita os slugs/
+        // ações `criar`/`editar` de gestao.licoes-aprendidas, nunca uma
+        // ação nova no catálogo).
+        LicaoAprendidaReaplicacao::class => LicaoAprendidaReaplicacaoPolicy::class,
     ];
 
     public function boot(): void

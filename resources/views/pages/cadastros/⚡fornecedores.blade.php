@@ -216,6 +216,7 @@ new class extends Component {
                     </tr>
                 </thead>
                 <tbody>
+                    @php $obraFornecedores = $this->obraId ? \App\Models\Work::find($this->obraId) : null; @endphp
                     @foreach($this->fornecedores as $fornecedor)
                     <tr style="height: 60px;">
                         <td>{{ $fornecedor->nome }}</td>
@@ -227,6 +228,13 @@ new class extends Component {
                             @endif
                         </td>
                         <td class="text-end pe-3">
+                            @can('create', [\App\Models\LicaoAprendida::class, $obraFornecedores])
+                                <a href="{{ route('gestao.licoes-aprendidas', ['origem_tipo' => 'fornecedor', 'origem_id' => $fornecedor->id]) }}"
+                                   wire:navigate
+                                   class="btn btn-xs btn-outline-warning py-0 px-1 me-1" title="Registrar como lição aprendida">
+                                    <i class="bx bx-bulb"></i>
+                                </a>
+                            @endcan
                             @if(Auth::user()->temPermissaoEmAlgumaObraDoTenant('cadastros.fornecedores', 'editar'))
                             <button class="btn btn-xs btn-outline-secondary py-0 px-1 me-1"
                                     wire:click="editar('{{ $fornecedor->id }}')">

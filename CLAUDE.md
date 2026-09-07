@@ -10991,6 +10991,107 @@ mesmas 6 falhas pré-existentes e sem relação:
 - **Não iniciar Ciclo 23, histórico, Cockpit de Estoque, atacar os 3 D,
   ou commit/push sem validação do usuário** (instrução explícita).
 
+## Memória Operacional e Aprendizagem Organizacional (Ciclo 23)
+
+- **Objetivo**: transformar experiência operacional dispersa (restrições
+  resolvidas, atrasos de pedido, desvios de aplicação) em conhecimento
+  corporativo deliberado, versionado e reutilizável — nunca uma
+  automação silenciosa. Modelo mental que toda a arquitetura respeita:
+  `Fato operacional → Candidato → Análise humana → Lição → Validação →
+  Publicação → Memória corporativa → Reutilização contextual →
+  Reaplicação consciente → Avaliação histórica`. Nenhum estágio pula o
+  anterior; a conversão de candidato em lição e a publicação são sempre
+  decisão humana explícita.
+- **Estágios**: 23.1 (núcleo — `LicaoAprendida`/`LicaoAprendidaVinculo`/
+  workflow de status/vínculo de origem); 23.2 (evidências + vínculo de
+  origem estrutural); 23.3 (`CandidatoLicaoAprendida` — geração
+  idempotente por 3 regras aprovadas, conversão humana explícita); 23.4
+  (`LicoesContextuaisQuery` — reutilização contextual em Lookahead/
+  Material, batch-safe, sem IA/similaridade textual); 23.5.A
+  (`InteligenciaLicoesQuery` — indicadores corporativos, linguagem sem
+  causalidade indevida); 23.5.B (`LicaoAprendidaReaplicacao`/
+  `...Contexto`/`...Avaliacao` — reaplicação consciente Lição×Obra +
+  avaliação append-only); 23.5.B.CORREÇÃO (autorização interna nas
+  Actions de reaplicação/avaliação, ator explícito nunca `Auth::user()`
+  implícito — auditoria final de segurança).
+- **Candidato ≠ Lição** (invariante central): um candidato NUNCA vira
+  conhecimento corporativo sozinho — só existe até ser convertido (ação
+  humana explícita, `ConverterCandidatoEmLicao`) ou descartado (terminal,
+  nunca reaberto). Geração de candidatos (`GerarCandidatosLicoesObra`) é
+  idempotente por `chave_logica` própria de cada regra
+  (`{tipo}:{entidade_id}`) — a mesma condição nunca duplica candidato,
+  inclusive sob concorrência (defesa real é a `UNIQUE` constraint, nunca
+  só a checagem em PHP).
+- **Origem e proveniência**: `LicaoAprendidaVinculo.e_origem` + coluna
+  `STORED GENERATED` garantem estruturalmente no máximo 1 vínculo de
+  origem por lição (múltiplos complementares são livres). A
+  classificação de proveniência (candidato convertido / captura
+  contextual / manual) é MUTUAMENTE EXCLUSIVA por construção — checa
+  primeiro se existe `CandidatoLicaoAprendida.licao_aprendida_id`
+  apontando pra cá (único write path: `ConverterCandidatoEmLicao`), só
+  depois olha `e_origem` (`InteligenciaLicoesQuery::proveniencia()`).
+  Snapshot nunca é recalculado; deletar/arquivar a entidade viva nunca
+  destrói a memória; vínculo com entidade viva exige autorização
+  independente.
+- **Publicação é imutável**: `Publicada`/`Arquivada` nunca voltam a ser
+  editáveis (`StatusLicaoAprendida::estaImutavel()`) — corrigir conteúdo
+  publicado é sempre arquivar + criar uma lição nova, nunca um
+  `update()` de conteúdo. Arquivamento nunca altera retroativamente
+  reaplicações já registradas.
+- **Biblioteca Corporativa**: "Esta obra" mostra tudo da obra ativa
+  (usuário já tem `ver`); "Todas as obras" mostra só `Publicada` de
+  qualquer obra do tenant + qualquer status das obras onde o usuário tem
+  acesso direto — nunca rascunho de obra sem acesso. `observacoes_internas`
+  só aparece sob `@can('update', $licao)`, nunca vazado cross-obra.
+  Acesso à memória corporativa nunca implica acesso operacional à obra
+  de origem.
+- **Reutilização contextual (23.4)**: `LicoesContextuaisQuery` só
+  considera `Publicada`, sempre exclui a obra atual como origem,
+  `MesmoMaterial` usa identidade forte (FK real via
+  `ItemSuprimento`/`AlocacaoRequisicaoPacote`/`RequisicaoPlanejamentoItem`
+  — nunca WBS/descrição), `MesmaDisciplina` é categoria agregadora,
+  precedência é ordinal (`MotivoCorrespondenciaLicao::precedencia()`,
+  nunca um score 0-100). Batch-safe (custo fixo, testado com 10/100
+  atividades) — Material/Lookahead nunca fazem 1 query por linha.
+- **Reaplicação (23.5.B)**: unidade é sempre Lição×Obra —
+  `UNIQUE(tenant_id, licao_aprendida_id, obra_id)` garante estruturalmente
+  que a mesma obra nunca conta duas vezes; obra destino nunca pode ser a
+  obra de origem; só lição `Publicada` aceita nova reaplicação (`Arquivada`
+  bloqueia criação, mas o histórico já registrado permanece intacto).
+  Contexto operacional (0..N, allowlist fechada) é sempre opcional e
+  imutável — nunca altera a cardinalidade da reaplicação corporativa.
+- **Avaliações são append-only**: sem coluna de "resultado atual" — zero
+  avaliações significa "aguardando" (`resultadoAtual()` retorna `null`);
+  cada avaliação nova é um `INSERT`, nunca um `update`/`delete`
+  (`App\Observers\LicaoAprendidaReaplicacaoAvaliacaoObserver` bloqueia
+  incondicionalmente); resultado corrente = avaliação mais recente por
+  ordem de REGISTRO (`created_at`/`id`), nunca por `avaliado_em`.
+- **Autorização**: `RegistrarReaplicacaoLicao`/`AvaliarReaplicacaoLicao`
+  (únicas Actions deste domínio que fazem isso) revalidam a Policy
+  internamente com um ator EXPLÍCITO (`User $usuario`, nunca `Auth::user()`
+  implícito) — write-path seguro por construção mesmo se o chamador
+  esquecer de checar. As demais Actions de 23.1-23.4 seguem a convenção
+  histórica do projeto (autorização só no chamador/Livewire) — assimetria
+  intencional e documentada, não um bug: permissão numa obra origem
+  nunca autoriza escrever na obra destino; acesso à biblioteca corporativa
+  nunca concede acesso operacional de escrita.
+- **Linguagem sem causalidade indevida**: indicadores corporativos (23.5.A)
+  e telas de reutilização contextual nunca afirmam incidência real,
+  "área com mais problemas", maturidade, score de aprendizado, ROI ou
+  causalidade — só distribuição/presença/proveniência do que foi
+  publicado (ex.: "Material X está associado a lições de N obras", nunca
+  "Material X causou problemas").
+- **Baseline final do Ciclo 23**: 4099 passed / 6 failed / 7 skipped /
+  11128 assertions — as 6 falhas são as mesmas históricas e
+  pré-existentes, sem relação com este ciclo:
+  `DocumentosEngenhariaDashboardTest`/`ItemSuprimentoStatusTest`/
+  `ProgramacaoSemanalSnapshotTest`/`SincronizarRestricaoSuprimentoTest`
+  (×3). Auditoria final consolidada (fase de encerramento) não encontrou
+  nenhum bug real, nenhuma violação de invariante, nenhuma inconsistência
+  de tenant/autorização — zero correção de código foi necessária.
+- **Não avançar pro Ciclo 24 sem validação do usuário** (instrução
+  explícita).
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:
@@ -11077,6 +11178,100 @@ Rode `php artisan test` antes de considerar qualquer tarefa concluída.
   duas árvores foram reconciliadas em 2026-07-20 (pequenas divergências
   de UI que existiam só num lado ou só no outro); a partir daqui, manter
   as duas em sincronia a cada mudança.
+
+## Pré-produção — segurança e privacidade (Etapa 2.2)
+
+- **Contexto**: uma auditoria adversarial (Etapa 2.1) sobre as adequações
+  técnicas de privacidade/sessão/impersonation da Etapa 2 encontrou 1
+  achado **C** (bloqueante) e 2 achados **B** (obrigatórios antes de
+  produção), todos corrigidos nesta etapa com teste permanente e
+  regressão completa. Não é declaração de conformidade jurídica integral
+  com a LGPD — decisões jurídicas (base legal, direito de eliminação vs.
+  desativação, retenção) seguem pendentes, fora do escopo técnico.
+- **C — open redirect em `Handler::render()`** (branches 419 autenticado
+  e 403): os dois usavam `url()->previous()`, que prioriza o header
+  `Referer` (`Illuminate\Routing\UrlGenerator::previous()`) e devolve
+  QUALQUER URL absoluta verbatim, sem checar origem — provado com
+  `Referer: https://evil.example.com/...` fazendo a resposta redirecionar
+  pro domínio do atacante (baixa barreira de exploração: um formulário
+  cross-origin auto-submetido nem precisa de token CSRF válido, é
+  exatamente essa ausência que dispara o 419). O branch 403 já tinha esse
+  padrão de uma fase anterior (popup de acesso negado); o 419 é da
+  própria Etapa 2, reaproveitando-o sem corrigir. **Correção**:
+  `App\Exceptions\Handler::destinoInternoSeguro()` — ALLOWLIST (nunca
+  blacklist de domínio) validando scheme http/https + host (contra
+  `config('app.url')` OU `$request->getHost()`) + porta antes de aceitar
+  qualquer candidato como destino; qualquer coisa que não valide (host
+  externo, `//evil.example` protocol-relative, `javascript:`/`data:` —
+  sempre sem `host` em `parse_url()`, URL malformada) cai no fallback
+  (`route('app.home')`). **Achado durante a correção, não previsto**: usar
+  `url()->previous()` direto também herdava o fallback automático do
+  PRÓPRIO framework pra `/` (`return $this->to('/');`) quando não há
+  Referer nem `_previous.url` na sessão — tecnicamente seguro (mesma
+  origem), mas não é "a página anterior de verdade", só o `/` genérico do
+  Laravel. Substituído por `candidatoAnterior()` (helper novo, só
+  `$request->headers->get('referer') ?: $session->previousUrl()`, sem o
+  fallback automático embutido) — ausência real de informação agora cai
+  no fallback INTENCIONAL da aplicação (`app.home`), nunca no `/` do
+  framework. Testes permanentes: `tests/Feature/Error419Test.php`
+  (branch 419) + `tests/Feature/AcessoNegadoRedirectSeguroTest.php`
+  (branch 403, novo) — interno válido, externo, protocol-relative,
+  `javascript:`, ausente, malformado, mesma página que falhou, rota
+  `cliente.*` sem redirecionamento.
+- **B1 — `ConviteController::aceitar()` autenticava usuário desativado**:
+  no branch de usuário JÁ EXISTENTE (mesmo tenant, mesmo e-mail de um
+  convite pendente), o código nunca checava `ativo` antes de
+  `Auth::login($usuario)` — reproduzido: usuário com `ativo=false` aceita
+  um convite → sessão real estabelecida + mutação real em `obra_user`,
+  só bloqueado pelo `BloquearUsuarioInativo` na requisição SEGUINTE
+  (mesma classe de padrão "autentica antes de checar `ativo`" já visível
+  no login normal, que continua fora de escopo aqui — cadastro `Auth::attempt()`
+  do Laravel não suporta credencial extra sem reescrever o guard, decisão
+  de não mexer nisso nesta etapa). **Correção**: checagem
+  `$usuarioExistente && ! $usuarioExistente->ativo` movida pra ANTES da
+  validação do formulário e de qualquer escrita — nunca `Auth::login()`,
+  nunca `obra_user`, nunca reativação silenciosa; resposta neutra
+  ("Não foi possível concluir o aceite deste convite..."), o convite
+  permanece `pendente` (nada foi de fato aceito — pode ser retomado
+  depois que a conta for reativada pelo administrador). Teste permanente:
+  `tests/Feature/ConviteUsuarioInativoTest.php` (ativo aceita normal,
+  inativo não autentica nem muta, inativo já vinculado à obra não ganha
+  sessão, cross-tenant, usuário novo continua intacto).
+- **B2 — `ExportUserData` incluía dado pessoal de terceiros**: o padrão
+  `porColuna()` (linha inteira de qualquer registro cuja coluna de
+  autoria bate com o titular) assume "linha inteira = dado do titular" —
+  falso quando a linha modela DOIS papéis (quem operou o sistema × quem
+  foi fisicamente atendido/retirou material). 4 tabelas confirmadas com
+  esse padrão real (2 achadas na auditoria original + 2 achadas por grep
+  de padrão equivalente durante esta correção, seção 18 do ticket —
+  nenhuma outra encontrada): `grd_aceites_entrega` (recebedor físico da
+  GRD — `nome_recebedor_snapshot`/`empresa_snapshot`/`setor_snapshot`/
+  `assinatura_path`/`assinatura_hash`), `movimentacoes_estoque`
+  (retirante externo — `retirado_por_externo`), `restricoes` (responsável
+  externo atribuído pelo criador da restrição — `responsavel_externo`,
+  só no bloco filtrado por `created_by_id`; o bloco filtrado por
+  `responsavel_id` nunca teve esse risco), `entregas_produto_industrializado`
+  (mesmo padrão de estoque, tabela irmã do domínio de Industrialização).
+  **Correção**: `App\Actions\ExportUserData::porColunaMinimizada()` —
+  mesma query de `porColuna()`, removendo do array retornado só as
+  colunas de identidade do terceiro (nunca apaga nada do domínio
+  operacional; a linha completa continua intacta no banco, só o pacote
+  entregue ao titular no export individual é minimizado). Teste
+  permanente: `tests/Feature/ExportUserDataMinimizacaoTest.php` — fixture
+  adversarial por tabela (titular A registra, terceiro B é o
+  recebedor/retirante/responsável — nome/assinatura de B nunca aparece
+  nem serializado em JSON), isolamento cross-usuário/cross-tenant
+  reconfirmado especificamente sobre as chaves minimizadas.
+- **Findings D não implementados nesta etapa** (fora de escopo por
+  instrução explícita): Sanctum/tokens quebrado pra ULID (feature
+  desligada, não explorável), finalização automática de impersonation
+  ao desativar o admin em contexto ativo, `trim()` do motivo de
+  impersonation, security headers (CSP/HSTS), demais decisões jurídicas
+  (base legal LGPD, retenção, direito de eliminação vs. desativação).
+- **Regressão**: 285 testes focados (Handler/419/403/Convite/
+  DeleteAccount/ExportUserData/TenantIsolation/GRD/Estoque/Impersonation/
+  Auth) sem nenhuma falha, mais full-suite-solo obrigatória (as mesmas 6
+  falhas históricas conhecidas, sem 7ª falha nova).
 
 ## Suporte e Feedback (fase de testes)
 

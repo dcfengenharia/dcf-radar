@@ -143,6 +143,14 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
     Route::delete('/atividade-anexos/{anexo}', [\App\Http\Controllers\AtividadeAnexoController::class, 'destroy'])
         ->name('atividade-anexos.destroy');
 
+    // EVIDÊNCIAS DE LIÇÃO APRENDIDA (Ciclo 23, Etapa 23.2) — mesmo motivo
+    // de atividade-anexos: fora do obra.context, o ID já basta pra
+    // resolver tenant e autorizar via LicaoAprendidaPolicy::view()/update().
+    Route::get('/licao-evidencias/{evidencia}/download', [\App\Http\Controllers\LicaoAprendidaEvidenciaController::class, 'download'])
+        ->name('licao-evidencias.download');
+    Route::delete('/licao-evidencias/{evidencia}', [\App\Http\Controllers\LicaoAprendidaEvidenciaController::class, 'destroy'])
+        ->name('licao-evidencias.destroy');
+
     // REVISÕES DE DOCUMENTO DE ENGENHARIA (Ciclo 18, Etapa 18.2) —
     // mesmo raciocínio dos anexos de atividade acima: fora do grupo
     // obra.context, ID da revisão já basta pra resolver tenant/obra.
@@ -198,13 +206,29 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
         })->name('gestao.minhas-obras');
 
         Route::get('/obras/{obra}', function (\App\Models\Work $obra) {
-            abort_unless(auth()->user()->is_platform_admin || auth()->user()->temAcessoAObra($obra), 403);
+            // Pré-produção, Etapa 2 (seção 10/11) — antes, `is_platform_admin`
+            // sozinho liberava esta rota pra QUALQUER obra de QUALQUER
+            // tenant sem nenhuma auditoria (achado real da investigação —
+            // rota alcançável direto, sem nunca passar por "Entrar como").
+            // Agora exige impersonation ATIVA do tenant dono da obra.
+            abort_unless(
+                auth()->user()->temAcessoAObra($obra)
+                    || (auth()->user()->is_platform_admin && \App\Support\ImpersonationContext::impersonandoTenant($obra->tenant_id)),
+                403
+            );
             return view('app.gestao.obra-detalhe', ['obra' => $obra]);
         })->name('gestao.obra.show');
 
         Route::get('/benchmarking', function () {
             return view('app.gestao.benchmarking-obras');
         })->name('gestao.benchmarking');
+
+        // Ciclo 23, Etapa 23.1 — Memória Operacional Corporativa (Lições
+        // Aprendidas). Mesmo padrão de benchmarking: ESCOPO_TENANT, sem
+        // obra.context, seletor de obra próprio dentro do componente.
+        Route::get('/licoes-aprendidas', function () {
+            return view('app.gestao.licoes-aprendidas');
+        })->name('gestao.licoes-aprendidas');
     })->name('app.gestao');
 
     // RADAR — requer obra selecionada na sessão
@@ -378,9 +402,13 @@ Route::middleware(['auth', 'verified', 'platform.admin'])->prefix('admin')->name
         ]);
     })->name('tenants.show');
 
-    Route::post('/tenants/{tenant}/impersonar', function (string $tenant) {
+    Route::post('/tenants/{tenant}/impersonar', function (string $tenant, \Illuminate\Http\Request $request) {
         $tenant = \App\Models\Tenant::withTrashed()->findOrFail($tenant);
-        \App\Support\ImpersonationContext::start($tenant);
+        // Pré-produção, Etapa 2 (seção 10/11) — motivo opcional, nunca
+        // bloqueia o suporte numa emergência, mas fecha o princípio-alvo
+        // "identidade conhecida → motivo → timestamp → tenant → auditável".
+        $motivo = trim((string) $request->input('motivo'));
+        \App\Support\ImpersonationContext::start($tenant, $motivo !== '' ? $motivo : null);
 
         return redirect()->route('app.home')
             ->with('flash.banner', 'Você está navegando como ' . $tenant->name . '.')

@@ -71,7 +71,18 @@ new class extends Component {
     public function trocarObra(string $obraId): void
     {
         $novaObra = Work::findOrFail($obraId);
-        abort_unless(Auth::user()->is_platform_admin || Auth::user()->temAcessoAObra($novaObra), 403);
+        // Pré-produção, Etapa 2 (seção 10/11) — mesma correção de
+        // WorkPolicy/gestao.obra.show: `is_platform_admin` sozinho nunca
+        // mais basta, precisa de impersonation ativa do tenant dono da
+        // obra. Achado da investigação: na prática este bypass já era
+        // neutralizado pelo middleware `RequireObraContext` na requisição
+        // seguinte (que não tem exceção de admin) — mas deixava o
+        // `ObraContext` setado por um instante, sem nenhuma auditoria.
+        abort_unless(
+            Auth::user()->temAcessoAObra($novaObra)
+                || (Auth::user()->is_platform_admin && \App\Support\ImpersonationContext::impersonandoTenant($novaObra->tenant_id)),
+            403
+        );
 
         ObraContext::set($novaObra);
 

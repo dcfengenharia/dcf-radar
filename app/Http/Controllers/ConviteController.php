@@ -36,6 +36,27 @@ class ConviteController extends Controller
             return $this->redirecionarConviteInvalido();
         }
 
+        $obra = $convite->obra;
+        $tenant = $obra->tenant;
+
+        $usuarioExistente = User::where('tenant_id', $tenant->id)->where('email', $convite->email)->first();
+
+        // Pré-produção, Etapa 2.2 (achado B1) — invariável: `ativo=false`
+        // impede autenticação e qualquer mutação decorrente dela, também no
+        // aceite de convite pra uma conta JÁ EXISTENTE. Checado ANTES de
+        // validar o formulário (nenhum dado do POST importa pra essa
+        // decisão) e antes de qualquer escrita — nunca `Auth::login()`,
+        // nunca `obra_user`, nunca reativação silenciosa. O convite
+        // permanece `pendente` (nada foi de fato aceito) — quem convidou
+        // pode reenviar depois que a conta for reativada pelo administrador
+        // da plataforma; resposta neutra, nunca confirma/nega o motivo
+        // exato (evita expor status de conta a quem só tem o link).
+        if ($usuarioExistente && ! $usuarioExistente->ativo) {
+            return redirect()->route('login')
+                ->with('flash.banner', 'Não foi possível concluir o aceite deste convite. Fale com o administrador da plataforma.')
+                ->with('flash.bannerStyle', 'danger');
+        }
+
         $request->validate([
             'first_name' => ['required', 'string', 'max:255'],
             'last_name' => ['required', 'string', 'max:255'],
@@ -45,11 +66,6 @@ class ConviteController extends Controller
             'terms.required' => 'Você precisa aceitar a Política de Privacidade e os Termos de Uso para criar sua conta.',
             'terms.accepted' => 'Você precisa aceitar a Política de Privacidade e os Termos de Uso para criar sua conta.',
         ]);
-
-        $obra = $convite->obra;
-        $tenant = $obra->tenant;
-
-        $usuarioExistente = User::where('tenant_id', $tenant->id)->where('email', $convite->email)->first();
 
         if (! $usuarioExistente) {
             $limite = $tenant->limiteUsuarios();

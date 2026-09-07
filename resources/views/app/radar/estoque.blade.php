@@ -7,5 +7,5 @@
   <span class="text-muted fw-light">Radar /</span> Estoque
 </h4>
 
-<livewire:pages::radar.estoque />
+<livewire:pages::radar.estoque :obra="$obraAtual" />
 @endsection

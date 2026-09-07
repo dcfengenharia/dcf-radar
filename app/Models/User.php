@@ -129,6 +129,17 @@ class User extends Authenticatable implements MustVerifyEmail
     /**
      * Sobrescreve o padrão do HasProfilePhoto, que assume um campo "name"
      * único — este schema usa first_name/last_name.
+     *
+     * Pré-produção, Etapa 2 (auditoria de privacidade — seção 6): até esta
+     * mudança, isso chamava ui-avatars.com toda vez que um usuário sem
+     * foto própria aparecia em tela (navbar, comentários, listas) —
+     * enviando as iniciais do nome + IP/User-Agent do VISITANTE (não do
+     * dono do avatar) a um terceiro, nunca declarado em nenhum lugar.
+     * Agora o avatar é gerado 100% localmente como um SVG embutido (data
+     * URI) — mesmo texto/cores de antes, zero requisição de rede. Como o
+     * retorno continua sendo uma URL utilizável em `<img src="...">`
+     * (mesma assinatura/contrato do método original), nenhum template que
+     * consome `profile_photo_url` precisou mudar.
      */
     protected function defaultProfilePhotoUrl(): string
     {
@@ -136,8 +147,18 @@ class User extends Authenticatable implements MustVerifyEmail
         $iniciais = collect(explode(' ', $name))
             ->filter()
             ->map(fn ($segmento) => mb_substr($segmento, 0, 1))
-            ->join(' ');
+            ->join('');
 
-        return 'https://ui-avatars.com/api/?name=' . urlencode($iniciais) . '&color=7F9CF5&background=EBF4FF';
+        $texto = htmlspecialchars(mb_strtoupper($iniciais !== '' ? $iniciais : '?'), ENT_QUOTES | ENT_XML1);
+
+        $svg = <<<SVG
+            <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+                <rect width="200" height="200" fill="#EBF4FF"/>
+                <text x="100" y="100" text-anchor="middle" dominant-baseline="central"
+                    font-family="IBM Plex Sans, Arial, sans-serif" font-size="80" font-weight="600" fill="#7F9CF5">{$texto}</text>
+            </svg>
+            SVG;
+
+        return 'data:image/svg+xml;base64,' . base64_encode($svg);
     }
 }

@@ -307,12 +307,18 @@ new class extends Component {
    renderiza o conteúdo do elemento raiz único; um <style> colocado depois do
    </div> de fechamento simplesmente não chega no DOM do navegador (bug real
    encontrado nesta sessão: a classe .canva-filtros-aberto era aplicada certinho
-   via Alpine, mas o CSS que a estilizava nunca existia). */
+   via Alpine, mas o CSS que a estilizava nunca existia).
+   Bug de teste manual, 2026-09-02 — `top: 0` fazia o canva cobrir também a
+   faixa da navbar fixa (0 a 3.875rem, = $navbar-height do tema); como o
+   z-index do canva é maior que o da navbar, um clique no sino/perfil/
+   app-grid nessa faixa era engolido pelo canva aberto (mesmo bug nos 8
+   arquivos que usam este padrão — ver ⚡restricoes.blade.php pro
+   diagnóstico completo). Corrigido começando o canva abaixo da navbar. */
 .canva-filtros-minhas-obras {
     position: fixed;
-    top: 0;
+    top: 3.875rem;
     right: -360px;
-    height: 100%;
+    height: calc(100% - 3.875rem);
     z-index: 1080;
     display: flex;
     flex-direction: column;

@@ -145,9 +145,14 @@ new class extends Component {
                                 })">
                             <i class="bx bx-crown"></i> {{ $tenant->eh_conta_operadora ? 'Desmarcar' : 'Marcar' }} Conta Operadora
                         </button>
-                        <form method="POST" action="{{ route('admin.tenants.impersonar', $tenant) }}">
+                        <form method="POST" action="{{ route('admin.tenants.impersonar', $tenant) }}" class="d-flex align-items-center gap-2">
                             @csrf
-                            <button type="submit" class="btn btn-sm btn-outline-danger">
+                            {{-- Pré-produção, Etapa 2 (seção 10/11): motivo
+                                 opcional do acesso — nunca bloqueia o
+                                 suporte, mas fica registrado em
+                                 Impersonacao.motivo junto de quem/quando. --}}
+                            <input type="text" name="motivo" class="form-control form-control-sm" style="max-width: 220px;" placeholder="Motivo (opcional)" maxlength="500">
+                            <button type="submit" class="btn btn-sm btn-outline-danger text-nowrap">
                                 <i class="bx bx-user-voice"></i> Entrar como
                             </button>
                         </form>

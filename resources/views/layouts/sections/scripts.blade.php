@@ -17,25 +17,57 @@
 <style>
 body.radar-navegando a[wire\:navigate] { pointer-events: none; }
 </style>
-<script>
+<script data-navigate-once>
 document.addEventListener('livewire:navigating', function () { document.body.classList.add('radar-navegando'); });
 document.addEventListener('livewire:navigated', function () { document.body.classList.remove('radar-navegando'); });
 </script>
 
+{{-- Bug de teste manual, 2026-09-03 — "navbar/dropdowns morrem depois de
+     navegar" (sino, avatar, atalhos, tudo). Causa raiz lida direto no
+     vendor/livewire/livewire/dist/livewire.js (não por memória de versão
+     antiga): `prepNewBodyScriptTagsToRun()` clona e REEXECUTA toda tag
+     <script> dentro de <body> a cada wire:navigate, a menos que ela carregue
+     `data-navigate-once` — o próprio Livewire já usa esse atributo na sua
+     tag de config (`FrontendAssets::scriptConfig()`), é o mecanismo OFICIAL
+     pra isso, não um workaround. Sem ele, cada navegação:
+     (1) reexecutava bootstrap.js (o bundle real da lib, reexportado como
+     window.bootstrap) — cada execução cria uma 2ª instância do módulo com
+     seu PRÓPRIO listener delegado de clique em `document` pra
+     data-bs-toggle; com 2+ instâncias reagindo ao mesmo clique, a checagem
+     de estado (classe .show, síncrona) fecha o que a outra acabou de abrir
+     NO MESMO clique — o dropdown "não responde" (provado ao vivo:
+     bootstrap.Dropdown.getOrCreateInstance(el).toggle() funciona, um clique
+     real não);
+     (2) reexecutava resources/assets/js/main.js, que declara `let menu,
+     isRtl, ...` fora de qualquer função — `let`/`const`/`class` de topo
+     vivem num único escopo de "script" por documento (não um por tag), e a
+     2ª execução lançava `Uncaught SyntaxError: Identifier 'menu' has
+     already been declared` (confirmado no Console real);
+     (3) reexecutava resources/js/app.js, que faz `window.Echo = new
+     Echo(...)` — cada navegação abria uma NOVA conexão WebSocket/Reverb
+     sem nunca fechar a anterior.
+     Nenhum desses arquivos precisa rodar mais de uma vez por sessão — o
+     sidebar/menu que main.js inicializa já é @persist('sidebar') (nunca
+     destruído), então a correção é só marcar cada script de
+     vendor/tema/app como "rode uma vez só", o mecanismo que o próprio
+     Livewire usa pra si mesmo. Scripts POR PÁGINA (@yield('vendor-script')/
+     @yield('page-script'), Chart.js etc.) ficam de fora de propósito —
+     são diferentes a cada página, nunca declaram binding global
+     conflitante, e cada um já roda de novo quando a página muda (esperado). --}}
 <!-- BEGIN: Vendor JS-->
-<script src="{{ asset(mix('assets/vendor/libs/jquery/jquery.js')) }}"></script>
-<script src="{{ asset(mix('assets/vendor/libs/popper/popper.js')) }}"></script>
-<script src="{{ asset(mix('assets/vendor/js/bootstrap.js')) }}"></script>
-<script src="{{ asset(mix('assets/vendor/libs/perfect-scrollbar/perfect-scrollbar.js')) }}"></script>
-<script src="{{ asset(mix('assets/vendor/libs/hammer/hammer.js')) }}"></script>
-<script src="{{ asset(mix('assets/vendor/libs/typeahead-js/typeahead.js')) }}"></script>
-<script src="{{ asset(mix('assets/vendor/js/menu.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/libs/jquery/jquery.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/libs/popper/popper.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/js/bootstrap.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/libs/perfect-scrollbar/perfect-scrollbar.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/libs/hammer/hammer.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/libs/typeahead-js/typeahead.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/js/menu.js')) }}"></script>
 {{-- toastr carregado globalmente (ver styles.blade.php para o motivo) --}}
-<script src="{{ asset(mix('assets/vendor/libs/toastr/toastr.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/vendor/libs/toastr/toastr.js')) }}"></script>
 @yield('vendor-script')
 <!-- END: Page Vendor JS-->
 <!-- BEGIN: Theme JS-->
-<script src="{{ asset(mix('assets/js/main.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('assets/js/main.js')) }}"></script>
 
 <!-- END: Theme JS-->
 <!-- Pricing Modal JS-->
@@ -47,10 +79,10 @@ document.addEventListener('livewire:navigated', function () { document.body.clas
 
 @stack('modals')
 @livewireScripts
-<script src="{{ asset(mix('js/app.js')) }}"></script>
+<script data-navigate-once src="{{ asset(mix('js/app.js')) }}"></script>
 
 {{-- wire:navigate: atualiza classes do menu lateral sem re-renderizá-lo --}}
-<script>
+<script data-navigate-once>
 (function () {
     function syncMenuActive() {
         var path = window.location.pathname;
@@ -104,7 +136,7 @@ document.addEventListener('livewire:navigated', function () { document.body.clas
      ver feedback_persist_componentes_globais_livewire). Isso limpa
      incondicionalmente no início de toda navegação, então nunca atrapalha um
      modal que devia mesmo estar fechado. --}}
-<script>
+<script data-navigate-once>
 document.addEventListener('livewire:navigating', function () {
     document.querySelectorAll('.modal-backdrop').forEach(function (el) { el.remove(); });
     document.body.classList.remove('modal-open');

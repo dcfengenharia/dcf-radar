@@ -1206,4 +1206,240 @@ class TenantIsolationTest extends TestCase
 
         $this->assertNull(\App\Models\SituacaoComunicacaoEntrega::find($entregaB->id));
     }
+
+    /** Ciclo 23, Etapa 23.1 — licoes_aprendidas/licao_aprendida_vinculos. */
+    public function test_licao_aprendida_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $licaoB = \App\Support\TenantContext::actingAs($tenantB, function () use ($obraB, $userB) {
+            return \App\Models\LicaoAprendida::create([
+                'obra_origem_id' => $obraB->id,
+                'titulo' => 'Lição do tenant B',
+                'situacao_observada' => 'x',
+                'recomendacao_futura' => 'y',
+                'tipo' => 'problema',
+                'criticidade' => 'baixa',
+                'area_funcional' => 'campo',
+                'status' => 'rascunho',
+                'created_by_id' => $userB->id,
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\LicaoAprendida::find($licaoB->id));
+    }
+
+    public function test_licao_aprendida_vinculo_e_escopado_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $vinculoB = \App\Support\TenantContext::actingAs($tenantB, function () use ($obraB, $userB) {
+            $licao = \App\Models\LicaoAprendida::create([
+                'obra_origem_id' => $obraB->id,
+                'titulo' => 'Lição do tenant B',
+                'situacao_observada' => 'x',
+                'recomendacao_futura' => 'y',
+                'tipo' => 'problema',
+                'criticidade' => 'baixa',
+                'area_funcional' => 'campo',
+                'status' => 'rascunho',
+                'created_by_id' => $userB->id,
+            ]);
+
+            return \App\Models\LicaoAprendidaVinculo::create([
+                'licao_aprendida_id' => $licao->id,
+                'entidade_tipo' => 'atividade',
+                'entidade_id' => (string) \Illuminate\Support\Str::ulid(),
+                'titulo_snapshot' => 'Atividade X',
+                'created_by_id' => $userB->id,
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\LicaoAprendidaVinculo::find($vinculoB->id));
+    }
+
+    /** Ciclo 23, Etapa 23.2 — evidência/anexo de lição. */
+    public function test_licao_aprendida_evidencia_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $evidenciaB = \App\Support\TenantContext::actingAs($tenantB, function () use ($obraB, $userB) {
+            $licao = \App\Models\LicaoAprendida::create([
+                'obra_origem_id' => $obraB->id,
+                'titulo' => 'Lição do tenant B',
+                'situacao_observada' => 'x',
+                'recomendacao_futura' => 'y',
+                'tipo' => 'problema',
+                'criticidade' => 'baixa',
+                'area_funcional' => 'campo',
+                'status' => 'rascunho',
+                'created_by_id' => $userB->id,
+            ]);
+
+            return \App\Models\LicaoAprendidaEvidencia::create([
+                'licao_aprendida_id' => $licao->id,
+                'nome_original' => 'foto.pdf',
+                'caminho_arquivo' => 'licoes-aprendidas-evidencias/x/y/z.pdf',
+                'mime_type' => 'application/pdf',
+                'tamanho_bytes' => 100,
+                'enviado_por' => $userB->id,
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\LicaoAprendidaEvidencia::find($evidenciaB->id));
+    }
+
+    /** Ciclo 23, Etapa 23.3 — candidato a lição aprendida. */
+    public function test_candidato_licao_aprendida_e_escopado_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $candidatoB = \App\Support\TenantContext::actingAs($tenantB, function () use ($obraB, $userB, $tenantB) {
+            $atividade = \App\Models\Atividade::factory()->create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id]);
+
+            return \App\Models\CandidatoLicaoAprendida::create([
+                'obra_id' => $obraB->id,
+                'tipo' => 'restricao_relevante',
+                'chave_logica' => 'restricao_relevante:'.\Illuminate\Support\Str::ulid(),
+                'status' => 'pendente',
+                'entidade_tipo' => 'atividade',
+                'entidade_id' => $atividade->id,
+                'titulo' => 'x',
+                'descricao' => 'x',
+                'dados_snapshot' => [],
+                'gerado_em' => now(),
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\CandidatoLicaoAprendida::find($candidatoB->id));
+    }
+
+    /** Ciclo 23, Etapa 23.5.B — reaplicação de lição em outra obra. */
+    public function test_licao_aprendida_reaplicacao_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $reaplicacaoB = \App\Support\TenantContext::actingAs($tenantB, function () use ($tenantB, $userB) {
+            $obraOrigemB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $obraDestinoB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $licao = \App\Models\LicaoAprendida::create([
+                'obra_origem_id' => $obraOrigemB->id,
+                'titulo' => 'Lição do tenant B',
+                'situacao_observada' => 'x',
+                'recomendacao_futura' => 'y',
+                'tipo' => 'problema',
+                'criticidade' => 'baixa',
+                'area_funcional' => 'campo',
+                'status' => 'publicada',
+                'publicado_em' => now(),
+                'created_by_id' => $userB->id,
+            ]);
+
+            return \App\Models\LicaoAprendidaReaplicacao::create([
+                'licao_aprendida_id' => $licao->id,
+                'obra_id' => $obraDestinoB->id,
+                'created_by_id' => $userB->id,
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\LicaoAprendidaReaplicacao::find($reaplicacaoB->id));
+    }
+
+    public function test_licao_aprendida_reaplicacao_contexto_e_escopado_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $contextoB = \App\Support\TenantContext::actingAs($tenantB, function () use ($tenantB, $userB) {
+            $obraOrigemB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $obraDestinoB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $licao = \App\Models\LicaoAprendida::create([
+                'obra_origem_id' => $obraOrigemB->id,
+                'titulo' => 'Lição do tenant B',
+                'situacao_observada' => 'x',
+                'recomendacao_futura' => 'y',
+                'tipo' => 'problema',
+                'criticidade' => 'baixa',
+                'area_funcional' => 'campo',
+                'status' => 'publicada',
+                'publicado_em' => now(),
+                'created_by_id' => $userB->id,
+            ]);
+            $reaplicacao = \App\Models\LicaoAprendidaReaplicacao::create([
+                'licao_aprendida_id' => $licao->id,
+                'obra_id' => $obraDestinoB->id,
+                'created_by_id' => $userB->id,
+            ]);
+
+            return \App\Models\LicaoAprendidaReaplicacaoContexto::create([
+                'reaplicacao_id' => $reaplicacao->id,
+                'entidade_tipo' => 'atividade',
+                'entidade_id' => (string) \Illuminate\Support\Str::ulid(),
+                'titulo_snapshot' => 'Atividade X',
+                'created_by_id' => $userB->id,
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\LicaoAprendidaReaplicacaoContexto::find($contextoB->id));
+    }
+
+    public function test_licao_aprendida_reaplicacao_avaliacao_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $avaliacaoB = \App\Support\TenantContext::actingAs($tenantB, function () use ($tenantB, $userB) {
+            $obraOrigemB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $obraDestinoB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+            $licao = \App\Models\LicaoAprendida::create([
+                'obra_origem_id' => $obraOrigemB->id,
+                'titulo' => 'Lição do tenant B',
+                'situacao_observada' => 'x',
+                'recomendacao_futura' => 'y',
+                'tipo' => 'problema',
+                'criticidade' => 'baixa',
+                'area_funcional' => 'campo',
+                'status' => 'publicada',
+                'publicado_em' => now(),
+                'created_by_id' => $userB->id,
+            ]);
+            $reaplicacao = \App\Models\LicaoAprendidaReaplicacao::create([
+                'licao_aprendida_id' => $licao->id,
+                'obra_id' => $obraDestinoB->id,
+                'created_by_id' => $userB->id,
+            ]);
+
+            return \App\Models\LicaoAprendidaReaplicacaoAvaliacao::create([
+                'reaplicacao_id' => $reaplicacao->id,
+                'resultado' => 'positivo',
+                'avaliado_por_id' => $userB->id,
+                'avaliado_em' => now(),
+            ]);
+        });
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\LicaoAprendidaReaplicacaoAvaliacao::find($avaliacaoB->id));
+    }
 }

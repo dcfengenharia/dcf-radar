@@ -216,9 +216,23 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
             </div>
           </div>
         </li>
-        @persist('notificacoes-dropdown')
+        {{-- Bug de teste manual, 2026-09-03 — este @persist ANINHADO dentro
+             do @persist('topnav') (contentNavbarLayout.blade.php) quebrava o
+             sino de notificações: o algoritmo de persist do Livewire
+             (vendor/livewire/livewire/dist/livewire.js,
+             storePersistantElementsForLater/putPersistantElementsBack) faz
+             um único `document.querySelectorAll("[x-persist]")` plano, sem
+             tratar aninhamento — na 1ª navegação ele extrai este elemento
+             duas vezes (uma implícita, como filho de 'topnav', outra
+             explícita, por conta própria) e na hora de recolocar de volta o
+             `replaceWith()` deste vira no-op (o pai 'topnav' já foi
+             substituído antes dele na mesma lista estática), então o
+             componente inteiro sumia do DOM — confirmado ao vivo:
+             document.querySelector('.bx-bell.bx-sm') virava null depois de
+             1 wire:navigate. Este componente já sobrevive à navegação de
+             graça por estar DENTRO do @persist('topnav') externo — não
+             precisa (e não pode) de um @persist próprio aninhado. --}}
         <livewire:notificacoes-dropdown />
-        @endpersist
         {{-- BLOCO ABAIXO REMOVIDO: era mock hardcoded, substituído pelo componente acima --}}
         {{-- <li class="nav-item dropdown-notifications navbar-dropdown dropdown me-3 me-xl-2"> --}}
         <li class="d-none">

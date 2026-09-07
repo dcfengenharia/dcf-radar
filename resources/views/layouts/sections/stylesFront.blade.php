@@ -1,8 +1,10 @@
 <!-- BEGIN: Theme CSS-->
-<!-- Fonts -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600;1,700&family=Rubik:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600;1,700&display=swap" rel="stylesheet">
+{{-- Fonts — hospedadas localmente (Pré-produção, Etapa 2, seção 5):
+     IBM Plex Sans + Rubik nunca mais carregadas ao vivo de
+     fonts.googleapis.com/fonts.gstatic.com, inclusive nesta página
+     PÚBLICA (login/registro, sem sessão) — ver resources/assets/vendor/
+     fonts/google-fonts.scss pra origem/licença dos arquivos. --}}
+<link rel="stylesheet" href="{{ asset(mix('assets/vendor/fonts/google-fonts.css')) }}" />
 
 <link rel="stylesheet" href="{{ asset(mix('assets/vendor/fonts/boxicons.css')) }}" />
 <!-- Core CSS -->
