@@ -167,6 +167,14 @@ class CatalogoFuncionalidades
             ['slug' => 'cadastros.fluxos_suprimento', 'nome' => 'Tipos de Fluxo (Suprimentos)', 'secao' => 'Cadastros', 'escopo' => self::ESCOPO_TENANT],
             ['slug' => 'cadastros.status_documentos', 'nome' => 'Status de Documento', 'secao' => 'Cadastros', 'escopo' => self::ESCOPO_TENANT],
 
+            // Ajuste de arquitetura de navegação — UnidadeMedida/FamiliaMaterial
+            // são cadastros corporativos tenant-wide (Ciclo 19.1), reposicionados
+            // de abas dentro de Radar → Estoque (ESCOPO_OBRA, 'estoque.movimentacao')
+            // pra Configurações → Cadastros (ESCOPO_TENANT), mesmo padrão dos
+            // demais cadastros acima. Zero mudança de model/tabela/tenant scope.
+            ['slug' => 'cadastros.unidades_medida', 'nome' => 'Unidades de Medida', 'secao' => 'Cadastros', 'escopo' => self::ESCOPO_TENANT],
+            ['slug' => 'cadastros.familias_material', 'nome' => 'Famílias de Materiais', 'secao' => 'Cadastros', 'escopo' => self::ESCOPO_TENANT],
+
             // Página com seletor de obra próprio (mesmo padrão de
             // cadastros.itens_prontidao) — por isso ESCOPO_TENANT mesmo
             // com dados que têm obra_id, e não ESCOPO_OBRA: a checagem

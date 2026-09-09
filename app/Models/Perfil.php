@@ -122,6 +122,16 @@ class Perfil extends Model
         'cadastros.feriados' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         'cadastros.fluxos_suprimento' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         'cadastros.status_documentos' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
+        // Ajuste de arquitetura de navegação — reposicionados de
+        // 'estoque.movimentacao' (criar=Encarregado) pra Configurações →
+        // Cadastros: reaproveita o MESMO tier Admin de todo cadastro
+        // corporativo irmão acima (nenhuma exceção existia), por coerência
+        // com o padrão do catálogo — nunca uma estrutura nova inventada.
+        // Consequência real de segurança: quem só tinha 'estoque.
+        // movimentacao' (Encarregado/Engenheiro) deixa de conseguir criar/
+        // editar/inativar Unidade ou Família — só Admin do tenant.
+        'cadastros.unidades_medida' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
+        'cadastros.familias_material' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         'engenharia.pacotes' => ['criar' => Papel::Admin, 'editar' => Papel::Admin, 'excluir' => Papel::Admin],
         // Ciclo 21, Etapa 21.5 — ÚNICO slug do catálogo cujo 'ver' NÃO é
         // aberto por padrão (Seção 34 do pedido: "não conceder

@@ -48,7 +48,7 @@ class EstoquePageTest extends TestCase
     {
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
             ->assertOk()
-            ->assertSee('Catálogo de Materiais');
+            ->assertSee('Catálogo Mestre de Materiais');
     }
 
     public function test_criar_material_via_ui(): void

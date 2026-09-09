@@ -4,6 +4,7 @@ use App\Actions\Estoque\AssociarMaterialAoItemTakeOff;
 use App\Actions\Estoque\AtualizarRascunhoOrdemIndustrializacao;
 use App\Actions\Estoque\AtualizarAplicacaoMaterialEstoque;
 use App\Actions\Estoque\AtualizarDestinacaoPlanejada;
+use App\Actions\Estoque\CriarMaterial;
 use App\Actions\Estoque\CriarOrdemIndustrializacao;
 use App\Actions\Estoque\CriarReservaEstoque;
 use App\Actions\Estoque\EmitirOrdemIndustrializacao;
@@ -27,10 +28,14 @@ use App\Actions\Estoque\ConcluirInventarioEstoque;
 use App\Actions\Estoque\CancelarInventarioEstoque;
 use App\Enums\DirecaoRemessaIndustrializacao;
 use App\Enums\ModalidadeEntregaProduto;
+use App\Enums\OrigemCadastroMaterial;
 use App\Enums\ModoRastreabilidadeMaterial;
 use App\Enums\StatusReservaEstoque;
 use App\Enums\TipoLocalEstoque;
 use App\Enums\TipoMovimentacaoEstoque;
+use App\Imports\MaterialImporter;
+use App\Exports\MaterialImportTemplateExport;
+use Maatwebsite\Excel\Facades\Excel;
 use App\Exceptions\AplicacaoConciliacaoFechadaException;
 use App\Exceptions\AplicacaoConciliacaoInvalidaException;
 use App\Exceptions\AssociacaoMaterialInvalidaException;
@@ -93,6 +98,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 
 /**
  * Ciclo 20, Etapa 20.1 — Fundação do Estoque. Mesmo padrão obra-scoped de
@@ -109,7 +115,7 @@ use Livewire\Component;
  * App\Support\Estoque\SaldoEstoque, já testados isoladamente.
  */
 new class extends Component {
-    use ExecutaComTransacaoSegura, \App\Support\Concerns\LidaComReaplicacaoLicao;
+    use ExecutaComTransacaoSegura, \App\Support\Concerns\LidaComReaplicacaoLicao, WithFileUploads;
 
     public Work $obra;
 
@@ -123,6 +129,11 @@ new class extends Component {
     public ?string $materialUnidadeMedidaId = null;
     public ?string $materialFamiliaId = null;
     public string $materialModoRastreabilidade = 'quantitativo';
+
+    // ---- Importação Excel do Catálogo Mestre de Materiais ----
+    public bool $importModalMaterialAberto = false;
+    public $arquivoImportacaoMaterial = null;
+    public ?array $previaImportacaoMaterial = null;
 
     // ---- Modal Experiência de Obras Anteriores (23.4) ----
     public ?string $licoesContextuaisMaterialId = null;
@@ -413,7 +424,22 @@ new class extends Component {
             if ($this->editandoMaterialId) {
                 Material::findOrFail($this->editandoMaterialId)->update($dados);
             } else {
-                Material::create($dados + ['ativo' => true]);
+                // Melhoria "Posto Operacional" — criação delegada à
+                // Action única (App\Actions\Estoque\CriarMaterial),
+                // reaproveitada também pela criação inline do popup do
+                // Plano Semanal, pra nunca duplicar esta lógica em 2
+                // Livewire components. 'Catalogo' é a proveniência
+                // correta pra este caminho (cadastro direto na tela de
+                // Estoque) — nunca 'PlanoSemanal', reservada à criação
+                // inline.
+                app(CriarMaterial::class)->execute(
+                    $dados['codigo'],
+                    $dados['descricao'],
+                    $dados['unidade_medida_id'],
+                    $dados['familia_material_id'],
+                    $dados['modo_rastreabilidade'],
+                    OrigemCadastroMaterial::Catalogo,
+                );
             }
 
             $this->modalMaterialAberto = false;
@@ -438,6 +464,98 @@ new class extends Component {
         if (! $this->transacaoSeguraFalhou()) {
             $this->dispatch('show-toast', message: 'Status do Material atualizado.', type: 'success');
         }
+    }
+
+    // =========================================================
+    // Importação Excel do Catálogo Mestre de Materiais
+    // =========================================================
+
+    public function abrirImportacaoMaterial(): void
+    {
+        $this->garantirPermissao('criar');
+        $this->arquivoImportacaoMaterial = null;
+        $this->previaImportacaoMaterial = null;
+        $this->resetErrorBag();
+        $this->importModalMaterialAberto = true;
+    }
+
+    public function fecharImportacaoMaterial(): void
+    {
+        $this->importModalMaterialAberto = false;
+        $this->arquivoImportacaoMaterial = null;
+        $this->previaImportacaoMaterial = null;
+    }
+
+    public function analisarImportacaoMaterial(): void
+    {
+        $this->garantirPermissao('criar');
+        $this->validate(['arquivoImportacaoMaterial' => 'required|file|mimes:xlsx,xlsm'], [], ['arquivoImportacaoMaterial' => 'planilha']);
+
+        $importador = new MaterialImporter();
+
+        try {
+            $linhas = $importador->lerLinhas($this->arquivoImportacaoMaterial->getRealPath());
+        } catch (\RuntimeException $e) {
+            $this->addError('arquivoImportacaoMaterial', $e->getMessage());
+
+            return;
+        }
+
+        if (empty($linhas)) {
+            $this->addError('arquivoImportacaoMaterial', 'Nenhuma linha com código/descrição encontrada na aba "MATERIAIS" da planilha.');
+
+            return;
+        }
+
+        $this->previaImportacaoMaterial = $importador->analisar($linhas);
+    }
+
+    /**
+     * Só as linhas classificadas 'valida' por `MaterialImporter::analisar()`
+     * são gravadas — nunca upsert, nunca criação implícita de Unidade/
+     * Família (§10/§11/§15 do pedido original). `transacaoSegura()` já
+     * envolve `aplicar()` num `DB::transaction()` — tudo ou nada.
+     */
+    public function confirmarImportacaoMaterial(): void
+    {
+        $this->garantirPermissao('criar');
+
+        if (! $this->previaImportacaoMaterial) {
+            return;
+        }
+
+        $linhasValidas = array_values(array_filter(
+            $this->previaImportacaoMaterial['linhas'],
+            fn (array $l) => $l['status'] === 'valida'
+        ));
+
+        if (empty($linhasValidas)) {
+            $this->dispatch('show-toast', message: 'Nenhuma linha válida para importar — corrija a planilha e tente novamente.', type: 'error');
+
+            return;
+        }
+
+        $importador = new MaterialImporter();
+        $resultado = null;
+
+        $this->transacaoSegura(function () use ($importador, $linhasValidas, &$resultado) {
+            $resultado = $importador->aplicar($linhasValidas);
+        }, 'Não foi possível concluir a importação de Materiais.');
+
+        if ($this->transacaoSeguraFalhou()) {
+            return;
+        }
+
+        $this->fecharImportacaoMaterial();
+        unset($this->materiais, $this->unidadesMedida, $this->familiasMaterial);
+        $this->dispatch('show-toast', message: "Importação concluída: {$resultado['criados']} Material(is) criado(s).", type: 'success');
+    }
+
+    public function baixarModeloMaterial()
+    {
+        $this->garantirPermissao('ver');
+
+        return Excel::download(new MaterialImportTemplateExport(), 'modelo-importacao-materiais.xlsx');
     }
 
     // =========================================================
@@ -3072,8 +3190,17 @@ new class extends Component {
   @if ($abaAtiva === 'materiais')
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Catálogo de Materiais</h5>
+        <div>
+          <h5 class="mb-0">Catálogo Mestre de Materiais</h5>
+          <p class="text-muted small mb-0">Cadastro corporativo do tenant — reutilizado por todas as obras. Toda edição, importação ou inativação aqui afeta o catálogo inteiro, não só esta obra.</p>
+        </div>
         <div class="d-flex gap-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm" wire:click="baixarModeloMaterial" title="Baixar planilha modelo (.xlsx) com as Unidades/Famílias já cadastradas e instruções">
+            <i class="bx bx-download"></i> Baixar modelo
+          </button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" wire:click="abrirImportacaoMaterial">
+            <i class="bx bx-upload"></i> Importar Excel
+          </button>
           <button type="button" class="btn btn-outline-secondary btn-sm" wire:click="exportarEtiquetasMateriaisLote" title="Imprimir etiquetas de todos os Materiais ativos (Ciclo 20, Etapa 20.8)">
             <i class="bx bx-qr"></i> Etiquetas (lote)
           </button>
@@ -3182,6 +3309,17 @@ new class extends Component {
                   @endforeach
                 </select>
                 @error('materialUnidadeMedidaId') <div class="text-danger small">{{ $message }}</div> @enderror
+                @if ($this->unidadesMedida->isEmpty())
+                  <div class="form-text text-warning">
+                    <i class="bx bx-info-circle"></i> Nenhuma Unidade de Medida cadastrada.
+                    Cadastre as unidades em <strong>Configurações → Cadastros → Unidades de Medida</strong>.
+                    <br>
+                    <a href="{{ route('cadastros.unidades-medida') }}" target="_blank" class="btn btn-link btn-sm p-0 align-baseline">
+                      <i class="bx bx-plus-circle"></i> Cadastrar Unidade de Medida
+                    </a>
+                    <span class="text-muted">(abre em nova aba — o que você já preencheu aqui não é perdido)</span>
+                  </div>
+                @endif
               </div>
               <div class="mb-3">
                 <label class="form-label">Família (opcional)</label>
@@ -3191,6 +3329,9 @@ new class extends Component {
                     <option value="{{ $f->id }}">{{ $f->nome }}</option>
                   @endforeach
                 </select>
+                @if ($this->familiasMaterial->isEmpty())
+                  <div class="form-text">Nenhuma Família cadastrada — opcional, não bloqueia o cadastro do Material.</div>
+                @endif
               </div>
               <div class="mb-3">
                 <label class="form-label">Modo de Rastreabilidade</label>
@@ -3269,6 +3410,90 @@ new class extends Component {
         </div>
       </div>
     @endif
+  @endif
+
+  {{-- Importação Excel do Catálogo Mestre de Materiais --}}
+  @if ($importModalMaterialAberto)
+    <div class="modal fade show d-block" tabindex="-1" style="background: rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Importar Materiais via Excel</h5>
+            <button type="button" class="btn-close" wire:click="fecharImportacaoMaterial"></button>
+          </div>
+          <div class="modal-body">
+            @if (! $previaImportacaoMaterial)
+              <p class="text-muted small">
+                Envie um arquivo .xlsx com a aba "MATERIAIS" (Código, Descrição, Unidade, Família, Modo de Rastreabilidade).
+                Não sabe o formato? <button type="button" class="btn btn-link btn-sm p-0 align-baseline" wire:click="baixarModeloMaterial">baixe o modelo oficial</button> primeiro.
+              </p>
+              <div class="mb-3">
+                <input type="file" class="form-control" wire:model="arquivoImportacaoMaterial" accept=".xlsx,.xlsm">
+                @error('arquivoImportacaoMaterial') <div class="text-danger small">{{ $message }}</div> @enderror
+              </div>
+            @else
+              <div class="d-flex flex-wrap gap-2 mb-3">
+                <span class="badge bg-label-secondary">Total na planilha: {{ $previaImportacaoMaterial['total_linhas'] }}</span>
+                <span class="badge bg-label-success">Novos válidos: {{ $previaImportacaoMaterial['resumo']['validas'] }}</span>
+                <span class="badge bg-label-danger">Inválidos: {{ $previaImportacaoMaterial['resumo']['invalidas'] }}</span>
+                <span class="badge bg-label-warning">Já existentes (conflito): {{ $previaImportacaoMaterial['resumo']['conflitos'] }}</span>
+                @if ($previaImportacaoMaterial['resumo']['duplicadas_no_arquivo'] > 0)
+                  <span class="badge bg-label-warning">Duplicados no arquivo: {{ $previaImportacaoMaterial['resumo']['duplicadas_no_arquivo'] }}</span>
+                @endif
+              </div>
+
+              @if ($previaImportacaoMaterial['resumo']['validas'] === 0)
+                <div class="alert alert-danger py-2">Nenhuma linha válida — corrija a planilha e envie novamente.</div>
+              @else
+                <div class="alert alert-info py-2">Só as {{ $previaImportacaoMaterial['resumo']['validas'] }} linha(s) marcada(s) como "válida" serão importadas. Nenhuma Unidade/Família é criada automaticamente e nenhum Material existente é sobrescrito.</div>
+              @endif
+
+              <div class="table-responsive" style="max-height: 320px; overflow-y: auto;">
+                <table class="table table-sm">
+                  <thead>
+                    <tr>
+                      <th>Linha</th>
+                      <th>Código</th>
+                      <th>Descrição</th>
+                      <th>Situação</th>
+                      <th>Detalhe</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @foreach ($previaImportacaoMaterial['linhas'] as $linhaPrevia)
+                      <tr wire:key="previa-material-{{ $linhaPrevia['linha'] }}">
+                        <td>{{ $linhaPrevia['linha'] }}</td>
+                        <td>{{ $linhaPrevia['codigo'] ?: '—' }}</td>
+                        <td>{{ $linhaPrevia['descricao'] ?: '—' }}</td>
+                        <td>
+                          @if ($linhaPrevia['status'] === 'valida')
+                            <span class="badge bg-label-success">Válida</span>
+                          @elseif ($linhaPrevia['status'] === 'conflito')
+                            <span class="badge bg-label-warning">Já existe</span>
+                          @else
+                            <span class="badge bg-label-danger">Inválida</span>
+                          @endif
+                        </td>
+                        <td class="small text-muted">{{ implode(' ', $linhaPrevia['erros']) ?: '—' }}</td>
+                      </tr>
+                    @endforeach
+                  </tbody>
+                </table>
+              </div>
+            @endif
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" wire:click="fecharImportacaoMaterial">Cancelar</button>
+            @if (! $previaImportacaoMaterial)
+              <button type="button" class="btn btn-primary" wire:click="analisarImportacaoMaterial">Analisar planilha</button>
+            @else
+              <button type="button" class="btn btn-outline-secondary" wire:click="analisarImportacaoMaterial">Reanalisar</button>
+              <button type="button" class="btn btn-primary" wire:click="confirmarImportacaoMaterial" @if ($previaImportacaoMaterial['resumo']['validas'] === 0) disabled @endif>Confirmar importação</button>
+            @endif
+          </div>
+        </div>
+      </div>
+    </div>
   @endif
 
   {{-- ===================== LOCAIS ===================== --}}

@@ -197,6 +197,18 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
             return view('app.cadastros.status-documentos');
         })->name('cadastros.status-documentos');
 
+        // Ajuste de arquitetura de navegação — UnidadeMedida/FamiliaMaterial
+        // são cadastros corporativos tenant-wide (Ciclo 19.1), reposicionados
+        // de abas dentro de Radar → Estoque para Configurações → Cadastros,
+        // mesmo padrão de todos os cadastros acima.
+        Route::get('/unidades-medida', function () {
+            return view('app.cadastros.unidades-medida');
+        })->name('cadastros.unidades-medida');
+
+        Route::get('/familias-material', function () {
+            return view('app.cadastros.familias-material');
+        })->name('cadastros.familias-material');
+
     })->name('app.cadastros');
 
     // GESTÃO

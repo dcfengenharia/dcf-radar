@@ -283,6 +283,18 @@
           "name": "Status de Documento",
           "slug": "cadastros.status-documentos",
           "funcionalidade": "cadastros.status_documentos"
+        },
+        {
+          "url": "/app/cadastros/unidades-medida",
+          "name": "Unidades de Medida",
+          "slug": "cadastros.unidades-medida",
+          "funcionalidade": "cadastros.unidades_medida"
+        },
+        {
+          "url": "/app/cadastros/familias-material",
+          "name": "Famílias de Materiais",
+          "slug": "cadastros.familias-material",
+          "funcionalidade": "cadastros.familias_material"
         }
       ]
     },

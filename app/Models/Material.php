@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\ModoRastreabilidadeMaterial;
+use App\Enums\OrigemCadastroMaterial;
 use App\Models\Concerns\BelongsToTenant;
 use App\Models\Concerns\HasAuthorship;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
@@ -38,12 +39,14 @@ class Material extends Model
         'unidade_medida_id',
         'familia_material_id',
         'modo_rastreabilidade',
+        'origem_cadastro',
         'ativo',
         'created_by_id',
     ];
 
     protected $casts = [
         'modo_rastreabilidade' => ModoRastreabilidadeMaterial::class,
+        'origem_cadastro' => OrigemCadastroMaterial::class,
         'ativo' => 'boolean',
     ];
 
