@@ -9,6 +9,7 @@ use App\DTOs\TarefaImportada;
 use App\Enums\EventoFotografiaProgramacao;
 use App\Enums\GranularidadePeriodo;
 use App\Enums\OrigemAtividade;
+use App\Enums\StatusAtividade;
 use App\Enums\SerieAvanco;
 use App\Enums\TipoCronogramaImportacao;
 use App\Enums\TipoRelacionamentoPredecessora;
@@ -199,6 +200,21 @@ class MsProjectImporter implements ImportadorCronograma
             $loteSnapshots    = [];
             $agora = now();
 
+            // Ciclo 24 — atividade_id => Carbon (concluido_em) para toda
+            // atividade reconciliada como fisicamente concluída NESTA
+            // importação (ver regra canônica dentro do loop abaixo). Usado
+            // depois do loop pra atender automaticamente os itens de
+            // prontidão aplicáveis — nunca pra fechar Restrição.
+            $atividadesReconciliadas = [];
+
+            // Ciclo 24 — atividade_id => percentual_concluido ANTES desta
+            // importação (só quando Avanço/Ambos), repassado ao Detector
+            // pra ele conseguir sinalizar regressão de percentual numa
+            // atividade cujo status já era Concluído — sem precisar
+            // reconsultar Atividade ao vivo (o Detector continua um
+            // serviço puro de F×O×P).
+            $percentuaisAntesPorAtividade = [];
+
             // Modo Avanço: casamento por external_uid já foi resolvido em
             // analisar() (só chegam aqui tarefas de $plano->atualizar, já
             // que $plano->criar vem forçado vazio) — recarrega o mapa
@@ -236,7 +252,7 @@ class MsProjectImporter implements ImportadorCronograma
             if ($capturarFotografiaO) {
                 $estadoOperacionalAntes = Atividade::where('obra_id', $obra->id)
                     ->where('origem', OrigemAtividade::MsProject)
-                    ->get(['id', 'external_uid', 'status', 'fora_do_cronograma'])
+                    ->get(['id', 'external_uid', 'status', 'fora_do_cronograma', 'real_inicio', 'real_termino', 'percentual_concluido'])
                     ->keyBy('external_uid');
 
                 $atividadeIdsExistentesAntes = $estadoOperacionalAntes->pluck('id')->all();
@@ -306,6 +322,58 @@ class MsProjectImporter implements ImportadorCronograma
             }
 
             foreach (array_merge($plano->criar, $plano->atualizar) as $tarefa) {
+                // Ciclo 24 — fatos "antes" desta tarefa (só populados
+                // quando Avanço/Ambos, ver captura de Fotografia O acima).
+                // Usados tanto pra nunca apagar silenciosamente uma data
+                // real já conhecida (real_inicio/real_termino ausentes no
+                // XML desta rodada) quanto pra decidir se esta importação
+                // reconcilia a Atividade como fisicamente concluída.
+                $antesReconciliacao = $estadoOperacionalAntes->get($tarefa->uid);
+                $realInicioResultante = $tarefa->realInicio?->toDateString()
+                    ?? $antesReconciliacao?->real_inicio?->toDateString();
+                $realTerminoResultante = $tarefa->realTermino?->toDateString()
+                    ?? $antesReconciliacao?->real_termino?->toDateString();
+
+                // Regra canônica de "conclusão física importada" (Ciclo 24,
+                // revisada após auditoria adversarial — NUNCA usar o
+                // DetectorInconsistenciasAvanco::$concluiu, que é uma união
+                // permissiva OR usada só pra fins evidenciais/detecção,
+                // nunca pra sincronizar estado): PercentWorkComplete >= 100%
+                // é o ÚNICO sinal autoritativo pra reconciliar status/
+                // concluido_em/prontidão. ActualFinish sozinho (sem
+                // percentual=100%, ex.: 80%+ActualFinish ou 0%+ActualFinish)
+                // NUNCA sincroniza a atividade como concluída — o MSPDI
+                // permite essa divergência genuinamente (parser independente,
+                // sem validação cruzada), e tratá-la como "concluída" seria
+                // inventar um fato que o próprio percentual contradiz.
+                // Divergência (ActualFinish presente + percentual<100) vira
+                // evidência explícita — ver DetectorInconsistenciasAvanco::
+                // TerminoRealComPercentualIncompleto — nunca é silenciosamente
+                // ignorada nem silenciosamente tratada como conclusão.
+                $concluiuFisicamente = $tarefa->percentualConcluido !== null && (float) $tarefa->percentualConcluido >= 100.0;
+
+                // Só sincroniza status/concluido_em na transição — uma
+                // atividade já Concluída (manual ou de importação anterior)
+                // nunca tem seu status/concluido_em/prontidão retocados de
+                // novo aqui, mesmo que esta importação regrida o percentual
+                // (100% → 80%) ou confirme a conclusão de novo. Preserva o
+                // histórico já registrado sem reescrita silenciosa.
+                $reconciliarConclusao = $capturarFotografiaO
+                    && $concluiuFisicamente
+                    && $antesReconciliacao?->status !== StatusAtividade::Concluido;
+
+                $concluidoEmCalculado = null;
+                if ($reconciliarConclusao) {
+                    // Prioridade: 1) ActualFinish (fato físico); 2) data_status
+                    // desta importação (o "as-of" mais confiável quando não há
+                    // ActualFinish — ex.: 100% sem término real, DATE-003); 3)
+                    // now() só como último recurso. Nunca usar now() quando há
+                    // data física melhor disponível.
+                    $concluidoEmCalculado = $realTerminoResultante !== null
+                        ? Carbon::parse($realTerminoResultante)
+                        : ($importacao->data_status !== null ? Carbon::parse($importacao->data_status) : $agora);
+                }
+
                 if ($tipo === TipoCronogramaImportacao::Avanco) {
                     $atividadeId = $mapaExistentesAvanco[$tarefa->uid] ?? null;
                     if ($atividadeId === null) {
@@ -317,17 +385,31 @@ class MsProjectImporter implements ImportadorCronograma
                     // Só campos de PROGRESSO — nunca baseline, pacote,
                     // código, nome ou classificação, que continuam vindo
                     // exclusivamente da importação de Linha de Base.
-                    Atividade::where('id', $atividadeId)->update([
+                    $dadosAvanco = [
                         'real_horas'           => $tarefa->realHoras,
                         'work_horas'           => $tarefa->workHoras,
-                        'real_inicio'          => $tarefa->realInicio?->toDateString(),
-                        'real_termino'         => $tarefa->realTermino?->toDateString(),
+                        'real_inicio'          => $realInicioResultante,
+                        'real_termino'         => $realTerminoResultante,
                         'data_termino'         => $tarefa->dataTermino?->toDateString(),
                         'percentual_concluido' => $tarefa->percentualConcluido,
                         'caminho_critico'      => $tarefa->caminhoCritico,
                         'is_marco'             => $tarefa->isMarco,
                         'external_synced_at'   => $agora,
-                    ]);
+                    ];
+
+                    if ($reconciliarConclusao) {
+                        // Ciclo 24 — regra de produto aprovada: cronograma
+                        // reportou a atividade como fisicamente concluída,
+                        // status é sincronizado aqui. Update em massa NUNCA
+                        // dispara AtividadeObserver, então concluido_em é
+                        // controlado com precisão total (nunca sobrescrito
+                        // por now()). Restrição NUNCA é fechada
+                        // automaticamente por isto (ver bloco 6 abaixo).
+                        $dadosAvanco['status'] = StatusAtividade::Concluido->value;
+                        $dadosAvanco['concluido_em'] = $concluidoEmCalculado;
+                    }
+
+                    Atividade::where('id', $atividadeId)->update($dadosAvanco);
 
                     $at = Atividade::find($atividadeId);
                 } else {
@@ -409,33 +491,54 @@ class MsProjectImporter implements ImportadorCronograma
                             ??= Personalizado5::firstOrCreate(['obra_id' => $obra->id, 'nome' => $nomePersonalizado5])->id;
                     }
 
+                    $dadosUpsert = $dadosClassificacao + [
+                        'obra_id'            => $obra->id,
+                        'nome'               => $tarefa->nome,
+                        'pacote_trabalho_id' => $tarefa->parentUid !== null
+                            ? ($mapaPacotes[$tarefa->parentUid] ?? null)
+                            : null,
+                        'codigo_cronograma'  => $tarefa->codigo,
+                        'inicio_planejado'   => $tarefa->dataInicio?->toDateString(),
+                        'data_termino'       => $tarefa->dataTermino?->toDateString(),
+                        'baseline_inicio'    => $tarefa->baselineInicio?->toDateString(),
+                        'baseline_termino'   => $tarefa->baselineTermino?->toDateString(),
+                        'real_inicio'        => $realInicioResultante,
+                        'real_termino'       => $realTerminoResultante,
+                        'baseline_horas'     => $tarefa->baselineHoras,
+                        'work_horas'         => $tarefa->workHoras,
+                        'real_horas'         => $tarefa->realHoras,
+                        'textos'             => $tarefa->textos ?: null,
+                        'caminho_critico'    => $tarefa->caminhoCritico,
+                        'percentual_concluido' => $tarefa->percentualConcluido,
+                        'is_marco'           => $tarefa->isMarco,
+                        'origem'             => OrigemAtividade::MsProject->value,
+                        'fora_do_cronograma' => false,
+                        'external_synced_at' => $agora,
+                    ];
+
+                    if ($reconciliarConclusao) {
+                        // Mesma regra do branch Avanço acima — aqui via
+                        // updateOrCreate() (dispara AtividadeObserver), que
+                        // preserva `concluido_em` explicitamente definido
+                        // (isDirty) em vez de sobrescrever com now().
+                        $dadosUpsert['status'] = StatusAtividade::Concluido->value;
+                        $dadosUpsert['concluido_em'] = $concluidoEmCalculado;
+                    }
+
                     $at = Atividade::updateOrCreate(
                         ['obra_id' => $obra->id, 'external_uid' => $tarefa->uid],
-                        $dadosClassificacao + [
-                            'obra_id'            => $obra->id,
-                            'nome'               => $tarefa->nome,
-                            'pacote_trabalho_id' => $tarefa->parentUid !== null
-                                ? ($mapaPacotes[$tarefa->parentUid] ?? null)
-                                : null,
-                            'codigo_cronograma'  => $tarefa->codigo,
-                            'inicio_planejado'   => $tarefa->dataInicio?->toDateString(),
-                            'data_termino'       => $tarefa->dataTermino?->toDateString(),
-                            'baseline_inicio'    => $tarefa->baselineInicio?->toDateString(),
-                            'baseline_termino'   => $tarefa->baselineTermino?->toDateString(),
-                            'real_inicio'        => $tarefa->realInicio?->toDateString(),
-                            'real_termino'       => $tarefa->realTermino?->toDateString(),
-                            'baseline_horas'     => $tarefa->baselineHoras,
-                            'work_horas'         => $tarefa->workHoras,
-                            'real_horas'         => $tarefa->realHoras,
-                            'textos'             => $tarefa->textos ?: null,
-                            'caminho_critico'    => $tarefa->caminhoCritico,
-                            'percentual_concluido' => $tarefa->percentualConcluido,
-                            'is_marco'           => $tarefa->isMarco,
-                            'origem'             => OrigemAtividade::MsProject->value,
-                            'fora_do_cronograma' => false,
-                            'external_synced_at' => $agora,
-                        ]
+                        $dadosUpsert
                     );
+                }
+
+                if ($reconciliarConclusao) {
+                    $atividadesReconciliadas[$at->id] = $concluidoEmCalculado;
+                }
+
+                if ($capturarFotografiaO) {
+                    $percentuaisAntesPorAtividade[$at->id] = $antesReconciliacao?->percentual_concluido !== null
+                        ? (float) $antesReconciliacao->percentual_concluido
+                        : null;
                 }
 
                 $mapaAtividades[$tarefa->uid] = $at->id;
@@ -480,6 +583,14 @@ class MsProjectImporter implements ImportadorCronograma
                 }
             }
 
+            // --- 3a-bis. Ciclo 24 — reconciliação de prontidão para toda
+            // atividade fisicamente concluída nesta importação (nunca fecha
+            // Restrição — ver bloco 6 mais abaixo, que documenta essa
+            // decisão de produto).
+            if (! empty($atividadesReconciliadas)) {
+                $this->reconciliarItensDeProntidao($obra, $importacao, $atividadesReconciliadas);
+            }
+
             // --- 3b. Ciclo 17, A.9.3 — Fotografia O: estado operacional da
             // plataforma (Restrição/Prontidão/status) no instante desta
             // importação. Leitura pura, em lote — nunca altera Restricao,
@@ -514,7 +625,7 @@ class MsProjectImporter implements ImportadorCronograma
                 // (nunca existe importação sem suas inconsistências já
                 // detectadas). Serviço puro: nunca altera Atividade/
                 // Restricao/Prontidao/ProgramacaoSemanal/comentários.
-                (new DetectorInconsistenciasAvanco())->detectar($importacao);
+                (new DetectorInconsistenciasAvanco())->detectar($importacao, $percentuaisAntesPorAtividade);
             }
 
             // --- 4. Arquivar removidas (nunca apagar) ---
@@ -557,15 +668,23 @@ class MsProjectImporter implements ImportadorCronograma
                 DB::table('avanco_periodos')->insert($lote);
             }
 
-            // --- 6. Ciclo 17, A.9.1 — NÃO auto-resolve restrições nem marca
-            // itens de prontidão automaticamente. O cronograma importado é a
-            // verdade factual (percentual_concluido/real_inicio/real_termino
-            // já gravados acima); pendências operacionais (Restricao,
-            // AtividadeItemProntidao) são fonte da plataforma e permanecem
-            // exatamente como estavam, mesmo quando a atividade chega a
-            // 100%. Ver App\Support\ConclusaoAutomaticaAtividades (mantida
-            // como ferramenta de saneamento legado explícito, nunca chamada
-            // automaticamente daqui).
+            // --- 6. Ciclo 17, A.9.1 / Ciclo 24 — NÃO auto-resolve Restrição.
+            // Desde o Ciclo 24, uma atividade fisicamente concluída (ver
+            // regra canônica dentro do loop acima) TEM seu `status`/
+            // `concluido_em` reconciliados e seus itens de prontidão
+            // aplicáveis marcados como atendidos automaticamente
+            // (`reconciliarItensDeProntidao()`, origem sempre auditável via
+            // `atendido_pela_importacao_id`) — mas Restricao NUNCA é
+            // encerrada automaticamente aqui, em nenhuma hipótese. Uma
+            // Restrição aberta numa atividade agora concluída permanece
+            // aberta, e o par (concluída + restrição aberta) já é capturado
+            // como evidência pelo DetectorInconsistenciasAvanco
+            // (ConclusaoComRestricaoPendente, a partir da Fotografia O
+            // "antes") — cabe à análise humana decidir se resolve, mantém
+            // ou trata a Restrição. Ver App\Support\ConclusaoAutomaticaAtividades
+            // (mantida como ferramenta de saneamento legado explícito,
+            // nunca chamada automaticamente daqui — ela TAMBÉM resolveria
+            // Restrição, o que o Ciclo 24 continua proibindo).
 
             // --- 7. inicio_planejado pode ter mudado (reimportação de
             // Linha de Base) — recalcula Tendência/status/restrição de
@@ -580,6 +699,85 @@ class MsProjectImporter implements ImportadorCronograma
 
             return $importacao;
         });
+    }
+
+    /**
+     * Ciclo 24 — regra de produto aprovada: se o cronograma reporta uma
+     * atividade como fisicamente concluída, as pré-condições operacionais
+     * necessárias à execução foram vencidas de alguma forma na realidade,
+     * mesmo que ninguém tenha atualizado o checklist no DCF.ENG antes. Cada
+     * item de prontidão do catálogo da obra ainda pendente (ou nunca
+     * registrado) para essas atividades é marcado `concluido=true` com
+     * `concluido_por=null` (nunca simula uma marcação humana) e
+     * `atendido_pela_importacao_id` apontando pra esta importação — origem
+     * 100% auditável, distinguível de uma marcação manual (`concluido_por`
+     * preenchido). Item já `concluido=true` (manual OU de importação
+     * anterior) NUNCA é reescrito aqui — preserva autor/data/origem
+     * originais, mesmo que uma regressão de percentual venha depois (Ciclo
+     * 24: "não desfazer silenciosamente itens de prontidão que já foram
+     * considerados atendidos"). Restricao nunca é tocada por este método
+     * (ver Ciclo 17, A.9.1, e o bloco 6 de aplicar()).
+     *
+     * @param  array<string, \Carbon\Carbon>  $atividadesReconciliadas  atividade_id => concluido_em
+     */
+    private function reconciliarItensDeProntidao(Work $obra, CronogramaImportacao $importacao, array $atividadesReconciliadas): void
+    {
+        $itensCatalogoObra = ItemProntidao::where('obra_id', $obra->id)->pluck('id');
+
+        if ($itensCatalogoObra->isEmpty()) {
+            return;
+        }
+
+        $atividadeIds = array_keys($atividadesReconciliadas);
+
+        $existentesPorAtividade = AtividadeItemProntidao::whereIn('atividade_id', $atividadeIds)
+            ->get(['id', 'atividade_id', 'item_prontidao_id', 'concluido'])
+            ->groupBy('atividade_id');
+
+        $agora = now();
+        $lotesParaCriar = [];
+
+        foreach ($atividadeIds as $atividadeId) {
+            $concluidoEm = $atividadesReconciliadas[$atividadeId];
+            $rowsDaAtividade = $existentesPorAtividade->get($atividadeId, collect());
+            $itensJaComRow = $rowsDaAtividade->pluck('item_prontidao_id');
+
+            // Itens já com row PENDENTE (concluido=false) desta atividade —
+            // passam a atendidos automaticamente.
+            $idsPendentes = $rowsDaAtividade->where('concluido', false)->pluck('id');
+            if ($idsPendentes->isNotEmpty()) {
+                AtividadeItemProntidao::whereIn('id', $idsPendentes)->update([
+                    'concluido'                   => true,
+                    'concluido_por'               => null,
+                    'concluido_em'                => $concluidoEm,
+                    'atendido_pela_importacao_id' => $importacao->id,
+                ]);
+            }
+
+            // Itens do catálogo sem NENHUMA row ainda pra esta atividade —
+            // cria já atendida (ausência de row também é pendente, mesma
+            // regra canônica de Atividade::estaPronta()).
+            foreach ($itensCatalogoObra->diff($itensJaComRow) as $itemId) {
+                $lotesParaCriar[] = [
+                    'id'                          => (string) Str::ulid(),
+                    'tenant_id'                   => $obra->tenant_id,
+                    'atividade_id'                => $atividadeId,
+                    'item_prontidao_id'           => $itemId,
+                    'concluido'                   => true,
+                    'concluido_por'               => null,
+                    'concluido_em'                => $concluidoEm,
+                    'atendido_pela_importacao_id' => $importacao->id,
+                    'created_at'                  => $agora,
+                    'updated_at'                  => $agora,
+                ];
+            }
+        }
+
+        if (! empty($lotesParaCriar)) {
+            foreach (array_chunk($lotesParaCriar, 1000) as $chunk) {
+                DB::table('atividade_itens_prontidao')->insert($chunk);
+            }
+        }
     }
 
     /**

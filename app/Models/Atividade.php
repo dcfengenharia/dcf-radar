@@ -194,6 +194,12 @@ class Atividade extends Model
             ->using(ItemSuprimentoAtividade::class);
     }
 
+    /** Melhoria "Posto Operacional" — quanto de cada Material esta Atividade necessita (fonte autoritativa, ver AtividadeNecessidadeMaterial). */
+    public function necessidadesMaterial(): HasMany
+    {
+        return $this->hasMany(AtividadeNecessidadeMaterial::class);
+    }
+
     /** Ciclo 18, Etapa 18.1 — Documentos de Engenharia dos quais esta Atividade depende. */
     public function documentosEngenharia(): BelongsToMany
     {

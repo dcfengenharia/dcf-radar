@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\EntidadeInconsistenciaAvanco;
 use App\Enums\EventoFotografiaProgramacao;
 use App\Enums\SeveridadeInconsistenciaAvanco;
+use App\Enums\StatusAtividade;
 use App\Enums\TipoCronogramaImportacao;
 use App\Enums\TipoInconsistenciaAvanco;
 use App\Models\AtividadeSnapshot;
@@ -72,7 +73,17 @@ use Illuminate\Support\Str;
  */
 class DetectorInconsistenciasAvanco
 {
-    public function detectar(CronogramaImportacao $importacao): void
+    /**
+     * @param  array<string, float|null>  $percentuaisAntesPorAtividade  atividade_id => Atividade.percentual_concluido
+     *         ANTES desta importação (Ciclo 24) — usado só pra detectar
+     *         regressão de percentual numa atividade cujo status já era
+     *         Concluído. Nunca lido do banco aqui (o Detector continua um
+     *         serviço puro de F×O×P) — sempre fornecido pelo chamador
+     *         (MsProjectImporter, que já captura esse estado "antes" no
+     *         mesmo instante da Fotografia O). Ausência de entrada = não
+     *         avalia regressão pra aquela atividade (nunca inventa 0).
+     */
+    public function detectar(CronogramaImportacao $importacao, array $percentuaisAntesPorAtividade = []): void
     {
         if (! in_array($importacao->tipo, [TipoCronogramaImportacao::Avanco, TipoCronogramaImportacao::Ambos], true)) {
             return;
@@ -102,6 +113,27 @@ class DetectorInconsistenciasAvanco
         $lote = [];
 
         foreach ($snapshotsF as $atividadeId => $f) {
+            // Ciclo 24 — divergência pura de F, independente de O/P e da
+            // guarda de "atividade nova" abaixo: ActualFinish presente
+            // mas percentual declarado < 100% nunca é silenciosamente
+            // ignorado nem silenciosamente tratado como conclusão (a
+            // regra canônica de conclusão física, em MsProjectImporter,
+            // exige percentual_concluido >= 100 como sinal autoritativo).
+            // Ausência de percentual (null = desconhecido) nunca conta
+            // como divergência — só um valor EXPLICITAMENTE < 100.
+            if ($f->real_termino !== null && $f->percentual_concluido !== null && (float) $f->percentual_concluido < 100.0) {
+                $lote[] = $this->linha(
+                    $importacao, $atividadeId,
+                    TipoInconsistenciaAvanco::TerminoRealComPercentualIncompleto,
+                    SeveridadeInconsistenciaAvanco::Atencao,
+                    EntidadeInconsistenciaAvanco::Atividade,
+                    $atividadeId,
+                    'Término real registrado com percentual incompleto',
+                    ['percentual_concluido' => (float) $f->percentual_concluido, 'real_termino' => $f->real_termino->toDateString()],
+                    $agora,
+                );
+            }
+
             $oPai = $snapshotsOPai->get($atividadeId);
             if (! $oPai) {
                 continue;
@@ -114,6 +146,30 @@ class DetectorInconsistenciasAvanco
             // falso positivo aqui.
             if ($oPai->status === null) {
                 continue;
+            }
+
+            // Ciclo 24 — regressão de percentual numa atividade cujo
+            // status JÁ era Concluído (por importação anterior): nunca
+            // desfeita automaticamente (status/concluido_em/prontidão
+            // preservados por MsProjectImporter), mas o estado
+            // "Concluída + percentual regredido" nunca passa despercebido.
+            $percentualAntes = $percentuaisAntesPorAtividade[$atividadeId] ?? null;
+            if (
+                $oPai->status === StatusAtividade::Concluido->value
+                && $percentualAntes !== null
+                && $f->percentual_concluido !== null
+                && (float) $f->percentual_concluido < $percentualAntes
+            ) {
+                $lote[] = $this->linha(
+                    $importacao, $atividadeId,
+                    TipoInconsistenciaAvanco::RegressaoPercentualAposConclusao,
+                    SeveridadeInconsistenciaAvanco::Atencao,
+                    EntidadeInconsistenciaAvanco::Atividade,
+                    $atividadeId,
+                    'Percentual regrediu após a atividade já ter sido concluída',
+                    ['percentual_antes' => $percentualAntes, 'percentual_atual' => (float) $f->percentual_concluido],
+                    $agora,
+                );
             }
 
             $percentual = $f->percentual_concluido !== null ? (float) $f->percentual_concluido : null;

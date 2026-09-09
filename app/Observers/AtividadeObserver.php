@@ -28,7 +28,23 @@ class AtividadeObserver
         // cronograma, edição de linha de base, etc. Roda em qualquer
         // transição de status, então também limpa sozinho se uma atividade
         // concluída for reaberta.
-        $atividade->concluido_em = $novoStatus === StatusAtividade::Concluido ? now() : null;
+        //
+        // Ciclo 24 — quando o próprio chamador já definiu `concluido_em`
+        // explicitamente na MESMA gravação (ex.: MsProjectImporter
+        // reconciliando conclusão física preferindo ActualFinish/data de
+        // status a `now()` — ver "concluido_em deve representar a melhor
+        // data factual disponível"), esse valor é PRESERVADO — nunca
+        // sobrescrito aqui. Fluxos manuais (ex.: `marcarConcluida()` do
+        // Plano Semanal) nunca tocam `concluido_em` explicitamente, então
+        // continuam caindo no `now()` de sempre, sem nenhuma mudança de
+        // comportamento observável.
+        if ($novoStatus === StatusAtividade::Concluido) {
+            if (! $atividade->isDirty('concluido_em')) {
+                $atividade->concluido_em = now();
+            }
+        } else {
+            $atividade->concluido_em = null;
+        }
     }
 
     public function updated(Atividade $atividade): void

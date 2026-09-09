@@ -880,6 +880,41 @@ class LookaheadTest extends TestCase
         $this->assertEquals(StatusRestricao::Aberta, $restricao->fresh()->status);
     }
 
+    public function test_popup_com_atividade_concluida_e_multiplas_restricoes_abre_sem_lazy_loading_violation(): void
+    {
+        // Ciclo 24 — reprodução dirigida do bug relatado em teste manual:
+        // atividade Concluída no cronograma + 2 restrições (1 resolvida
+        // bloqueante, 1 aberta não bloqueante). @can('resolver', $r) dentro
+        // do @foreach de restrições do popup chama RestricaoPolicy::resolver(),
+        // que acessa $restricao->atividade — se o eager-load do popup não
+        // trouxer essa relação inversa, isso dispara
+        // LazyLoadingViolationException (Model::preventLazyLoading() ativo
+        // fora de produção).
+        $atividade = Atividade::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'obra_id' => $this->obra->id,
+            'status' => StatusAtividade::Concluido->value,
+            'concluido_em' => now(),
+        ]);
+
+        Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'status' => StatusRestricao::Resolvida->value,
+            'bloqueante' => true,
+        ]);
+        Restricao::factory()->create([
+            'tenant_id' => $this->obra->tenant_id,
+            'atividade_id' => $atividade->id,
+            'status' => StatusRestricao::Aberta->value,
+            'bloqueante' => false,
+        ]);
+
+        $this->componente()
+            ->call('verAtividade', $atividade->id)
+            ->assertOk();
+    }
+
     public function test_usuario_sem_papel_suficiente_nao_pode_dar_baixa(): void
     {
         $atividade = Atividade::factory()->create([

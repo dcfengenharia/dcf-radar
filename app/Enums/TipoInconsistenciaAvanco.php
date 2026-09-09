@@ -26,6 +26,29 @@ enum TipoInconsistenciaAvanco: string
     case InicioSemProgramacaoSemanal = 'inicio_sem_programacao_semanal';
     case ConclusaoSemProgramacaoSemanal = 'conclusao_sem_programacao_semanal';
 
+    /**
+     * Ciclo 24 — divergência pura de Fotografia F (nunca precisa de O/P):
+     * ActualFinish presente, mas PercentWorkComplete declarado e menor que
+     * 100%. A regra canônica de "conclusão física" (Ciclo 24) exige
+     * `percentual_concluido >= 100` como sinal autoritativo — ActualFinish
+     * sozinho nunca sincroniza `status`/prontidão; essa combinação vira
+     * evidência explícita em vez de ser silenciosamente ignorada ou
+     * silenciosamente tratada como conclusão.
+     */
+    case TerminoRealComPercentualIncompleto = 'termino_real_com_percentual_incompleto';
+
+    /**
+     * Ciclo 24 — uma atividade cujo `status` já era Concluído (por uma
+     * importação anterior) recebe, nesta importação, um percentual
+     * MENOR que o anteriormente registrado. `status`/`concluido_em`/
+     * prontidão nunca são desfeitos automaticamente (ver
+     * MsProjectImporter::reconciliarItensDeProntidao()/regra de
+     * transição única), mas o estado "Concluída + percentual regredido"
+     * nunca deve passar despercebido — vira evidência explícita pra
+     * análise humana.
+     */
+    case RegressaoPercentualAposConclusao = 'regressao_percentual_apos_conclusao';
+
     public function label(): string
     {
         return match ($this) {
@@ -37,6 +60,8 @@ enum TipoInconsistenciaAvanco: string
             self::ConclusaoForaProgramacaoSemanal => 'Conclusão fora da Programação Semanal',
             self::InicioSemProgramacaoSemanal => 'Início sem Programação Semanal publicada',
             self::ConclusaoSemProgramacaoSemanal => 'Conclusão sem Programação Semanal publicada',
+            self::TerminoRealComPercentualIncompleto => 'Término real registrado com percentual incompleto',
+            self::RegressaoPercentualAposConclusao => 'Percentual regrediu após a atividade já ter sido concluída',
         };
     }
 }

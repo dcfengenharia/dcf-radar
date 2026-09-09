@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Actions\ProgramacaoSemanal\CriarRevisaoProgramacaoSemanal;
+use App\Actions\ProgramacaoSemanal\FecharProgramacaoSemanal;
 use App\Actions\ProgramacaoSemanal\RegistrarComprometimentoSemanal;
 use App\Enums\OrigemProgramacaoSemanalItem;
 use App\Enums\Papel;
@@ -13,6 +15,7 @@ use App\Models\AtividadeItemProntidao;
 use App\Models\CategoriaRestricao;
 use App\Models\Disciplina;
 use App\Models\ItemProntidao;
+use App\Models\ProgramacaoSemanal;
 use App\Models\Restricao;
 use App\Models\Tenant;
 use App\Models\User;
@@ -477,5 +480,136 @@ class RelatoriosRestricoesTest extends TestCase
             ->instance()->ppcPorSemana;
 
         $this->assertCount(1, $ppc);
+    }
+
+    // ===================== Ciclo 24 — correção do denominador =====================
+
+    /**
+     * Ciclo 24 — `CriarRevisaoProgramacaoSemanal` nunca apaga os itens da
+     * versão original ao criar uma revisão (histórico linear preservado) —
+     * sem o filtro de versão vigente em `ppcQuery()`, o denominador
+     * contaria as 10 linhas da v1 SOMADAS às 10 linhas da v2 (20), em vez
+     * de só as 10 da versão vigente (v2). Mesmo conjunto de atividades nas
+     * duas versões — o teste isola exatamente o bug do `COUNT(*)` cru.
+     */
+    public function test_ppc_nao_duplica_denominador_apos_revisao_da_semana(): void
+    {
+        $semanaInicio = Carbon::now()->subWeeks(3)->startOfWeek();
+
+        $atividades = Atividade::factory()->count(10)->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'status' => StatusAtividade::Planejado->value,
+        ]);
+
+        (new RegistrarComprometimentoSemanal())->execute(
+            $this->obra,
+            $semanaInicio->toDateString(),
+            $atividades,
+            OrigemProgramacaoSemanalItem::Manual
+        );
+
+        $v1 = ProgramacaoSemanal::ativaPara($this->obra, $semanaInicio->toDateString());
+        (new FecharProgramacaoSemanal())->execute($v1);
+        (new CriarRevisaoProgramacaoSemanal())->execute($v1->fresh());
+
+        // 5 concluídas dentro do prazo, 5 nunca concluídas.
+        DB::table('atividades')->whereIn('id', $atividades->take(5)->pluck('id'))
+            ->update(['status' => 'concluido', 'concluido_em' => $semanaInicio->copy()->addDays(2)]);
+
+        $ppc = $this->componente()
+            ->set('filtroDataInicio', $semanaInicio->copy()->subWeek()->toDateString())
+            ->set('filtroDataFim', $semanaInicio->copy()->addWeek()->toDateString())
+            ->instance()->ppcPorSemana;
+
+        $this->assertCount(1, $ppc);
+        $this->assertSame(10, $ppc[0]['comprometidas'], 'Denominador deve refletir só a versão vigente (v2), nunca v1+v2 somados (20).');
+        $this->assertSame(5, $ppc[0]['concluidas_no_prazo']);
+        $this->assertEquals(50.0, $ppc[0]['ppc_percentual']);
+    }
+
+    /**
+     * Ciclo 24 — a revisão pode remover itens da versão original (o
+     * planejador decide não recomprometer todos). O denominador canônico
+     * precisa refletir só o que está na versão VIGENTE (8), nunca os 10
+     * originais nem qualquer soma.
+     */
+    public function test_ppc_denominador_reflete_itens_removidos_na_revisao(): void
+    {
+        $semanaInicio = Carbon::now()->subWeeks(3)->startOfWeek();
+
+        $atividades = Atividade::factory()->count(10)->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'status' => StatusAtividade::Planejado->value,
+        ]);
+
+        (new RegistrarComprometimentoSemanal())->execute(
+            $this->obra, $semanaInicio->toDateString(), $atividades, OrigemProgramacaoSemanalItem::Manual
+        );
+
+        $v1 = ProgramacaoSemanal::ativaPara($this->obra, $semanaInicio->toDateString());
+        (new FecharProgramacaoSemanal())->execute($v1);
+        $v2 = (new CriarRevisaoProgramacaoSemanal())->execute($v1->fresh());
+
+        // Planejador remove 2 das 10 atividades na revisão.
+        $itensParaRemover = $v2->itens()->whereIn('atividade_id', $atividades->take(2)->pluck('id'))->pluck('id');
+        \App\Models\ProgramacaoSemanalItem::whereIn('id', $itensParaRemover)->delete();
+
+        DB::table('atividades')->whereIn('id', $atividades->skip(2)->take(4)->pluck('id'))
+            ->update(['status' => 'concluido', 'concluido_em' => $semanaInicio->copy()->addDays(2)]);
+
+        $ppc = $this->componente()
+            ->set('filtroDataInicio', $semanaInicio->copy()->subWeek()->toDateString())
+            ->set('filtroDataFim', $semanaInicio->copy()->addWeek()->toDateString())
+            ->instance()->ppcPorSemana;
+
+        $this->assertCount(1, $ppc);
+        $this->assertSame(8, $ppc[0]['comprometidas'], 'Denominador deve refletir os 8 itens que sobraram na revisão vigente, nunca os 10 originais.');
+        $this->assertSame(4, $ppc[0]['concluidas_no_prazo']);
+        $this->assertEquals(50.0, $ppc[0]['ppc_percentual']);
+    }
+
+    /**
+     * Ciclo 24 — a revisão também pode ADICIONAR itens novos (comprometer
+     * atividades que não estavam na versão original). O denominador
+     * canônico soma os originais copiados + os novos da própria revisão,
+     * nunca duplica nada da v1 superada.
+     */
+    public function test_ppc_denominador_reflete_itens_adicionados_na_revisao(): void
+    {
+        $semanaInicio = Carbon::now()->subWeeks(3)->startOfWeek();
+
+        $atividades = Atividade::factory()->count(10)->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'status' => StatusAtividade::Planejado->value,
+        ]);
+
+        (new RegistrarComprometimentoSemanal())->execute(
+            $this->obra, $semanaInicio->toDateString(), $atividades, OrigemProgramacaoSemanalItem::Manual
+        );
+
+        $v1 = ProgramacaoSemanal::ativaPara($this->obra, $semanaInicio->toDateString());
+        (new FecharProgramacaoSemanal())->execute($v1);
+        (new CriarRevisaoProgramacaoSemanal())->execute($v1->fresh());
+
+        // Planejador comprometa 2 atividades NOVAS na revisão (agora vigente).
+        $novasAtividades = Atividade::factory()->count(2)->create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'status' => StatusAtividade::Planejado->value,
+        ]);
+        (new RegistrarComprometimentoSemanal())->execute(
+            $this->obra, $semanaInicio->toDateString(), $novasAtividades, OrigemProgramacaoSemanalItem::Manual
+        );
+
+        $ppc = $this->componente()
+            ->set('filtroDataInicio', $semanaInicio->copy()->subWeek()->toDateString())
+            ->set('filtroDataFim', $semanaInicio->copy()->addWeek()->toDateString())
+            ->instance()->ppcPorSemana;
+
+        $this->assertCount(1, $ppc);
+        $this->assertSame(12, $ppc[0]['comprometidas'], 'Denominador deve somar 10 originais + 2 novos da revisão, nunca duplicar a v1 superada.');
     }
 }

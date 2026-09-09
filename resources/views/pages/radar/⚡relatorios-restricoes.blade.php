@@ -245,8 +245,24 @@ new class extends Component {
     // do comprometimento), não em Atividade.inicio_planejado/data_termino
     // ao vivo — diferente do PPC ao vivo de ⚡plano-semanal.blade.php, que
     // usa status ATUAL da atividade e não serve pra tendência histórica.
+    //
+    // Ciclo 24 — correção do denominador duplicado em semanas revisadas:
+    // `CriarRevisaoProgramacaoSemanal` nunca apaga os itens da versão
+    // original ao criar uma revisão (histórico linear, sempre preservado)
+    // — sem o filtro abaixo, um `COUNT(*)` cru contaria os itens das DUAS
+    // versões pra mesma semana. O join agora só aceita a linha de
+    // `programacoes_semanais` cuja `versao` é a MAIOR entre todas as
+    // versões da MESMA obra+semana_inicio — exatamente a mesma noção de
+    // "vigente" já usada por `ProgramacaoSemanal::ativaPara()`, sem
+    // depender de `superseded_at` (que pode ficar `null` em dado legado).
     return ProgramacaoSemanalItem::query()
-      ->join('programacoes_semanais as ps', 'ps.id', '=', 'programacao_semanal_itens.programacao_semanal_id')
+      ->join('programacoes_semanais as ps', function ($join) {
+        $join->on('ps.id', '=', 'programacao_semanal_itens.programacao_semanal_id')
+          ->whereRaw(
+            'ps.versao = (SELECT MAX(ps2.versao) FROM programacoes_semanais ps2 '
+            . 'WHERE ps2.obra_id = ps.obra_id AND ps2.semana_inicio = ps.semana_inicio)'
+          );
+      })
       ->join('atividades as a', function ($join) {
         $join->on('a.id', '=', 'programacao_semanal_itens.atividade_id')->whereNull('a.deleted_at');
       })

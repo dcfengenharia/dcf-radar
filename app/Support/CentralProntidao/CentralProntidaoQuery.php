@@ -461,8 +461,31 @@ class CentralProntidaoQuery
         array $engenharia,
         array $documentosBloqueantes,
     ): array {
-        if ($status === StatusOperacionalProntidao::Concluida || $status === StatusOperacionalProntidao::Pronta) {
+        if ($status === StatusOperacionalProntidao::Pronta) {
             return [];
+        }
+
+        // Ciclo 24 — atividade CONCLUÍDA (fisicamente executada) com
+        // Restrição/checklist ainda aberto: a importação nunca fecha
+        // Restrição automaticamente nem esta função reabre a atividade —
+        // é um estado histórico válido, mas precisa ficar explícito pra
+        // análise humana. Texto deliberadamente diferente do usado pra
+        // NaoPronta/Atencao ("Restrição bloqueante") — aqui a atividade já
+        // foi executada, então a restrição não está mais "bloqueando"
+        // nada, só pendente de revisão/tratamento.
+        if ($status === StatusOperacionalProntidao::Concluida) {
+            $totalRestricoesAbertas = count($restricoesBloqueantes) + count($restricoesNaoBloqueantes);
+            $motivosConcluida = [];
+
+            if ($totalRestricoesAbertas > 0) {
+                $motivosConcluida[] = "Concluída no cronograma — {$totalRestricoesAbertas} restrição(ões) aberta(s) para revisão";
+            }
+
+            if ($checklistTotal > 0 && $checklistConcluido < $checklistTotal) {
+                $motivosConcluida[] = "Concluída no cronograma — checklist ainda pendente ({$checklistConcluido}/{$checklistTotal})";
+            }
+
+            return $motivosConcluida;
         }
 
         $motivos = [];

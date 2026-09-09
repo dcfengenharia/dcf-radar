@@ -129,19 +129,40 @@ class ProgramacaoSemanal extends Model
      * está Concluída, dividido pelo total de itens. `null` sem itens
      * (evita divisão por zero — mesmo idioma de "traço" já usado na
      * coluna "% do Projeto" do Plano Semanal).
+     *
+     * Ciclo 24 — correção de consistência com o PPC canônico
+     * (`⚡relatorios-restricoes.blade.php::ppcQuery()`): "cumprida" agora
+     * exige, além de `status === Concluido`, que `concluido_em` caia
+     * DENTRO da janela desta semana (`concluido_em <= semana_fim`) — o
+     * MESMO corte temporal que o PPC histórico já usa. Antes desta
+     * correção, `aderencia()` só olhava o status ATUAL sem nenhum corte
+     * de data — uma atividade comprometida na Semana 36 e só concluída
+     * fisicamente na Semana 37 (concluido_em cai depois de 36) fazia
+     * "Minhas Programações" mostrar a Semana 36 como cumprida, enquanto o
+     * PPC (que já respeitava o corte) continuava mostrando corretamente
+     * como não cumprida — a mesma atividade/compromisso relatada de duas
+     * formas contraditórias em duas telas. Nunca precisou de migration:
+     * `concluido_em` e `semana_fim` já existiam, só a lógica de
+     * comparação estava incompleta.
      */
     public function aderencia(): ?float
     {
-        $itens = $this->itens()->with('atividade:id,status')->get();
+        $itens = $this->itens()->with('atividade:id,status,concluido_em')->get();
 
         $total = $itens->count();
         if ($total === 0) {
             return null;
         }
 
-        $concluidos = $itens->filter(
-            fn (ProgramacaoSemanalItem $item) => $item->atividade?->status === StatusAtividade::Concluido
-        )->count();
+        $semanaFim = $this->semana_fim->toDateString();
+
+        $concluidos = $itens->filter(function (ProgramacaoSemanalItem $item) use ($semanaFim) {
+            $atividade = $item->atividade;
+
+            return $atividade?->status === StatusAtividade::Concluido
+                && $atividade->concluido_em !== null
+                && $atividade->concluido_em->toDateString() <= $semanaFim;
+        })->count();
 
         return round(($concluidos / $total) * 100, 1);
     }

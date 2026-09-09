@@ -663,10 +663,17 @@ class DetectorInconsistenciasAvancoTest extends TestCase
         });
     }
 
-    // ===================== Não-autocorreção ponta a ponta =====================
+    // ===================== Não-autocorreção de Restrição / reconciliação de prontidão (Ciclo 24) =====================
 
-    /** Conecta A.9.1 + F + O + detector: conclusão com pendências nunca autocorrige nada, só evidencia. */
-    public function test_conclusao_com_pendencias_nunca_autocorrige_so_evidencia(): void
+    /**
+     * Ciclo 24 — decisão de produto revisada: conclusão com Restrição
+     * pendente nunca autocorrige a Restrição (A.9.1 continua intacta pra
+     * ela), mas o item de prontidão pendente É atendido automaticamente
+     * (origem sempre auditável via `atendido_pela_importacao_id`, nunca
+     * simulando marcação humana) — as duas coisas evidenciadas pelo
+     * Detector continuam intactas.
+     */
+    public function test_conclusao_nunca_autocorrige_restricao_mas_reconcilia_prontidao_com_origem_auditavel(): void
     {
         $this->importar('cronograma_sample.xml', TipoCronogramaImportacao::Baseline);
         $at = $this->atividade('2');
@@ -681,12 +688,17 @@ class DetectorInconsistenciasAvancoTest extends TestCase
         $snapshotF = AtividadeSnapshot::where('cronograma_importacao_id', $imp->id)->where('atividade_id', $at->id)->first();
         $this->assertEquals(100.0, (float) $snapshotF->percentual_concluido);
 
+        // Restrição: nunca autocorrigida (A.9.1 continua valendo pra ela).
         $this->assertEquals(StatusRestricao::Aberta, $r->fresh()->status);
         $this->assertNull($r->fresh()->resolvida_em);
         $this->assertDatabaseMissing('restricao_acoes', ['restricao_id' => $r->id]);
 
+        // Prontidão: Ciclo 24 — atendida automaticamente, nunca simulando um usuário.
         $registroProntidao = AtividadeItemProntidao::where('atividade_id', $at->id)->where('item_prontidao_id', $item->id)->first();
-        $this->assertNull($registroProntidao);
+        $this->assertNotNull($registroProntidao);
+        $this->assertTrue($registroProntidao->concluido);
+        $this->assertNull($registroProntidao->concluido_por);
+        $this->assertSame($imp->id, $registroProntidao->atendido_pela_importacao_id);
 
         $this->assertGreaterThan(0, InconsistenciaAvanco::where('cronograma_importacao_id', $imp->id)->count());
     }

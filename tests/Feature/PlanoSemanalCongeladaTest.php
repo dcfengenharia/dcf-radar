@@ -120,8 +120,15 @@ class PlanoSemanalCongeladaTest extends TestCase
             ->call('comprometerSelecionadas');
 
         // "Realizado": a atividade foi de fato concluída (estado ao vivo,
-        // não congelado — é exatamente o lado sendo comparado).
-        $atividade->update(['status' => StatusAtividade::Concluido->value]);
+        // não congelado — é exatamente o lado sendo comparado). Ciclo 24:
+        // ppc() agora também exige concluido_em dentro da semana — o
+        // Observer gravaria now() por padrão (fora da janela de 2 semanas
+        // atrás), então o teste precisa fixar explicitamente a data real
+        // da conclusão dentro da própria semana comprometida.
+        $atividade->update([
+            'status' => StatusAtividade::Concluido->value,
+            'concluido_em' => $semanaPassada->copy()->addDay(),
+        ]);
 
         // Simula reimportação trazendo uma atividade NOVA que também cai
         // dentro da mesma janela — não deve inflar o denominador do PPC

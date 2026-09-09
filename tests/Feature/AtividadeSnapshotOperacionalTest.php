@@ -528,7 +528,11 @@ class AtividadeSnapshotOperacionalTest extends TestCase
         $this->assertLessThan(40, $queries, "Import gerou {$queries} queries — suspeita de N+1 na Fotografia O.");
     }
 
-    /** P — A.9.1 continua preservada: zero autocorreção mesmo com Fotografia O sendo gravada. */
+    /**
+     * P — A.9.1 continua preservada pra Restrição mesmo com Fotografia O
+     * sendo gravada; Ciclo 24: prontidão passa a ser reconciliada
+     * automaticamente (origem sempre auditável), nunca a Restrição.
+     */
     public function test_a91_continua_preservada_com_fotografia_o_ativa(): void
     {
         $this->importar('cronograma_sample.xml', TipoCronogramaImportacao::Baseline);
@@ -541,13 +545,16 @@ class AtividadeSnapshotOperacionalTest extends TestCase
         ]);
         $item = ItemProntidao::create(['tenant_id' => $this->user->tenant_id, 'obra_id' => $this->obra->id, 'nome' => 'X', 'ordem' => 0]);
 
-        $this->importar('cronograma_100pct.xml', TipoCronogramaImportacao::Avanco);
+        $imp = $this->importar('cronograma_100pct.xml', TipoCronogramaImportacao::Avanco);
 
         $this->assertEquals(StatusRestricao::Aberta, $restricao->fresh()->status);
         $this->assertNull($restricao->fresh()->resolvida_em);
         $this->assertDatabaseMissing('restricao_acoes', ['restricao_id' => $restricao->id]);
         $registro = AtividadeItemProntidao::where('atividade_id', $at->id)->where('item_prontidao_id', $item->id)->first();
-        $this->assertNull($registro);
+        $this->assertNotNull($registro);
+        $this->assertTrue($registro->concluido);
+        $this->assertNull($registro->concluido_por);
+        $this->assertSame($imp->id, $registro->atendido_pela_importacao_id);
     }
 
     // ===================== A.9.4.HARDENING: instante único da Fotografia O =====================
@@ -717,14 +724,20 @@ class AtividadeSnapshotOperacionalTest extends TestCase
         $avanco = $this->importar('cronograma_100pct.xml', TipoCronogramaImportacao::Avanco);
 
         // Estado atual muda DEPOIS da importação — a consulta histórica
-        // abaixo não deve enxergar essa mudança.
+        // abaixo não deve enxergar essa mudança. Ciclo 24: a própria
+        // importação já reconciliou este item automaticamente (atividade
+        // concluída) — aqui simulamos uma correção manual POSTERIOR,
+        // reabrindo-o, pra provar que o snapshot histórico (F/O) continua
+        // imune a qualquer mudança de estado ao vivo, em qualquer direção.
         $restricao->update(['status' => StatusRestricao::Resolvida->value]);
-        AtividadeItemProntidao::create([
-            'tenant_id' => $this->user->tenant_id,
-            'atividade_id' => $at->id,
-            'item_prontidao_id' => $item->id,
-            'concluido' => true,
-        ]);
+        AtividadeItemProntidao::where('atividade_id', $at->id)
+            ->where('item_prontidao_id', $item->id)
+            ->update([
+                'concluido' => false,
+                'concluido_por' => null,
+                'concluido_em' => null,
+                'atendido_pela_importacao_id' => null,
+            ]);
 
         // Consulta histórica pura: só AtividadeSnapshot (F) +
         // AtividadeSnapshotOperacional/Restricao/Prontidao (O), nunca

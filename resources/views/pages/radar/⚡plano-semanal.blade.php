@@ -744,6 +744,17 @@ new class extends Component {
         return $resultado;
     }
 
+    /**
+     * Ciclo 24 — mesmo corte temporal do PPC canônico
+     * (`⚡relatorios-restricoes.blade.php::ppcQuery()`) e de
+     * `ProgramacaoSemanal::aderencia()`: "concluída" aqui também exige
+     * `concluido_em <= semana_fim`, nunca só `status === Concluido` ao
+     * vivo. Sem essa correção, navegar até uma semana passada já fechada
+     * (via semanAnterior()) podia mostrar este card como "cumprida"
+     * mesmo quando o PPC/Minhas Programações da MESMA semana continuavam
+     * corretamente "não cumprida" — três lugares diferentes descrevendo
+     * o mesmo compromisso de formas contraditórias.
+     */
     #[Computed]
     public function ppc(): array
     {
@@ -753,8 +764,11 @@ new class extends Component {
             return ['percentual' => null, 'concluidas' => 0, 'total' => 0];
         }
 
+        $semanaFim = $this->semanaFim;
+
         $concluidas = $this->atividadesComprometidas
             ->where('status', StatusAtividade::Concluido)
+            ->filter(fn ($atividade) => $atividade->concluido_em !== null && $atividade->concluido_em->toDateString() <= $semanaFim)
             ->count();
 
         return [

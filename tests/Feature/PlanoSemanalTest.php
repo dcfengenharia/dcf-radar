@@ -418,6 +418,12 @@ class PlanoSemanalTest extends TestCase
             'tenant_id' => $this->tenant->id,
             'obra_id' => $this->obra->id,
             'status' => StatusAtividade::Concluido->value,
+            // Ciclo 24 — ppc() agora também exige concluido_em dentro da
+            // semana (mesmo corte temporal do PPC canônico) — um fixture
+            // "Concluido" sem concluido_em não representa mais uma
+            // conclusão real (o Observer sempre grava essa data numa
+            // transição de verdade; aqui simulamos explicitamente).
+            'concluido_em' => $inicioSemana->copy()->addDay(),
             'inicio_planejado' => $inicioSemana,
             'data_termino' => $inicioSemana->copy()->addDays(2),
         ]);
@@ -529,6 +535,9 @@ class PlanoSemanalTest extends TestCase
             'obra_id' => $this->obra->id,
             'nome' => 'Tarefa Concluida X',
             'status' => StatusAtividade::Concluido->value,
+            // Ciclo 24 — ppc() exige concluido_em dentro da semana (mesmo
+            // corte temporal do PPC canônico).
+            'concluido_em' => $inicioSemana->copy()->addDay(),
             'inicio_planejado' => $inicioSemana,
             'data_termino' => $inicioSemana->copy()->addDays(2),
         ]);

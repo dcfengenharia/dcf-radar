@@ -1409,8 +1409,19 @@ new class extends Component {
     // obra de verAtividade(), reaplicada aqui porque $modalAtividadeId é
     // propriedade pública Livewire e pode chegar setada por outro caminho.
     $at = Atividade::with([
+      // Ciclo 24.CORREÇÃO — 'atividade' precisa vir junto: @can('resolver', $r)
+      // no popup (abaixo) chama RestricaoPolicy::resolver(), que sempre lê
+      // $restricao->atividade->obra_id como primeira linha — sem essa relação
+      // inversa eager-carregada aqui, isso disparava
+      // LazyLoadingViolationException (Model::preventLazyLoading() ativo fora
+      // de produção) sempre que a atividade tivesse ao menos 1 restrição
+      // aberta/em_tratamento/aguardando_terceiros.
       'restricoes' => fn($q) => $q
-        ->with(['categoria:id,nome', 'responsavel:id,first_name,last_name'])
+        ->with([
+          'categoria:id,nome',
+          'responsavel:id,first_name,last_name',
+          'atividade:id,obra_id',
+        ])
         ->orderByRaw("FIELD(status,'aberta','em_tratamento','aguardando_terceiros','resolvida')"),
       'frenteTrabalho:id,nome',
       'disciplina:id,nome',
@@ -2271,9 +2282,19 @@ new class extends Component {
                     @endif
                 </td>
                 <td class="text-center">
-                    <span class="badge {{ $row['pronta'] ? 'bg-success' : 'bg-warning text-dark' }}">
-                        {{ $row['pronta'] ? 'Pronta' : 'Não pronta' }}
-                    </span>
+                    {{-- Ciclo 24 — atividade fisicamente concluída no cronograma
+                         tem precedência visual sobre a prontidão prospectiva:
+                         nunca mostrar "Não pronta" pra algo que já foi executado,
+                         mesmo que ainda existam restrições/checklist pendentes
+                         de revisão (ver Central de Prontidão/detalhe da atividade
+                         pra essas pendências). --}}
+                    @if ($at->status === \App\Enums\StatusAtividade::Concluido)
+                        <span class="badge bg-primary">Concluída</span>
+                    @else
+                        <span class="badge {{ $row['pronta'] ? 'bg-success' : 'bg-warning text-dark' }}">
+                            {{ $row['pronta'] ? 'Pronta' : 'Não pronta' }}
+                        </span>
+                    @endif
                 </td>
                 <td class="text-center text-nowrap">
                     @can('update', $at)
@@ -2577,9 +2598,13 @@ new class extends Component {
                         @if ($at->caminho_critico)
                         <span class="badge bg-danger ms-2">Caminho Crítico</span>
                         @endif
-                        <span class="badge {{ $atividadePronta ? 'bg-success' : 'bg-warning text-dark' }} ms-2">
-                            {{ $atividadePronta ? 'Pronta' : 'Não pronta' }}
-                        </span>
+                        @if ($at->status === \App\Enums\StatusAtividade::Concluido)
+                            <span class="badge bg-primary ms-2">Concluída</span>
+                        @else
+                            <span class="badge {{ $atividadePronta ? 'bg-success' : 'bg-warning text-dark' }} ms-2">
+                                {{ $atividadePronta ? 'Pronta' : 'Não pronta' }}
+                            </span>
+                        @endif
                     </small>
                 </div>
                 <button type="button" class="btn-close btn-close-white" wire:click="$set('modalAtividadeId', null)"></button>
@@ -3033,7 +3058,11 @@ new class extends Component {
 
             <div class="modal-footer flex-wrap">
                 <small class="text-muted me-auto">
-                    {{ $atividadePronta ? '✅ Pode ser comprometida no Plano Semanal' : '⚠ Pendências impedem o comprometimento' }}
+                    @if ($at->status === \App\Enums\StatusAtividade::Concluido)
+                        ✅ Já concluída no cronograma importado
+                    @else
+                        {{ $atividadePronta ? '✅ Pode ser comprometida no Plano Semanal' : '⚠ Pendências impedem o comprometimento' }}
+                    @endif
                 </small>
                 @can('create', [\App\Models\LicaoAprendida::class, $obra])
                     <a href="{{ route('gestao.licoes-aprendidas', ['origem_tipo' => 'atividade', 'origem_id' => $at->id]) }}"
