@@ -91,13 +91,6 @@ $configData = Helper::appClasses();
     @endforeach
   </ul>
 
-  @php $pendenciasMenu = \App\Support\Onboarding\OnboardingChecklist::pendenciasAtuais(); @endphp
-  @if ($pendenciasMenu !== [])
-    <div class="px-3 mb-3 mt-auto">
-      <a href="{{ route('app.onboarding') }}" class="btn btn-danger w-100 d-flex align-items-center justify-content-center gap-1">
-        <i class="bx bx-error-circle"></i> Configuração Pendente
-      </a>
-    </div>
-  @endif
+  <livewire:onboarding-pendencia-badge />
 
 </aside>

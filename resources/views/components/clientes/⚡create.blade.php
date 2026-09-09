@@ -92,6 +92,7 @@ new class extends Component {
     $this->clearForm();
     $this->dispatch('close-client-modal');
     $this->dispatch('client-created');
+    $this->dispatch('onboarding-atualizado');
     $this->dispatch('show-client-toast', message: 'Cliente cadastrado com sucesso!');
   }
 

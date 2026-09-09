@@ -1164,6 +1164,7 @@ new class extends Component {
     $this->resetModalAtividade();
     $this->invalidarListagem();
     unset($this->frentesTrabalho, $this->pacotesParaSelecao);
+    $this->dispatch('onboarding-atualizado');
 
     // Confirma se a atividade recém-criada realmente aparece na lista com
     // os filtros atuais — se não aparecer, avisa o motivo em vez de deixar

@@ -117,6 +117,7 @@ new class extends Component {
     $this->clearForm();
     $this->dispatch('close-obra-modal');
     $this->dispatch('work-created');
+    $this->dispatch('onboarding-atualizado');
     $this->dispatch('show-toast', message: 'Obra cadastrada com sucesso!');
   }
 

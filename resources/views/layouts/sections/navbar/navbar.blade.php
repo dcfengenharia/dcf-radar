@@ -103,7 +103,7 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
               class="btn btn-label-warning d-flex align-items-center me-2 border-0"
               title="Sistema em fase de testes — clique para enviar feedback">
         <span class="d-none d-md-inline-block small">
-          🚨 <span class="fw-semibold">ESTAMOS EM FASE DE TESTES</span>. Quaisquer sugestões ou problemas, por favor, nos envie um feedback!
+          🚨 <span class="fw-semibold">ESTAMOS EM FASE DE TESTES</span>. Quaisquer sugestões ou problemas, clique aqui!
         </span>
       </button>
       @endauth
