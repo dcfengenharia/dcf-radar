@@ -281,6 +281,7 @@ new class extends Component {
         <i class="bx bx-check-circle fs-4"></i>
         <div>
             <strong>Importação concluída.</strong>
+            <a href="{{ route('radar.linhas-base') }}" class="ms-2">Salvar como Linha de Base →</a>
             <a href="{{ route('radar.curvas') }}" class="ms-2">Ver curvas de avanço →</a>
         </div>
         <button wire:click="cancelar" class="btn-close ms-auto"></button>

@@ -343,7 +343,7 @@ new class extends Component {
                     <span class="badge bg-{{ $scoreResultado->faixa->cor() }}">{{ $scoreResultado->faixa->label() }}</span>
                 </div>
                 <div class="col-md-3 text-center">
-                    <small class="text-muted d-block">Cobertura da análise</small>
+                    <small class="text-muted d-block" title="Mede quantas atividades executáveis estão ativas — não mede ausência de problemas no cronograma">Cobertura da análise</small>
                     <span class="fs-4 fw-medium">{{ $scoreResultado->cobertura !== null ? $scoreResultado->cobertura . '%' : 'N/D' }}</span>
                 </div>
                 <div class="col-md-6">

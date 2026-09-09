@@ -32,3 +32,9 @@ package-lock.log
 /build_manual_precificacao.py
 /build_spreadsheet.mjs
 /Manual_Operacional_de_Precificacao_DCF_Radar_EPC.docx
+
+# Worktrees órfãs de sessões de agente isoladas (isolation: worktree) —
+# achado real: uma dessas acabou sendo commitada por engano localmente
+# (~990 arquivos, nunca chegou a ser enviada ao GitHub). Nunca deve ser
+# rastreada — não faz parte do código da aplicação.
+/.claude/worktrees/

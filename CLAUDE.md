@@ -130,10 +130,18 @@ ReportComentario (só em reports emitidos). Reaproveita
 ## Onboarding
 
 - **Checklist único de manutenção**: `App\Support\Onboarding\OnboardingChecklist`
-  (`passosTenant()`/`passosObra()`). Passo obrigatório mais recente:
-  `restricao_cadastrada` — sem isso, o checklist parava em "importar
-  cronograma" e nunca chegava no motivo do produto existir (o quadro de
-  restrições do Last Planner System).
+  (`passosTenant()`/`passosObra()`). Passos obrigatórios hoje: `cliente_cadastrado`
+  e `obra_cadastrada` (escopo tenant) + `atividades_cadastradas` (escopo obra).
+  `categoria_restricao_cadastrada`, `restricao_cadastrada` e
+  `item_prontidao_cadastrado` são passos **recomendados** (`obrigatorio: false`)
+  — aparecem na tela dedicada `/app/onboarding`, mas nunca bloqueiam o Radar
+  nem acionam o banner "Configuração Pendente"/popup de boas-vindas.
+  **Decisão de produto**: a existência de uma Restrição real não é requisito
+  para considerar a configuração inicial de uma obra concluída — uma obra
+  pode estar corretamente configurada mesmo sem nenhuma restrição
+  identificada ainda (pode genuinamente não haver nenhuma no momento). Ao
+  avaliar se um passo deveria virar obrigatório, tratar isso como decisão de
+  produto explícita, nunca como lacuna a "corrigir" silenciosamente no código.
 - **`App\Http\Middleware\RequireObraContext` bloqueia páginas do Radar**
   enquanto há pendência obrigatória — mas a rota que É a própria ação
   (`rotaAcao`) de um passo pendente sempre fica acessível, senão o
@@ -11092,6 +11100,297 @@ mesmas 6 falhas pré-existentes e sem relação:
 - **Não avançar pro Ciclo 24 sem validação do usuário** (instrução
   explícita).
 
+## Ciclo 24 — Reconciliação Avanço × Conclusão × Prontidão × Restrições × PPC
+
+- **Contexto**: correção pré-teste, antes da primeira importação de avanço
+  real da obra — a auditoria targeted (ver seção "Auditoria e correção
+  cirúrgica" anterior) encontrou que a importação de avanço podia gravar
+  `percentual_concluido = 100%` sem NUNCA sincronizar `status`/
+  `concluido_em`/prontidão — produzindo o estado contraditório "CONCLUÍDA
+  no cronograma" + "0/4 prontidão" + "Não Pronta" na tela.
+- **Cinco distinções de domínio, nunca confundidas** (documentadas aqui
+  de forma explícita, pedido do usuário):
+  - **AVANÇO** (fato físico declarado pelo MS Project) **≠ PRONTIDÃO**
+    (pré-condições vencidas para execução).
+  - **PRONTIDÃO ≠ RESTRIÇÃO** (impedimento com ciclo de tratamento
+    próprio — pode continuar existindo mesmo após a execução).
+  - **PRONTIDÃO ≠ COMPROMISSO** (compromisso semanal assumido).
+  - **COMPROMISSO ≠ CUMPRIMENTO** (resultado histórico daquele
+    compromisso, nunca reaberto por eventos posteriores).
+  - **PPC ≠ ADERÊNCIA DA CURVA S**: PPC = confiabilidade dos compromissos
+    semanais (binário, `concluido_em` vs. `semana_fim`); Aderência de
+    Curva S = `Real acumulado ÷ Previsto acumulado × 100` (HH,
+    `ReportCurvaSerializer`). São dois números completamente diferentes
+    que compartilhavam o mesmo rótulo "Aderência" em pontos da UI/código
+    (`ProgramacaoSemanal::aderencia()` é, na prática, uma 3ª variante de
+    PPC, não uma aderência de curva) — **nomenclatura NÃO foi renomeada
+    nesta etapa** (risco de blast radius sobre múltiplos call-sites sem
+    auditoria completa de tela por tela, fora do escopo autorizado), mas
+    a distinção fica registrada aqui como fonte de verdade — qualquer
+    exibição futura do valor de `ProgramacaoSemanal::aderencia()` deve
+    deixar claro que é uma métrica de cumprimento (PPC-like), nunca
+    confundida com a Aderência de Curva S do Dashboard/Report.
+- **Regra canônica de "conclusão física importada"** (nova, App\Imports\
+  MsProjectImporter — dentro do loop de `aplicar()`, branch Avanço/Ambos):
+  `PercentWorkComplete >= 100% OU ActualFinish presente` — **união (OR),
+  nunca AND** — mesma regra já usada por `DetectorInconsistenciasAvanco`
+  desde a A.9.4 (reaproveitada, não uma segunda fórmula). Avaliada sobre
+  o valor RESULTANTE (considerando a preservação de `real_inicio`/
+  `real_termino` abaixo), cobrindo também dado legado (`real_termino` já
+  gravado antes deste ciclo, atividade ainda não sincronizada). Não se
+  aplica à importação Baseline pura (mesmo gate `$capturarFotografiaO`
+  já usado por Fotografia O/P/Detector desde o Ciclo 17).
+- **`status`/`concluido_em` são sincronizados SÓ NA TRANSIÇÃO**: uma
+  atividade cujo status ainda não é `Concluido` no instante desta
+  importação (lido do "antes" da Fotografia O, já capturado em lote) tem
+  `status=Concluido` gravado — nunca revertido depois, mesmo que uma
+  importação posterior regrida o percentual (100%→80%) ou reconfirme a
+  conclusão. `concluido_em` segue prioridade: 1) `ActualFinish`
+  (RESULTANTE, fato físico); 2) `data_status` desta importação (fallback
+  "as-of" pra 100% sem término real, DATE-003); 3) `now()` só como último
+  recurso. **No branch Avanço** (update em massa via query builder,
+  nunca dispara `AtividadeObserver`) o controle é total; **no branch
+  Ambos** (via `updateOrCreate()`, dispara o Observer),
+  `App\Observers\AtividadeObserver::updating()` foi ajustado pra
+  PRESERVAR um `concluido_em` já explicitamente definido pelo chamador
+  (`isDirty('concluido_em')`) em vez de sempre sobrescrever com `now()`
+  — fluxos manuais (`marcarConcluida()` no Plano Semanal) nunca setam
+  `concluido_em` explicitamente, então continuam caindo no `now()` de
+  sempre, sem nenhuma mudança de comportamento observável.
+- **Itens de prontidão — atendidos automaticamente, origem sempre
+  auditável**: `MsProjectImporter::reconciliarItensDeProntidao()`
+  (chamada só quando ≥1 atividade transicionou nesta importação) marca
+  `AtividadeItemProntidao.concluido=true` pra todo item do catálogo da
+  obra ainda pendente (ou sem row nenhuma) daquela atividade —
+  `concluido_por=null` (nunca simula um usuário humano) +
+  **`atendido_pela_importacao_id`** (nova coluna, FK nullable pra
+  `cronograma_importacoes`, `nullOnDelete()`) apontando pra esta
+  importação. Item já `concluido=true` (manual OU de importação
+  anterior) **NUNCA é reescrito** — preserva autor/data/origem
+  originais, mesmo sob regressão de percentual depois. `App\Models\
+  AtividadeItemProntidao::foiAtendidoAutomaticamente()` (novo) distingue
+  os dois casos pra UI.
+- **Restrição NUNCA é fechada automaticamente** — decisão de produto
+  reafirmada (Ciclo 17, A.9.1, agora explicitamente estendida): uma
+  Restrição aberta numa atividade recém-concluída continua aberta. O par
+  "concluída + restrição pendente" já era capturado como evidência de
+  primeira classe pelo `DetectorInconsistenciasAvanco` desde a A.9.4
+  (`ConclusaoComRestricaoPendente`/`ConclusaoComProntidaoPendente`,
+  lidos da Fotografia O "antes") — **reaproveitado sem nenhuma mudança**,
+  nunca um mecanismo novo. `App\Support\ConclusaoAutomaticaAtividades`
+  continua existindo só como ferramenta de saneamento manual explícito
+  (nunca chamada automaticamente) — ela TAMBÉM resolveria Restrição, o
+  que o Ciclo 24 continua proibindo; por isso não foi "restaurada".
+- **Datas reais nunca apagadas silenciosamente**: `real_inicio`/
+  `real_termino` agora usam preservação explícita (`$novoValor ??
+  $valorAntesDaImportacao`) nos dois branches (Avanço e Ambos/Baseline
+  não foi alterado nesse ponto específico, só Avanço/Ambos, mesmo gate
+  de Fotografia O) — uma importação cujo XML não traz mais `ActualStart`/
+  `ActualFinish` NUNCA apaga um fato físico já conhecido de uma
+  importação anterior. Só `real_inicio`/`real_termino` recebem essa
+  proteção nesta etapa (não `percentual_concluido`, que continua sendo
+  sempre sobrescrito com o valor bruto do XML, inclusive regredindo —
+  comportamento intencional, já documentado desde a A.9.4).
+- **Central de Prontidão** (`CentralProntidaoQuery::montarResumoMotivos()`):
+  atividade `Concluida` (`concluido_em !== null`, já a fonte canônica
+  desde o Ciclo 18.4.CORREÇÃO) tem precedência visual sobre
+  `NaoPronta`/`Atencao` — isso já era assim ANTES deste ciclo, só nunca
+  se manifestava porque `concluido_em` nunca era setado pela importação.
+  O que mudou aqui: `resumoMotivos()` deixou de suprimir motivos pra
+  status `Concluida` (só continua suprimindo pra `Pronta`, onde a
+  supressão é sempre um no-op seguro) — uma atividade concluída com
+  Restrição/checklist ainda aberto agora mostra "Concluída no cronograma
+  — N restrição(ões) aberta(s) para revisão", nunca o texto de
+  "Restrição bloqueante" (que soaria como se ainda estivesse impedindo a
+  execução, o que não é mais verdade).
+- **Lookahead** (`⚡lookahead.blade.php`): badge de linha e badge do
+  popup de detalhe agora mostram **"Concluída"** (bg-primary) com
+  precedência sobre "Pronta"/"Não pronta" sempre que
+  `Atividade.status === Concluido` — nunca mais "Não pronta" pra uma
+  atividade já executada só porque `estaPronta()` continua `false` por
+  causa de uma restrição bloqueante ainda aberta (que segue visível no
+  popup normalmente). Rodapé do popup também ajustado ("Já concluída no
+  cronograma importado" em vez de "Pendências impedem o comprometimento").
+- **Plano Semanal**: nenhuma mudança de código foi necessária — a coluna
+  de status já lia `Atividade.status` ao vivo (`$statusVal`/`$badgeClass`/
+  `$statusLabel`), então passa a mostrar "Concluído" corretamente assim
+  que a importação sincroniza o status — o badge "Planejado + cadeado"
+  documentado como sintoma em auditorias anteriores era só CONSEQUÊNCIA
+  do bug de sincronização agora corrigido, nunca um problema autônomo do
+  Plano Semanal.
+- **PPC canônico** (`⚡relatorios-restricoes.blade.php::ppcQuery()`):
+  fórmula continua `SUM(concluido_em IS NOT NULL AND DATE(concluido_em)
+  <= semana_fim) / COUNT(itens da semana)` — **corrigido o denominador**,
+  que somava itens de TODAS as versões de uma semana revisada
+  (`CriarRevisaoProgramacaoSemanal` nunca apaga os itens da versão
+  anterior). O `JOIN` com `programacoes_semanais` agora exige
+  `ps.versao = MAX(versao)` da mesma obra+semana_inicio (subquery
+  correlacionada) — mesma noção de "vigente" de `ProgramacaoSemanal::
+  ativaPara()`, sem depender de `superseded_at` (que pode ficar `null`
+  em dado legado). 10 comprometidas em v1 + revisão pra v2 (mesmas 10
+  atividades) agora conta 10 no denominador, nunca 18/20.
+- **PPC histórico e conclusão importada — resolvido de graça pela
+  arquitetura já existente**: como `concluido_em` agora usa
+  `ActualFinish`/`data_status` (fato físico) em vez de `now()`, a query
+  `DATE(concluido_em) <= ps.semana_fim` (já existente, intocada) resolve
+  corretamente os dois cenários pedidos, sem nenhuma regra nova: (1)
+  atividade concluída FISICAMENTE depois do fim da semana comprometida
+  → `concluido_em` cai fora da janela → semana permanece **NÃO
+  CUMPRIDA**, mesmo que a importação chegue meses depois; (2)
+  `ActualFinish` dentro da janela da semana comprometida, mas importado
+  tardiamente → `concluido_em` cai dentro da janela → semana passa a
+  **CUMPRIDA** retroativamente — o sistema está só refletindo um fato
+  que sempre foi verdade, nunca inventando um. Uma atividade JÁ Concluída
+  nunca tem `concluido_em` re-tocado por importação nenhuma (regra da
+  transição única acima), então um PPC de semana já fechada não pode ser
+  alterado por uma importação que só reconfirma/regride percentual —
+  só poderia mudar via uma transição de status genuinamente nova.
+- **Causas de Não Cumprimento**: auditado (`CausaNaoCumprimento` continua
+  vinculada só a `atividade_id`, sem referência a semana/`ProgramacaoSemanal`)
+  — **não alterado nesta etapa** (fora do recorte mínimo necessário pra
+  garantir a integridade do PPC/histórico do Plano Semanal, que não
+  depende dessa tabela).
+- **Testes novos**: `tests/Feature/ReconciliacaoConclusaoImportadaTest.php`
+  (0→100% com ActualFinish; 100% sem ActualFinish usa data_status;
+  ActualFinish com percentual<100 também conclui; parcial não conclui;
+  branch Ambos preserva concluido_em explícito via Observer; regressão
+  100→80 não desfaz status/concluido_em/prontidão; real_inicio nunca
+  apagado por importação posterior sem o campo; 4 itens de prontidão
+  atendidos automaticamente com origem auditável; item manual preservado;
+  restrição bloqueante/não-bloqueante permanece aberta + inconsistência
+  gerada; isolamento entre obras) + 1 teste novo em
+  `RelatoriosRestricoesTest.php` (denominador do PPC não duplica após
+  revisão de semana) + 2 testes ajustados (não enfraquecidos — a
+  correção do produto muda o resultado esperado) em
+  `DetectorInconsistenciasAvancoTest.php`/`AtividadeSnapshotOperacionalTest.php`
+  (a asserção "prontidão nunca é atendida automaticamente" virou
+  "prontidão é atendida automaticamente com origem auditável, Restrição
+  continua intocada") + 1 ajuste factual em `AtividadeSnapshotOperacionalTest.php`
+  (teste R simula uma correção manual POSTERIOR via `update()` em vez de
+  `create()`, já que o item agora nasce concluído pela própria
+  importação — mesma garantia de imutabilidade do snapshot histórico
+  provada, sem colidir com a UNIQUE constraint).
+- **Migration**: `2026_09_07_000001_add_atendido_pela_importacao_to_atividade_itens_prontidao_table.php`
+  (1 coluna nullable, aditiva — nenhuma migration existente alterada).
+- **Não implementado nesta etapa, deliberadamente fora do recorte
+  mínimo** (registrado como dívida consciente, não esquecido):
+  proteção contra `data_status` duplicado/importação cronologicamente
+  anterior (nenhum bloqueio/aviso novo — mesma ausência já documentada
+  em ciclos anteriores); inconsistência dedicada de "regressão de
+  percentual" (o invariante "nunca desfaz status/prontidão" já é
+  garantido estruturalmente pela regra de transição única, sem precisar
+  de um novo tipo de `InconsistenciaAvanco`/Fotografia); extensão da
+  reconciliação de prontidão para conclusão MANUAL (fora do fluxo de
+  importação — regra de produto desta etapa é textualmente sobre
+  atividade "importada" como concluída); renomeação de
+  `ProgramacaoSemanal::aderencia()`/auditoria tela-a-tela de todo uso do
+  termo "aderência" (só a distinção conceitual foi documentada);
+  vínculo de `CausaNaoCumprimento` por semana/episódio.
+
+## Cadastros Mestres de Materiais/Unidades/Famílias + Importação Excel
+
+- **Decisão final de navegação**: `UnidadeMedida` e `FamiliaMaterial` são
+  cadastros corporativos tenant-wide (Ciclo 19.1), administrados em
+  **Configurações → Cadastros** (`⚡unidades-medida.blade.php`/
+  `⚡familias-material.blade.php`, rotas `cadastros.unidades-medida`/
+  `cadastros.familias-material`) — mesmo padrão de TODO cadastro irmão
+  (Clientes/Obras/Fornecedores/Fluxos de Suprimento/etc.), permissão via
+  `temPermissaoEmAlgumaObraDoTenant('cadastros.unidades_medida'|
+  'cadastros.familias_material', $acao)`, tier `Papel::Admin` em criar/
+  editar/excluir (mesmo tier de TODO cadastro corporativo do catálogo,
+  sem exceção). **NUNCA mais abas dentro de `Radar → Estoque`** — a
+  primeira versão desta feature (retomada do "Posto Operacional") as
+  colocou ali por reaproveitar `estoque.movimentacao`, mas testes manuais
+  confirmaram que Unidade/Família são conceitos de configuração
+  corporativa, não operação de almoxarifado — decisão de produto revertida
+  nesta rodada de ajuste.
+- **`Material` continua Catálogo Mestre tenant-wide**, exibido/editado
+  dentro de `⚡estoque.blade.php` (aba "Materiais", título "Catálogo Mestre
+  de Materiais"), reutilizado transversalmente por Engenharia/Take Off,
+  Suprimentos, Estoque, Planejamento e Produção — nenhuma segunda tabela
+  criada. O modal de Material continua com o dropdown de Unidade
+  (só ativas), Família permanece opcional; quando não há nenhuma Unidade
+  ativa, mostra "Nenhuma Unidade de Medida cadastrada" + link pra
+  `route('cadastros.unidades-medida')` aberto em nova aba (preserva o que
+  já foi digitado no formulário de Material) — nunca cria Unidade
+  automaticamente.
+- **Importação Excel/template do Catálogo Mestre de Materiais continuam
+  em `⚡estoque.blade.php`, NUNCA movidos** — `[Importar Excel]`/
+  `[Baixar modelo]`, `App\Imports\MaterialImporter`,
+  `App\Exports\MaterialImportTemplateExport` (abas Materiais/Unidades
+  válidas/Famílias válidas/Instruções) intocados; "Unidades válidas"/
+  "Famílias válidas" continuam sendo referência do cadastro central
+  (`UnidadeMedida::where('ativo', true)`/`FamiliaMaterial::where('ativo',
+  true)`), nunca uma cópia — mover a ADMINISTRAÇÃO do cadastro pra
+  Configurações não move a IMPORTAÇÃO, que é responsabilidade operacional
+  do Catálogo Mestre.
+- **Criação inline no Plano Semanal** (`⚡plano-semanal.blade.php::
+  salvarNovoMaterialInline()`, "Posto Operacional") continua resolvendo
+  `UnidadeMedida`/`FamiliaMaterial` do MESMO cadastro central, sem nenhuma
+  duplicação de CRUD — preservado integralmente, zero linha tocada nesta
+  rodada.
+- **Consequência real de segurança, registrada explicitamente**: antes
+  desta rodada, `Encarregado`/`Engenheiro` (tier de `estoque.movimentacao`)
+  conseguiam criar/editar/inativar Unidade e Família; agora só `Admin`
+  do tenant consegue (mesmo tier de todo cadastro corporativo irmão) —
+  decisão deliberada de coerência com o catálogo de permissões, não uma
+  regressão acidental.
+- **Zero migration nesta rodada** — schema (`unidades_medida`/
+  `familias_material`/`materiais`) intocado desde os Ciclos 19-20; a
+  mudança é inteiramente de navegação/permissão/rota/menu.
+- **NÃO commit. NÃO push.**
+
+### Correção — template oficial e importador usavam nomes de aba divergentes
+
+- **Bug real, achado em teste manual**: baixar o modelo oficial ("Baixar
+  modelo") e reimportá-lo sem nenhuma edição estrutural sempre falhava
+  com "A planilha não tem uma aba chamada...". Causa raiz:
+  `MaterialImportTemplateExport` sempre gerou a 1ª aba como `'Materiais'`
+  (Título), enquanto `MaterialImporter::SHEET_NOME` procurava
+  `'MATERIAIS'` (caixa alta) — `PhpSpreadsheet\Spreadsheet::
+  getSheetByName()` é case-sensitive, então o PRÓPRIO template gerado
+  pelo sistema nunca era aceito pelo próprio importador do sistema.
+  Reproduzido byte-a-byte (`bin2hex()` dos dois nomes) gerando o arquivo
+  REAL via `MaterialImportTemplateExport`/`Excel::store()` antes de
+  qualquer correção.
+- **Por que os testes anteriores não pegaram**: `MaterialImporterTest`
+  sempre construía seu próprio `.xlsx` manualmente com o nome de aba já
+  "certo" (`'MATERIAIS'`, coincidindo com o valor antigo do importador,
+  nunca gerado pelo exportador de verdade); `CadastrosMestresMaterialTest`
+  testava o exporter e o importer em cenários SEPARADOS, nunca
+  alimentando a saída de um como entrada do outro. Nenhum teste fazia o
+  round-trip completo (export real → preencher → importar esse mesmo
+  arquivo).
+- **Correção — `MaterialImporter::SHEET_NOME` (agora `public`, valor
+  `'Materiais'`) é a ÚNICA autoridade do nome da aba** —
+  `MaterialImportTemplateExport::folhaMateriais()` referencia essa
+  constante diretamente (nunca mais um literal duplicado); a mensagem de
+  erro de `lerLinhas()` também passou a interpolar a constante (tinha o
+  MESMO literal `"MATERIAIS"` hardcoded separadamente, mesma classe de
+  duplicação).
+- **Teste obrigatório novo**: `tests/Feature/MaterialImportTemplateRoundTripTest.php`
+  — nunca constrói um `.xlsx` do zero para o cenário principal; sempre
+  baixa o template REAL via o mesmo efeito de download do Livewire
+  (`baixarModeloMaterial()`), escreve uma linha válida na aba devolvida
+  (usando `PhpSpreadsheet` sobre o próprio arquivo baixado, nunca um
+  arquivo novo) e alimenta esse MESMO arquivo de volta pro fluxo real de
+  "Importar Excel" — cobre o caminho feliz completo (via `MaterialImporter`
+  isolado E via UI Livewire ponta-a-ponta), conteúdo do template
+  (Unidades/Famílias refletindo o tenant atual, cabeçalhos exatos), e os
+  cenários negativos (unidade/família inexistente, família vazia
+  permitida, duplicidade no arquivo, conflito com catálogo, modo
+  inválido, arquivo sem a aba, análise nunca persiste). Também corrigido
+  o hardcode remanescente do nome antigo em `MaterialImporterTest`/
+  `CadastrosMestresMaterialTest` (agora referenciam
+  `MaterialImporter::SHEET_NOME`, nunca mais um literal solto).
+- **Achado de teste durante a construção do round-trip, não um segundo
+  bug**: a linha de exemplo `EX-001` do template usa `"UN"` como
+  placeholder de Unidade — um tenant cuja Unidade real seja `"UND"` (ou
+  qualquer outro código) vê `EX-001` corretamente classificada como
+  INVÁLIDA na prévia (unidade não encontrada) — comportamento correto e
+  esperado (nunca aceitar silenciosamente), não uma falha do template.
+- **NÃO commit. NÃO push.**
+
 ## Convenções
 
 - Nomes de domínio (tabelas, colunas, models de negócio) em **português**:
@@ -11332,6 +11631,109 @@ Rode `php artisan test` antes de considerar qualquer tarefa concluída.
   de envio em si.
 - `feedbacks` entra em `App\Actions\ExportUserData::gerar()` (regra já
   documentada acima pra toda tabela nova com FK de autoria pra `users`).
+
+## BUG TARGETED — `/profile` quebrava em "Outras sessões do navegador"
+
+- **Sintoma**: `Call to a member function get() on string` ao abrir
+  `/profile`, apontando pra
+  `resources/views/profile/logout-other-browser-sessions-form.blade.php:45`
+  (`$session->agent->platform()`/`browser()`).
+- **Causa raiz real, confirmada lendo o vendor** (nunca copiada de uma
+  versão antiga sem checar): `Laravel\Jetstream\Agent::
+  retrieveUsingCacheOrResolve()` (`laravel/jetstream` 4.1.0) trata
+  `$this->cache->get($cacheKey)` como se devolvesse um item estilo PSR-6
+  (`->get()` próprio pra extrair o valor) — mas a dependência que o
+  PRÓPRIO Jetstream declara (`mobiledetect/mobiledetectlib: ^4.8`,
+  resolvida pra `4.10.0` neste projeto, `Detection\Cache\Cache`)
+  implementa PSR-16 de verdade, cujo `get()` já devolve o valor
+  resolvido direto. Na 2ª chamada de `platform()`/`browser()` NA MESMA
+  requisição (cache hit), o código tenta `"Windows"->get()` — daí o
+  erro. A PRÓPRIA Blade oficial do Jetstream já chama esses métodos
+  duas vezes cada (`X() ? X() : 'Unknown'`), então isso quebra pra
+  QUALQUER sessão com User-Agent resolvível em QUALQUER instalação
+  Jetstream 4.1.0 + mobiledetectlib ^4.8 — nunca foi específico de
+  User-Agent malformado, sessão antiga, ou customização deste projeto.
+- **Por que a suíte antiga nunca detectou**: `phpunit.xml` define
+  `SESSION_DRIVER=array` globalmente — `getSessionsProperty()` tem
+  `if (config('session.driver') !== 'database') return collect();`
+  como primeira linha, então em qualquer teste anterior (incluindo
+  `ProfileTest`) essa checagem sempre curto-circuitava antes de tocar
+  `$session->agent`, e `/profile` sempre respondia 200 mesmo estando
+  genuinamente quebrado no runtime real (`SESSION_DRIVER=database`).
+- **Correção mínima, sem tocar `vendor/`**: `App\Support\Agent` (novo)
+  — subclasse de `Laravel\Jetstream\Agent` que reimplementa SÓ
+  `retrieveUsingCacheOrResolve()` respeitando o contrato PSR-16 real;
+  nenhuma regra de detecção de plataforma/navegador é tocada.
+  `App\Livewire\Profile\LogoutOtherBrowserSessionsForm` (novo) —
+  subclasse de `Laravel\Jetstream\Http\Livewire\
+  LogoutOtherBrowserSessionsForm` que só sobrescreve `createAgent()`
+  pra devolver `App\Support\Agent` (e normaliza `user_agent` nulo pra
+  string vazia — `MobileDetect::setUserAgent()` é tipado estritamente
+  `string`, um `TypeError` diferente esperaria por trás da correção de
+  cache sem essa normalização). Registrado via `Livewire::component(
+  'profile.logout-other-browser-sessions-form', ...)` dentro de
+  `App\Providers\JetstreamServiceProvider::boot()` — a última chamada
+  a `Livewire::component()` com o MESMO nome vence sobre a do
+  `Laravel\Jetstream\JetstreamServiceProvider` (vendor, auto-
+  discovered, sempre carregado antes), sem publicar/sobrescrever
+  nenhuma view (a Blade invoca o componente por ALIAS, nunca por
+  classe). `getSessionsProperty()`/`logoutOtherBrowserSessions()`/
+  `confirmLogout()`/segurança de sessão continuam 100% herdados,
+  intocados.
+- **Achado de teste — `Livewire::test()` nunca serve pra exercitar
+  `request()->session()` de verdade**: toda interação via
+  `Livewire::test()` (mount inicial E qualquer `->call()`/`->set()`
+  posterior) passa por `Livewire\Features\SupportTesting\
+  RequestBroker::temporarilyDisableExceptionHandlingAndMiddleware()`,
+  que chama `withoutMiddleware()` incondicionalmente — pulando
+  `StartSession` sempre — e `Illuminate\Foundation\Http\Kernel::
+  handle()` rebinda `app('request')` no início de QUALQUER dispatch
+  interno, mesmo com middleware desligado, substituindo qualquer sessão
+  "aquecida" antes por um `Request` sem sessão nenhuma. Por isso
+  `tests/Feature/LogoutOtherBrowserSessionsFormTest.php` instancia o
+  componente DIRETO (`new LogoutOtherBrowserSessionsForm()`) e chama os
+  métodos como PHP puro (`$componente->getSessionsProperty()`/
+  `app()->call([$componente, 'logoutOtherBrowserSessions'])`) pros
+  cenários que precisam de `session.driver=database` de verdade —
+  usando um helper (`estabelecerSessaoAtual()`) que gera um ID de
+  sessão válido (`Str::random(40)`, precisa ser 40 alfanumérico —
+  `Session\Store::isValidId()` descarta qualquer outro formato e gera
+  um novo sozinho), inicia o driver de sessão real e vincula um
+  `Request` com essa sessão no container ANTES de qualquer chamada —
+  nunca via HTTP/Livewire::test(), que trocaria esse binding por baixo
+  dos panos. Regra geral pro projeto: testar qualquer componente
+  Livewire de CLASSE (Jetstream-style) que dependa de `request()->
+  session()` com `session.driver=database` real exige essa técnica,
+  nunca `Livewire::test()`.
+- **Segundo achado de teste — chamadas HTTP sequenciais não
+  compartilham sessão**: `$this->get()` não repropaga o cookie de
+  sessão de uma resposta pra a chamada seguinte automaticamente
+  (`MakesHttpRequests::call()` nunca lê `Set-Cookie` da resposta
+  anterior) — uma 2ª chamada sem `withCookie(config('session.cookie'),
+  $sessionIdConhecido)` abre uma sessão NOVA e diferente, fazendo a
+  linha que acabamos de arrumar na 1ª chamada nunca aparecer como "a
+  atual" na 2ª. `withCookie()` + o `CookieValuePrefix` automático de
+  `prepareCookiesForRequest()` resolve isso (mesmo mecanismo que
+  `EncryptCookies` já sabe decifrar).
+- **Segurança preservada, sem alteração**: nenhuma sessão de outro
+  usuário/tenant é exposta ou tocada; `session_id`/token nunca aparecem
+  no HTML renderizado; logout de outras sessões continua exigindo senha
+  correta e só afeta sessões do MESMO usuário autenticado.
+- Testes: `tests/Feature/LogoutOtherBrowserSessionsFormTest.php` (7
+  testes) — causa raiz isolada contra `Laravel\Jetstream\Agent` puro
+  (documenta o bug do vendor, permanece vermelho por design);
+  `App\Support\Agent` nunca quebra em chamadas repetidas; `/profile`
+  renderiza com sessão atual + outra normal + UA nulo + UA malformado,
+  sem o erro; componente resolve platform/browser corretamente por
+  sessão; logout de outras sessões funcional e isolado por usuário
+  (senha errada não desloga nada, senha certa desloga só as OUTRAS do
+  MESMO usuário, outro usuário intocado); nunca expõe `session_id`/
+  payload no HTML; sessão de outro tenant nunca aparece. Regressão:
+  `ProfileTest`/`ProfileInformationTest`/`AuthenticationTest`/
+  `PasswordConfirmationTest`/`EmailVerificationTest`/
+  `TwoFactorAuthenticationSettingsTest`/`DeleteAccountTest` (31 testes)
+  + `AcessoPrivilegiadoObraTest`/`Admin\GestaoUsuariosTest`/
+  `Admin\ImpersonationTest` (18 testes) sem nenhuma regressão.
 
 ## Como trabalhar neste repositório
 

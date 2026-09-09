@@ -828,7 +828,8 @@ new class extends Component {
                 <div class="flex-grow-1">
                     <div class="d-flex align-items-center gap-2 mb-1">
                         <h6 class="mb-0 fw-bold">{{ $lb->nome }}</h6>
-                        <span class="badge bg-label-primary">
+                        <span class="badge bg-label-primary"
+                              title="{{ $lb->importacao?->data_status ? 'Data de status do cronograma (informada no arquivo importado)' : 'Sem data de status no arquivo — exibindo a data da importação' }}">
                             <i class="bx bx-calendar me-1"></i>
                             {{ $lb->importacao?->data_status?->format('d/m/Y') ?? $lb->importacao?->importado_em?->format('d/m/Y') }}
                         </span>

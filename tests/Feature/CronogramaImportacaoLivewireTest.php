@@ -56,6 +56,31 @@ class CronogramaImportacaoLivewireTest extends TestCase
         $this->assertEquals(2, Atividade::where('obra_id', $this->obra->id)->count());
     }
 
+    /**
+     * Objetivo 3 da auditoria de jornada inicial (2026-09-07): o alerta de
+     * sucesso pós-importação só oferecia "Ver curvas de avanço →" — o
+     * usuário podia sair da tela achando que já tinha uma Linha de Base
+     * salva, sem perceber que precisa ir criá-la explicitamente em
+     * Linhas de Base. Correção mínima: adiciona um 2º link contextual
+     * apontando pra lá, sem alterar o link/fluxo já existente.
+     */
+    public function test_sucesso_da_importacao_oferece_cta_para_salvar_linha_de_base(): void
+    {
+        $component = Livewire::test('pages::radar.cronograma', ['obra' => $this->obra])
+            ->set('arquivoTemp', $this->arquivoFixture('cronograma_sample.xml'))
+            ->call('analisar')
+            ->call('confirmar');
+
+        $component
+            ->assertSee('Salvar como Linha de Base')
+            ->assertSee('Ver curvas de avanço');
+
+        $this->assertStringContainsString(
+            route('radar.linhas-base'),
+            $component->html()
+        );
+    }
+
     public function test_historico_de_importacoes_mostra_a_importacao_com_health_check_carregado(): void
     {
         // Fase 3, Etapa 5: historicoImportacoes() foi simplificado pra usar

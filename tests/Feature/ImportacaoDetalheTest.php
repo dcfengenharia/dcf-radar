@@ -80,6 +80,25 @@ class ImportacaoDetalheTest extends TestCase
             ->assertSee((string) $score->potencialRecuperavel);
     }
 
+    /**
+     * Objetivo 4 da auditoria de jornada inicial (2026-09-07): um usuário
+     * viu "Score 98 · Excelente · Cobertura 100%" com centenas de
+     * ocorrências Médio/Baixo e achou os números incoerentes. A
+     * investigação confirmou que a fórmula está correta (impacto de cada
+     * finding é proporcional ao total de atividades do cronograma —
+     * ver ScoreCalculatorTest) e que "Cobertura" nunca mediu ausência de
+     * problemas. A única lacuna real era comunicação: o rótulo "Cobertura
+     * da análise" não deixava essa distinção explícita. Correção mínima:
+     * tooltip no próprio rótulo, sem alterar nenhum cálculo.
+     */
+    public function test_rotulo_de_cobertura_explica_que_nao_mede_ausencia_de_problemas(): void
+    {
+        $importacao = $this->importarComScore();
+
+        Livewire::test('pages::radar.importacao-detalhe', ['importacao' => $importacao])
+            ->assertSeeHtml('não mede ausência de problemas');
+    }
+
     public function test_detalhe_mostra_cabecalho_com_identificacao_completa_da_importacao(): void
     {
         $importacao = $this->importarComScore();

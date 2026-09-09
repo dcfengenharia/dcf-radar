@@ -428,4 +428,32 @@ class LinhasBasePageTest extends TestCase
         $this->componente()->call('exportarAtividadesPdf')->assertFileDownloaded();
         $this->componente()->call('exportarAtividadesExcel')->assertFileDownloaded();
     }
+
+    /**
+     * Objetivo 2 da auditoria de jornada inicial (2026-09-07): o badge de
+     * data no card da Linha de Base não tinha nenhum rótulo — o usuário
+     * via "02/08/2026" sem saber se era a data de status do MS Project ou
+     * a data em que a importação foi processada. Confirmado por fresh-read
+     * que os dois campos (data_status/importado_em) são semanticamente
+     * corretos e distintos (ver CronogramaImportacao::$data_status vs.
+     * $importado_em) — a única lacuna real era a ausência de rótulo nesse
+     * ponto específico da UI (⚡importacao-detalhe.blade.php já rotula
+     * "Data de status" corretamente). Correção mínima: tooltip
+     * reaproveitando o termo já estabelecido, sem alterar nenhuma data
+     * exibida nem a regra de fallback.
+     */
+    public function test_badge_de_data_da_linha_de_base_tem_tooltip_explicando_data_de_status(): void
+    {
+        $this->importacao->update(['data_status' => now()->subDays(3)]);
+
+        $this->componente()
+            ->assertSeeHtml('Data de status do cronograma');
+    }
+
+    public function test_badge_de_data_sem_data_de_status_explica_o_fallback_para_importado_em(): void
+    {
+        // setUp() já cria $this->importacao sem data_status preenchida.
+        $this->componente()
+            ->assertSeeHtml('Sem data de status no arquivo');
+    }
 }

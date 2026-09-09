@@ -100,10 +100,11 @@ $containerNav = ($configData['contentLayout'] === 'compact') ? 'container-xxl' :
       @auth
       <button type="button"
               onclick="Livewire.dispatch('abrir-suporte', { url: window.location.href })"
-              class="btn btn-label-warning d-flex align-items-center me-3 border-0"
+              class="btn btn-label-warning d-flex align-items-center me-2 border-0"
               title="Sistema em fase de testes — clique para enviar feedback">
-        <i class="bx bx-flask me-2 fs-5"></i>
-        <span class="fw-semibold d-none d-md-inline-block small">Sistema em testes</span>
+        <span class="d-none d-md-inline-block small">
+          🚨 <span class="fw-semibold">ESTAMOS EM FASE DE TESTES</span>. Quaisquer sugestões ou problemas, por favor, nos envie um feedback!
+        </span>
       </button>
       @endauth
 
