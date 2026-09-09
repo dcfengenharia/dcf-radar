@@ -4,20 +4,42 @@ use Livewire\Component;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Url;
 use App\Actions\Atividade\MarcarNaoConcluido;
+use App\Actions\Estoque\AtualizarNecessidadeMaterialAtividade;
+use App\Actions\Estoque\CriarMaterial;
+use App\Actions\Estoque\CriarReservaEstoque;
 use App\Actions\ProgramacaoSemanal\FecharProgramacaoSemanal;
 use App\Actions\ProgramacaoSemanal\RegistrarComprometimentoSemanal;
 use App\Enums\GranularidadePeriodo;
+use App\Enums\ModoRastreabilidadeMaterial;
+use App\Enums\OrigemCadastroMaterial;
+use App\Enums\OrigemNecessidadeMaterialAtividade;
 use App\Enums\OrigemProgramacaoSemanalItem;
 use App\Enums\SerieAvanco;
 use App\Enums\StatusAtividade;
+use App\Enums\StatusRestricao;
+use App\Enums\TipoLocalEstoque;
+use App\Exceptions\NecessidadeMaterialAtividadeInvalidaException;
+use App\Exceptions\ReservaEstoqueInvalidaException;
+use App\Exceptions\SaldoFisicoInsuficienteException;
+use App\Exceptions\SaldoNecessidadeInsuficienteException;
 use App\Exports\PlanoSemanalExport;
 use App\Models\Atividade;
+use App\Models\AtividadeItemProntidao;
+use App\Models\AtividadeNecessidadeMaterial;
 use App\Models\AvancoPeriodo;
+use App\Models\CategoriaRestricao;
+use App\Models\DocumentoEngenharia;
 use App\Models\Entregavel;
 use App\Models\EquipeResponsavel;
 use App\Models\Etapa;
+use App\Models\FamiliaMaterial;
 use App\Models\FrenteTrabalho;
+use App\Models\ItemProntidao;
+use App\Models\ItemSuprimento;
+use App\Models\ItemTakeOff;
 use App\Models\LinhaBase;
+use App\Models\LocalEstoque;
+use App\Models\Material;
 use App\Models\PacoteTrabalho;
 use App\Models\Personalizado1;
 use App\Models\Personalizado2;
@@ -26,13 +48,18 @@ use App\Models\Personalizado4;
 use App\Models\Personalizado5;
 use App\Models\ProgramacaoSemanal;
 use App\Models\ProgramacaoSemanalItem;
+use App\Models\Restricao;
+use App\Models\UnidadeMedida;
 use App\Models\Work;
 use App\Services\CurvaAvanco;
 use App\Support\Concerns\ExecutaComTransacaoSegura;
+use App\Support\Estoque\CoberturaNecessidadeAtividadeQuery;
+use App\Support\Estoque\ConciliacaoNecessidadeAtividade;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -72,6 +99,76 @@ new class extends Component {
     public ?string $personalizado4IdFiltro = null;
     public ?string $personalizado5IdFiltro = null;
     public bool $ocultarConcluidas = false;
+
+    // Filtro por liberação — reaproveita EXATAMENTE a mesma fonte que o KPI
+    // "Atividades Liberadas" e a coluna Liberação já usam (idsProntas(),
+    // que delega 100% pra Atividade::scopeProntas()) — nunca uma segunda
+    // definição no Blade. Filtro só de EXIBIÇÃO (aplicado em
+    // arvoreAtividades(), mesmo tratamento de ocultarConcluidas) —
+    // deliberadamente fora de queryAtividadesPeriodo() pra nunca alterar
+    // PPC/HH/cards de período, que continuam refletindo o período inteiro.
+    public string $liberacaoFiltro = 'todas'; // 'todas' | 'liberadas' | 'bloqueadas'
+
+    // Popup "Liberação para Programação" — aberto ao clicar no nome da
+    // atividade. Carrega sob demanda (ver atividadeDetalhePlano()), nunca
+    // eager-load em lote pra todas as linhas da tabela.
+    public ?string $atividadeDetalheId = null;
+
+    // Modal "Dar baixa" numa restrição — mesmo padrão de campo/nome já
+    // usado em ⚡lookahead.blade.php, pra não inventar uma segunda
+    // convenção de UI pro mesmo fluxo.
+    public ?string $baixandoRestricaoId = null;
+    public ?string $dataBaixaNova = null;
+    public string $textoBaixaNova = '';
+
+    // Modal "Nova Restrição" — mesmos campos/nomes de ⚡lookahead.blade.php.
+    public bool $modalRestricaoAberto = false;
+    public ?string $atividadeIdRestricao = null;
+    public string $descricaoNova = '';
+    public bool $blocanteNova = true;
+    public ?string $prazolimiteNova = null;
+    public ?int $probabilidadeNova = null;
+    public ?int $impactoNova = null;
+    public ?string $categoriaIdNova = null;
+    public ?string $responsavelIdNova = null;
+    public string $responsavelExternoNova = '';
+    public bool $responsavelExterno = false;
+
+    // Melhoria "Posto Operacional" — Documentos de Engenharia no popup
+    // (Seção 12): vincular reaproveita a MESMA relação N:N e o MESMO
+    // padrão inline (busca + botão, sem modal) já usado em
+    // ⚡documentos-engenharia.blade.php::atividadesParaVincular().
+    public string $buscaDocumentoVincular = '';
+
+    // Melhoria "Posto Operacional" — Materiais para Execução (Seção 13).
+    public bool $modalNecessidadeAberto = false;
+    public ?string $necessidadeEditandoId = null;
+    public string $origemNovaNecessidade = 'take_off'; // 'take_off' | 'operacional'
+    public ?string $itemTakeOffIdNovaNecessidade = null;
+    public ?string $materialIdNovaNecessidade = null;
+    public ?float $quantidadeNovaNecessidade = null;
+    public string $observacaoNovaNecessidade = '';
+    public string $buscaItemTakeOffNecessidade = '';
+    public string $buscaMaterialNecessidade = '';
+
+    // Melhoria "Posto Operacional" — criação inline de Material Mestre,
+    // sem sair do popup, só disponível pra origem=operacional (nunca
+    // pra origem=take_off — o Material dessa origem é sempre derivado
+    // do ItemTakeOff, nunca criado aqui). Proveniência sempre gravada
+    // como OrigemCadastroMaterial::PlanoSemanal, nunca confundida com
+    // Engenharia/TakeOff.
+    public bool $modalNovoMaterialAberto = false;
+    public string $novoMaterialCodigo = '';
+    public string $novoMaterialDescricao = '';
+    public ?string $novoMaterialUnidadeMedidaId = null;
+    public ?string $novoMaterialFamiliaId = null;
+    public string $novoMaterialModoRastreabilidade = 'quantitativo';
+
+    // Melhoria "Posto Operacional" — "Reservar agora" (Seção 7/13).
+    public ?string $necessidadeReservandoId = null;
+    public ?string $pacoteIdReserva = null;
+    public ?string $localIdReserva = null;
+    public ?float $quantidadeReserva = null;
 
     // Fonte das datas usadas pra decidir QUAIS atividades caem dentro da
     // semana visualizada (queryAtividadesPeriodo) — 'tendencia' (padrão,
@@ -412,6 +509,891 @@ new class extends Component {
         return $this->queryAtividadesPeriodo()->prontas()->pluck('id');
     }
 
+    // =========================================================================
+    // MELHORIA — Popup "Liberação para Programação" (auditoria de
+    // Atividade::scopeProntas()/estaPronta(), a ÚNICA definição de
+    // liberado/bloqueado do projeto — ver CLAUDE.md). Reaproveita as MESMAS
+    // fontes de referência/queries já usadas pelo popup do Lookahead
+    // (⚡lookahead.blade.php), inclusive as mesmas chaves de cache — nunca
+    // uma segunda definição de prontidão/liberação em paralelo.
+    // =========================================================================
+
+    #[Computed]
+    public function categorias()
+    {
+        return Cache::remember(
+            "tenant_{$this->obra->tenant_id}_categorias",
+            300,
+            fn () => CategoriaRestricao::orderBy('nome')->get(['id', 'nome', 'pilar_lean'])
+        );
+    }
+
+    #[Computed]
+    public function usuariosDaObra()
+    {
+        return Cache::remember(
+            "obra_{$this->obra->id}_usuarios",
+            90,
+            fn () => $this->obra
+                ->users()
+                ->orderBy('users.first_name')
+                ->get(['users.id', 'users.first_name', 'users.last_name'])
+        );
+    }
+
+    #[Computed]
+    public function itensProntidao()
+    {
+        return Cache::remember(
+            "obra_{$this->obra->id}_itens_prontidao",
+            90,
+            fn () => ItemProntidao::where('obra_id', $this->obra->id)
+                ->orderBy('ordem')
+                ->get()
+        );
+    }
+
+    public function verAtividadeDetalhe(string $atividadeId): void
+    {
+        $this->atividadeDetalheId = $atividadeId;
+    }
+
+    public function fecharAtividadeDetalhe(): void
+    {
+        $this->atividadeDetalheId = null;
+    }
+
+    /**
+     * Diagnóstico "por que posso ou não posso programar esta atividade?" —
+     * carregado SOB DEMANDA (só quando o popup está aberto, nunca em lote
+     * pra todas as linhas da tabela — item 10 do pedido). Mesmo formato de
+     * `⚡lookahead.blade.php::atividadeDetalhe()` (restrições+categoria+
+     * responsável+checklist+documentos bloqueantes), deliberadamente sem a
+     * Curva S/lições/comentários/anexos daquele popup — este é um popup
+     * NOVO e mais enxuto, focado só na pergunta de liberação (escopo
+     * mínimo pedido). Guarda cross-obra: `where('obra_id', $this->obra->id)`
+     * garante que um ID manipulado de outra obra do mesmo tenant nunca
+     * resolve nada aqui.
+     */
+    #[Computed]
+    public function atividadeDetalhePlano(): ?array
+    {
+        if (! $this->atividadeDetalheId) {
+            return null;
+        }
+
+        $at = Atividade::with([
+            'restricoes' => fn ($q) => $q
+                ->with(['categoria:id,nome', 'responsavel:id,first_name,last_name', 'atividade:id,obra_id'])
+                ->orderByRaw("FIELD(status,'aberta','em_tratamento','aguardando_terceiros','resolvida')"),
+            'frenteTrabalho:id,nome',
+            'disciplina:id,nome',
+            // Mesma fonte canônica de Atividade::scopeProntas() (Ciclo 18,
+            // 18.4.CORREÇÃO) — nunca uma leitura paralela de GED.
+            'documentosEngenharia.latestRevisao.ultimaLiberacao',
+            'documentosEngenharia.latestRevisao.statusDocumento',
+        ])->where('obra_id', $this->obra->id)->find($this->atividadeDetalheId);
+
+        if (! $at) {
+            return null;
+        }
+
+        $itens = $this->itensProntidao;
+        $registros = $itens->isNotEmpty()
+            ? AtividadeItemProntidao::where('atividade_id', $at->id)
+                ->with('conclusor:id,first_name,last_name')
+                ->get()
+                ->keyBy('item_prontidao_id')
+            : collect();
+
+        $documentosDaObra = $at->documentosEngenharia->filter(fn ($documento) => $documento->obra_id === $at->obra_id);
+
+        $documentosBloqueantes = $documentosDaObra
+            ->reject(fn ($documento) => $documento->estaLiberadoParaConstrucao())
+            ->map(fn ($documento) => [
+                'codigo' => $documento->codigo,
+                'revisaoVigente' => $documento->revisaoVigente()?->revisao,
+                'motivo' => $documento->motivoLiberacao(),
+            ])
+            ->values();
+
+        // Melhoria "Posto Operacional" — lista completa (liberados E não
+        // liberados) pra seção "Documentos de Engenharia" do popup, nunca
+        // só os bloqueantes (que já servem só pro resumo/badge).
+        $documentosPopup = $documentosDaObra
+            ->map(fn ($documento) => [
+                'id' => $documento->id,
+                'codigo' => $documento->codigo,
+                'descricao' => $documento->descricao,
+                'revisaoVigente' => $documento->revisaoVigente()?->revisao,
+                'liberado' => $documento->estaLiberadoParaConstrucao(),
+                'motivo' => $documento->motivoLiberacao(),
+            ])
+            ->values();
+
+        return [
+            'atividade' => $at,
+            'checklist' => $itens->map(fn ($item) => [
+                'id' => $item->id,
+                'nome' => $item->nome,
+                'concluido' => (bool) ($registros->get($item->id)?->concluido ?? false),
+                'concluido_por' => $registros->get($item->id)?->conclusor,
+                'concluido_em' => $registros->get($item->id)?->concluido_em,
+            ]),
+            'documentosBloqueantes' => $documentosBloqueantes,
+            'documentos' => $documentosPopup,
+            'documentosVinculadosIds' => $documentosDaObra->pluck('id'),
+        ];
+    }
+
+    // =========================================================================
+    // MELHORIA "POSTO OPERACIONAL" — % PREVISTO NO PERÍODO (Seção 11)
+    // =========================================================================
+
+    /**
+     * "% previsto no período" = INCREMENTO dentro da semana selecionada
+     * (não o acumulado até o fim dela) — fórmula já autoritativa,
+     * reaproveitada sem invenção: `CurvaAvanco::calcular()` já retorna
+     * `percentual_periodo` (HH deste período ÷ HH TOTAL da atividade, na
+     * série phased real) por ponto — matematicamente idêntico a
+     * `acumulado[fim da semana] - acumulado[fim da semana anterior]`,
+     * porque `acumuladoExibido` já é uma soma corrida. Nunca distribui
+     * linearmente (o dado phased de `avanco_periodos` já é semanal de
+     * origem, Ciclo 13). Mesma Linha de Base já selecionada na página
+     * ($this->linhaBaseId, "Referência de HH total") — nunca uma segunda
+     * seleção só pro popup.
+     */
+    #[Computed]
+    public function percentualPrevistoPeriodoPopup(): ?array
+    {
+        $detalhe = $this->atividadeDetalhePlano;
+        if (! $detalhe) {
+            return null;
+        }
+
+        $atividadeId = $detalhe['atividade']->id;
+
+        $pontosPrevisto = app(CurvaAvanco::class)->calcular(
+            $this->obra,
+            SerieAvanco::Previsto,
+            GranularidadePeriodo::Semanal,
+            linhaBaseId: $this->linhaBaseId,
+            atividadeId: $atividadeId,
+        );
+        $pontoDaSemana = collect($pontosPrevisto)->firstWhere('periodo_inicio', $this->semanaInicio);
+
+        // Realizado acumulado — mesma resolução "mais recente" já usada
+        // em toda a página (nunca um seletor próprio pro popup, Seção 5
+        // do pedido original: "mostrar quando barato e consistente").
+        $pontosRealizado = app(CurvaAvanco::class)->calcular(
+            $this->obra,
+            SerieAvanco::Realizado,
+            GranularidadePeriodo::Semanal,
+            atividadeId: $atividadeId,
+        );
+        $ultimoRealizado = collect($pontosRealizado)->last();
+
+        return [
+            'percentual_previsto_periodo' => $pontoDaSemana['percentual_periodo'] ?? null,
+            'percentual_previsto_acumulado' => $pontoDaSemana['percentual'] ?? null,
+            'percentual_realizado_acumulado' => $ultimoRealizado['percentual'] ?? null,
+            'tem_previsto' => ! empty($pontosPrevisto),
+            'tem_realizado' => ! empty($pontosRealizado),
+        ];
+    }
+
+    /**
+     * Toggle de item de prontidão — mirror exato de
+     * `⚡lookahead.blade.php::marcarItemNaDetalhe()` (mesma ausência de
+     * `authorize()` explícito: a mesma superfície de segurança já aceita
+     * no Lookahead pra esta ação, nunca uma restrição nova inventada aqui).
+     */
+    public function marcarItemNaDetalhe(string $atividadeId, string $itemId, bool $valor): void
+    {
+        $this->transacaoSegura(function () use ($atividadeId, $itemId, $valor) {
+            AtividadeItemProntidao::updateOrCreate(
+                ['atividade_id' => $atividadeId, 'item_prontidao_id' => $itemId],
+                ['concluido' => $valor, 'concluido_por' => $valor ? Auth::id() : null, 'concluido_em' => $valor ? now() : null]
+            );
+        });
+
+        $this->invalidarComputeds();
+    }
+
+    // =========================================================================
+    // MELHORIA "POSTO OPERACIONAL" — DOCUMENTOS DE ENGENHARIA (Seção 12)
+    // Reaproveita 100% a mesma relação N:N e o mesmo padrão inline
+    // (busca + botão, sem modal) já usado em
+    // ⚡documentos-engenharia.blade.php::atividadesParaVincular()/
+    // vincularAtividade()/desvincularAtividade() — só invertendo o lado
+    // (aqui parte-se da Atividade, lá parte-se do Documento). MESMA
+    // Policy (`engenharia.pacotes`), nunca uma nova/mais permissiva
+    // inventada só pra este popup.
+    // =========================================================================
+
+    private function garantirPermissaoEngenharia(string $acao): void
+    {
+        abort_unless(Auth::user()?->temPermissaoNaObra($this->obra->id, 'engenharia.pacotes', $acao), 403);
+    }
+
+    #[Computed]
+    public function documentosDisponiveisParaVincular(): Collection
+    {
+        $detalhe = $this->atividadeDetalhePlano;
+        if (! $detalhe) {
+            return collect();
+        }
+
+        $jaVinculadosIds = $detalhe['documentosVinculadosIds'];
+        $busca = $this->buscaDocumentoVincular;
+
+        return DocumentoEngenharia::where('obra_id', $this->obra->id)
+            ->whereNotIn('id', $jaVinculadosIds->isEmpty() ? ['__nenhum__'] : $jaVinculadosIds)
+            ->when($busca !== '', fn ($q) => $q->where(function ($sub) use ($busca) {
+                $sub->where('codigo', 'like', "%{$busca}%")
+                    ->orWhere('descricao', 'like', "%{$busca}%");
+            }))
+            ->orderBy('codigo')
+            ->limit(20)
+            ->get(['id', 'codigo', 'descricao']);
+    }
+
+    public function updatedBuscaDocumentoVincular(): void
+    {
+        unset($this->documentosDisponiveisParaVincular);
+    }
+
+    public function vincularDocumento(string $documentoId): void
+    {
+        $this->garantirPermissaoEngenharia('editar');
+
+        $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($this->atividadeDetalheId);
+        $documento = DocumentoEngenharia::where('obra_id', $this->obra->id)->findOrFail($documentoId);
+
+        $jaVinculado = $atividade->documentosEngenharia()->where('documento_engenharia_id', $documento->id)->exists();
+        if (! $jaVinculado) {
+            abort_if($documento->trashed(), 403, 'Este Documento está arquivado e não pode ser vinculado.');
+        }
+
+        $this->transacaoSegura(function () use ($atividade, $documento) {
+            // syncWithoutDetaching é idempotente (mesmo idioma de
+            // ⚡documentos-engenharia.blade.php) — nunca duplica linha
+            // no pivô num duplo-clique.
+            $atividade->documentosEngenharia()->syncWithoutDetaching([$documento->id]);
+        });
+
+        if ($this->transacaoSeguraFalhou()) {
+            return;
+        }
+
+        $this->buscaDocumentoVincular = '';
+        $this->invalidarComputeds();
+        $this->dispatch('show-toast', message: 'Documento vinculado.');
+    }
+
+    /**
+     * Confirmação explícita (via confirmarAcao() no Blade, mesmo
+     * componente genérico já usado em toda a árvore GED) SEMPRE exigida
+     * antes de chamar este método — mesmo padrão do botão irmão em
+     * ⚡documentos-engenharia.blade.php, nunca condicional a "só quando
+     * isso libera a atividade" (o estado sempre é recalculado e exibido
+     * imediatamente pelo re-render do popup, então a confirmação
+     * uniforme já cobre o item 12 do pedido sem lógica nova).
+     */
+    public function desvincularDocumento(string $documentoId): void
+    {
+        $this->garantirPermissaoEngenharia('editar');
+
+        $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($this->atividadeDetalheId);
+        $documento = DocumentoEngenharia::where('obra_id', $this->obra->id)->findOrFail($documentoId);
+
+        abort_unless(
+            $atividade->documentosEngenharia()->where('documento_engenharia_id', $documento->id)->exists(),
+            404
+        );
+
+        $this->transacaoSegura(function () use ($atividade, $documento) {
+            $atividade->documentosEngenharia()->detach($documento->id);
+        });
+
+        if ($this->transacaoSeguraFalhou()) {
+            return;
+        }
+
+        $this->invalidarComputeds();
+        $this->dispatch('show-toast', message: 'Documento desvinculado.');
+    }
+
+    // =========================================================================
+    // MELHORIA "POSTO OPERACIONAL" — MATERIAIS PARA EXECUÇÃO (Seções 6/7/9/13/14)
+    // AtividadeNecessidadeMaterial é a fonte autoritativa desta pergunta
+    // (arquitetura B híbrida aprovada) — NUNCA participa da cadeia
+    // TakeOff→RP→Pacote→RC/Pedido→Recebimento, que continua intocada.
+    // Único ponto de escrita: App\Actions\Estoque\
+    // AtualizarNecessidadeMaterialAtividade — nunca create()/update()
+    // direto no model aqui.
+    // =========================================================================
+
+    /**
+     * Cobertura por linha de necessidade — classe única fora do Blade
+     * (Seção 9), nunca uma segunda fórmula aqui. Sob demanda (só quando
+     * o popup está aberto), nunca em lote pra todas as atividades da
+     * árvore (Seção 15 — performance).
+     */
+    #[Computed]
+    public function coberturaMateriaisPopup(): Collection
+    {
+        $detalhe = $this->atividadeDetalhePlano;
+        if (! $detalhe) {
+            return collect();
+        }
+
+        return CoberturaNecessidadeAtividadeQuery::porAtividade($detalhe['atividade']);
+    }
+
+    /** Pacotes de Compra já vinculados a esta Atividade (item_suprimento_atividades) — únicos elegíveis pra "Reservar agora" (CriarReservaEstoque exige um Pacote). */
+    #[Computed]
+    public function pacotesDaAtividadePopup(): Collection
+    {
+        $detalhe = $this->atividadeDetalhePlano;
+        if (! $detalhe) {
+            return collect();
+        }
+
+        return $detalhe['atividade']->itensSuprimento()->orderBy('nome')->get(['itens_suprimento.id', 'itens_suprimento.nome', 'itens_suprimento.codigo']);
+    }
+
+    #[Computed]
+    public function locaisParaReserva(): Collection
+    {
+        return LocalEstoque::where('obra_id', $this->obra->id)
+            ->where('ativo', true)
+            ->where('tipo', '!=', TipoLocalEstoque::Terceiro->value)
+            ->orderBy('nome')
+            ->get(['id', 'nome']);
+    }
+
+    #[Computed]
+    public function itensTakeOffParaNecessidade(): Collection
+    {
+        $busca = $this->buscaItemTakeOffNecessidade;
+        if ($busca === '' || strlen($busca) < 2) {
+            return collect();
+        }
+
+        return ItemTakeOff::whereHas('lista.revisao.documento', fn ($q) => $q->where('obra_id', $this->obra->id))
+            ->where(function ($q) use ($busca) {
+                $q->where('codigo', 'like', "%{$busca}%")
+                    ->orWhere('descricao', 'like', "%{$busca}%");
+            })
+            ->orderBy('codigo')
+            ->limit(20)
+            ->get(['id', 'codigo', 'descricao', 'quantidade']);
+    }
+
+    public function updatedBuscaItemTakeOffNecessidade(): void
+    {
+        unset($this->itensTakeOffParaNecessidade);
+    }
+
+    /** Saldo/já-distribuído do ItemTakeOff selecionado — mostrado ANTES de salvar (Seção 14). */
+    #[Computed]
+    public function saldoItemTakeOffSelecionado(): ?array
+    {
+        if (! $this->itemTakeOffIdNovaNecessidade) {
+            return null;
+        }
+
+        $item = ItemTakeOff::find($this->itemTakeOffIdNovaNecessidade);
+        if (! $item) {
+            return null;
+        }
+
+        return [
+            'quantidade_take_off' => (float) $item->quantidade,
+            'distribuido' => ConciliacaoNecessidadeAtividade::quantidadeDistribuida($item->id, $this->necessidadeEditandoId),
+            'saldo' => ConciliacaoNecessidadeAtividade::saldoADistribuir($item, $this->necessidadeEditandoId),
+        ];
+    }
+
+    #[Computed]
+    public function materiaisParaNecessidade(): Collection
+    {
+        $busca = $this->buscaMaterialNecessidade;
+        if ($busca === '' || strlen($busca) < 2) {
+            return collect();
+        }
+
+        return Material::where('ativo', true)
+            ->where(function ($q) use ($busca) {
+                $q->where('codigo', 'like', "%{$busca}%")
+                    ->orWhere('descricao', 'like', "%{$busca}%");
+            })
+            ->orderBy('codigo')
+            ->limit(20)
+            ->get(['id', 'codigo', 'descricao']);
+    }
+
+    public function updatedBuscaMaterialNecessidade(): void
+    {
+        unset($this->materiaisParaNecessidade);
+    }
+
+    // =========================================================================
+    // MELHORIA "POSTO OPERACIONAL" — CRIAÇÃO INLINE DE MATERIAL MESTRE
+    // (fechamento técnico, rodada de proveniência). Só disponível pra
+    // origem=operacional (Seção 4 do pedido: origem=take_off nunca
+    // oferece isso — o Material dessa origem é sempre derivado do
+    // ItemTakeOff via App\Actions\Estoque\AssociarMaterialAoItemTakeOff,
+    // um fluxo/domínio inteiramente separado, com suas próprias regras
+    // de imutabilidade). Reaproveita a MESMA Action
+    // (App\Actions\Estoque\CriarMaterial) e as MESMAS regras de
+    // validação já usadas por ⚡estoque.blade.php::salvarMaterial() —
+    // nunca uma segunda versão simplificada do cadastro.
+    // =========================================================================
+
+    #[Computed]
+    public function unidadesMedidaParaNovoMaterial(): Collection
+    {
+        return UnidadeMedida::where('ativo', true)->orderBy('codigo')->get();
+    }
+
+    #[Computed]
+    public function familiasMaterialParaNovoMaterial(): Collection
+    {
+        return FamiliaMaterial::where('ativo', true)->orderBy('nome')->get();
+    }
+
+    /**
+     * Mesma permissão que já autoriza criar Material na tela de Estoque
+     * (`estoque.movimentacao|criar`) — nunca uma permissão nova/mais
+     * permissiva inventada só pra esta entrada inline. Um usuário com
+     * `restricoes.plano_semanal|editar` (que já autoriza abrir o modal
+     * de necessidade) mas SEM esta outra permissão nunca vê a opção de
+     * criar Material — as duas concessões são independentes por design
+     * (Perfil/PerfilPermissao são customizáveis por tenant).
+     */
+    private function podeCriarMaterialInline(): bool
+    {
+        return (bool) Auth::user()?->temPermissaoNaObra($this->obra->id, 'estoque.movimentacao', 'criar');
+    }
+
+    public function abrirModalNovoMaterial(): void
+    {
+        $this->garantirPermissaoNecessidade();
+        abort_unless($this->podeCriarMaterialInline(), 403);
+
+        $this->novoMaterialCodigo = '';
+        // Pré-preenche a descrição com o texto já digitado na busca —
+        // o usuário normalmente só chega aqui depois de procurar e não
+        // encontrar, nunca deveria precisar redigitar o que já procurou.
+        $this->novoMaterialDescricao = $this->buscaMaterialNecessidade;
+        $this->novoMaterialUnidadeMedidaId = null;
+        $this->novoMaterialFamiliaId = null;
+        $this->novoMaterialModoRastreabilidade = ModoRastreabilidadeMaterial::Quantitativo->value;
+        $this->resetErrorBag();
+        $this->modalNovoMaterialAberto = true;
+    }
+
+    public function fecharModalNovoMaterial(): void
+    {
+        $this->modalNovoMaterialAberto = false;
+    }
+
+    /**
+     * Cria SÓ o Material Mestre — nunca a necessidade da atividade
+     * (Seção 8/9 do pedido: são duas operações distintas; cancelar a
+     * necessidade depois nunca apaga o Material já confirmado aqui).
+     * Material recém-criado fica automaticamente selecionado no modal
+     * de necessidade, que permanece aberto — sem reload, sem navegação.
+     */
+    public function salvarNovoMaterialInline(): void
+    {
+        $this->garantirPermissaoNecessidade();
+        abort_unless($this->podeCriarMaterialInline(), 403);
+
+        $this->validate([
+            'novoMaterialCodigo' => 'required|string|max:100',
+            'novoMaterialDescricao' => 'required|string|max:255',
+            'novoMaterialUnidadeMedidaId' => 'required|exists:unidades_medida,id',
+            'novoMaterialFamiliaId' => 'nullable|exists:familias_material,id',
+            'novoMaterialModoRastreabilidade' => 'required|in:' . implode(',', array_map(fn ($c) => $c->value, ModoRastreabilidadeMaterial::cases())),
+        ], [], [
+            'novoMaterialCodigo' => 'código',
+            'novoMaterialDescricao' => 'descrição',
+            'novoMaterialUnidadeMedidaId' => 'unidade de medida',
+            'novoMaterialFamiliaId' => 'família',
+        ]);
+
+        try {
+            $material = app(CriarMaterial::class)->execute(
+                $this->novoMaterialCodigo,
+                $this->novoMaterialDescricao,
+                $this->novoMaterialUnidadeMedidaId,
+                $this->novoMaterialFamiliaId,
+                $this->novoMaterialModoRastreabilidade,
+                OrigemCadastroMaterial::PlanoSemanal,
+            );
+        } catch (\Illuminate\Database\QueryException $e) {
+            if (($e->errorInfo[1] ?? null) === 1062) {
+                $this->addError('novoMaterialCodigo', 'Já existe um Material com este código no catálogo.');
+
+                return;
+            }
+
+            throw $e;
+        } catch (\App\Exceptions\MaterialInvalidoException $e) {
+            // Hardening (fechamento pós-relatório) — payload manipulado
+            // com unidade_medida_id/familia_material_id de outro tenant:
+            // a Action já rejeitou ANTES de qualquer escrita, nunca
+            // confiado só ao exists:.. do validate() acima.
+            $this->addError('novoMaterialUnidadeMedidaId', $e->getMessage());
+
+            return;
+        }
+
+        $this->materialIdNovaNecessidade = $material->id;
+        $this->buscaMaterialNecessidade = $material->codigo;
+        unset($this->materiaisParaNecessidade);
+
+        $this->modalNovoMaterialAberto = false;
+        $this->dispatch('show-toast', message: 'Material cadastrado e selecionado.');
+    }
+
+    private function resetModalNecessidade(): void
+    {
+        $this->necessidadeEditandoId = null;
+        $this->origemNovaNecessidade = 'take_off';
+        $this->itemTakeOffIdNovaNecessidade = null;
+        $this->materialIdNovaNecessidade = null;
+        $this->quantidadeNovaNecessidade = null;
+        $this->observacaoNovaNecessidade = '';
+        $this->buscaItemTakeOffNecessidade = '';
+        $this->buscaMaterialNecessidade = '';
+        $this->modalNovoMaterialAberto = false;
+        $this->resetErrorBag();
+    }
+
+    public function abrirModalNecessidade(): void
+    {
+        $this->garantirPermissaoNecessidade();
+        $this->resetModalNecessidade();
+        $this->modalNecessidadeAberto = true;
+    }
+
+    /**
+     * Nunca confia só em `AtividadeNecessidadeMaterial.atividade_id` cru
+     * (poderia apontar pra uma atividade de OUTRA obra do mesmo tenant,
+     * já que `$this->atividadeDetalheId` é propriedade pública Livewire e
+     * pode chegar manipulada) — sempre resolve a Atividade NA OBRA ATUAL
+     * primeiro, e só então a necessidade dentro dela.
+     */
+    private function resolverNecessidadeDaAtividadeAtual(string $necessidadeId): AtividadeNecessidadeMaterial
+    {
+        $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($this->atividadeDetalheId);
+
+        return AtividadeNecessidadeMaterial::where('atividade_id', $atividade->id)->findOrFail($necessidadeId);
+    }
+
+    /** Pré-carrega o formulário com a linha existente — identidade (origem/item/material) nunca é editável, só quantidade/observação. */
+    public function abrirEdicaoNecessidade(string $necessidadeId): void
+    {
+        $this->garantirPermissaoNecessidade();
+
+        $necessidade = $this->resolverNecessidadeDaAtividadeAtual($necessidadeId);
+
+        $this->resetModalNecessidade();
+        $this->necessidadeEditandoId = $necessidade->id;
+        $this->origemNovaNecessidade = $necessidade->origem->value;
+        $this->itemTakeOffIdNovaNecessidade = $necessidade->item_take_off_id;
+        $this->materialIdNovaNecessidade = $necessidade->material_id;
+        $this->quantidadeNovaNecessidade = (float) $necessidade->quantidade_necessaria;
+        $this->observacaoNovaNecessidade = $necessidade->observacao ?? '';
+        $this->modalNecessidadeAberto = true;
+    }
+
+    /**
+     * Melhoria "Posto Operacional" — reaproveita `restricoes.plano_semanal`
+     * (já `editar => Encarregado`, mesmo perfil que já comprometer/marca
+     * concluída nesta própria página) — nenhum slug novo criado só pra
+     * esta ação, decisão consciente de não inventar permissão sem
+     * necessidade concreta.
+     */
+    private function garantirPermissaoNecessidade(): void
+    {
+        abort_unless(Auth::user()?->temPermissaoNaObra($this->obra->id, 'restricoes.plano_semanal', 'editar'), 403);
+    }
+
+    public function salvarNecessidade(): void
+    {
+        $this->garantirPermissaoNecessidade();
+
+        $this->validate([
+            'quantidadeNovaNecessidade' => 'required|numeric|gt:0',
+        ], [], ['quantidadeNovaNecessidade' => 'quantidade']);
+
+        $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($this->atividadeDetalheId);
+        $action = app(AtualizarNecessidadeMaterialAtividade::class);
+
+        // Ação chamada DIRETO (nunca via transacaoSegura()) — mesmo padrão
+        // já estabelecido em ⚡estoque.blade.php::confirmarReserva() pra
+        // Actions que já fazem sua PRÓPRIA DB::transaction() internamente
+        // e lançam exceções de domínio específicas: transacaoSegura()
+        // captura QUALQUER \Throwable não-Authorization/Validation e o
+        // converteria num toast genérico, escondendo a mensagem
+        // específica (ex.: "saldo insuficiente") que o usuário precisa
+        // ver no campo certo do formulário.
+        try {
+            if ($this->necessidadeEditandoId) {
+                $necessidade = AtividadeNecessidadeMaterial::where('atividade_id', $atividade->id)->findOrFail($this->necessidadeEditandoId);
+                $action->alterar($necessidade, (float) $this->quantidadeNovaNecessidade, $this->observacaoNovaNecessidade ?: null);
+            } elseif ($this->origemNovaNecessidade === OrigemNecessidadeMaterialAtividade::TakeOff->value) {
+                $this->validate(['itemTakeOffIdNovaNecessidade' => 'required|exists:itens_take_off,id']);
+                $item = ItemTakeOff::findOrFail($this->itemTakeOffIdNovaNecessidade);
+                $action->criarTakeOff($atividade, $item, (float) $this->quantidadeNovaNecessidade, Auth::user(), $this->observacaoNovaNecessidade ?: null);
+            } else {
+                $this->validate([
+                    'materialIdNovaNecessidade' => 'required|exists:materiais,id',
+                    'observacaoNovaNecessidade' => 'required|string|min:5',
+                ], [], ['observacaoNovaNecessidade' => 'justificativa']);
+                $material = Material::findOrFail($this->materialIdNovaNecessidade);
+                $action->criarOperacional($atividade, $material, (float) $this->quantidadeNovaNecessidade, $this->observacaoNovaNecessidade, Auth::user());
+            }
+        } catch (NecessidadeMaterialAtividadeInvalidaException|SaldoNecessidadeInsuficienteException $e) {
+            $this->addError('quantidadeNovaNecessidade', $e->getMessage());
+
+            return;
+        }
+
+        $this->modalNecessidadeAberto = false;
+        $this->resetModalNecessidade();
+        $this->invalidarComputeds();
+        $this->dispatch('show-toast', message: 'Necessidade de material salva.');
+    }
+
+    public function removerNecessidade(string $necessidadeId): void
+    {
+        $this->garantirPermissaoNecessidade();
+
+        $necessidade = $this->resolverNecessidadeDaAtividadeAtual($necessidadeId);
+
+        try {
+            app(AtualizarNecessidadeMaterialAtividade::class)->remover($necessidade);
+        } catch (NecessidadeMaterialAtividadeInvalidaException $e) {
+            $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+
+            return;
+        }
+
+        $this->invalidarComputeds();
+        $this->dispatch('show-toast', message: 'Necessidade removida.');
+    }
+
+    // ---- "Reservar agora" (Seção 7) — nunca automático, sempre 1 clique humano explícito ----
+
+    public function abrirModalReservar(string $necessidadeId): void
+    {
+        $this->garantirPermissaoNecessidade();
+
+        $necessidade = $this->resolverNecessidadeDaAtividadeAtual($necessidadeId);
+        $cobertura = $this->coberturaMateriaisPopup->firstWhere('necessidade.id', $necessidade->id);
+
+        $this->necessidadeReservandoId = $necessidade->id;
+        $this->pacoteIdReserva = $this->pacotesDaAtividadePopup->first()?->id;
+        $this->localIdReserva = null;
+        $this->quantidadeReserva = $cobertura['faltante_para_reservar'] ?? null;
+        $this->resetErrorBag();
+    }
+
+    private function resetModalReservar(): void
+    {
+        $this->necessidadeReservandoId = null;
+        $this->pacoteIdReserva = null;
+        $this->localIdReserva = null;
+        $this->quantidadeReserva = null;
+        $this->resetErrorBag();
+    }
+
+    public function confirmarReserva(): void
+    {
+        $this->garantirPermissaoNecessidade();
+
+        $this->validate([
+            'pacoteIdReserva' => 'required|exists:itens_suprimento,id',
+            'localIdReserva' => 'required|exists:locais_estoque,id',
+            'quantidadeReserva' => 'required|numeric|gt:0',
+        ], [], [
+            'pacoteIdReserva' => 'Pacote de Compra',
+            'localIdReserva' => 'Local de Estoque',
+            'quantidadeReserva' => 'quantidade',
+        ]);
+
+        $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($this->atividadeDetalheId);
+        $necessidade = AtividadeNecessidadeMaterial::where('atividade_id', $atividade->id)->findOrFail($this->necessidadeReservandoId);
+        $pacote = ItemSuprimento::findOrFail($this->pacoteIdReserva);
+
+        // Nunca confia só na FK: o Pacote precisa ser um dos REALMENTE
+        // vinculados a esta atividade (item_suprimento_atividades) —
+        // CriarReservaEstoque já valida obra do Pacote x obra do Local,
+        // mas nunca sabe de "atividade", então essa checagem é só nossa.
+        abort_unless($atividade->itensSuprimento()->where('itens_suprimento.id', $pacote->id)->exists(), 403);
+
+        $local = LocalEstoque::where('obra_id', $this->obra->id)->findOrFail($this->localIdReserva);
+        $material = $necessidade->material();
+        abort_if(! $material, 404);
+
+        // Mesma disciplina de salvarNecessidade()/removerNecessidade():
+        // Action chamada direto (nunca via transacaoSegura()), que já faz
+        // sua própria DB::transaction() e lança exceções de domínio
+        // específicas que precisam chegar ao campo certo do formulário.
+        try {
+            app(CriarReservaEstoque::class)->execute(
+                $pacote,
+                $material,
+                $local,
+                (float) $this->quantidadeReserva,
+                usuario: Auth::user(),
+                necessidade: $necessidade,
+            );
+        } catch (ReservaEstoqueInvalidaException|SaldoFisicoInsuficienteException $e) {
+            $this->addError('quantidadeReserva', $e->getMessage());
+
+            return;
+        }
+
+        $this->resetModalReservar();
+        $this->invalidarComputeds();
+        $this->dispatch('show-toast', message: 'Material reservado para esta atividade.');
+    }
+
+    // =========================================================================
+    // MODAL: CRIAR RESTRIÇÃO (mesmos campos/fluxo/Policy de
+    // ⚡lookahead.blade.php — nunca uma segunda regra de criação)
+    // =========================================================================
+
+    public function abrirModalRestricao(string $atividadeId): void
+    {
+        $this->authorize('create', [Restricao::class, $this->obra->id]);
+        $this->resetModalRestricao();
+        $this->atividadeIdRestricao = $atividadeId;
+        $this->modalRestricaoAberto = true;
+    }
+
+    private function resetModalRestricao(): void
+    {
+        $this->atividadeIdRestricao = null;
+        $this->descricaoNova = '';
+        $this->blocanteNova = true;
+        $this->prazolimiteNova = null;
+        $this->probabilidadeNova = null;
+        $this->impactoNova = null;
+        $this->categoriaIdNova = null;
+        $this->responsavelIdNova = null;
+        $this->responsavelExternoNova = '';
+        $this->responsavelExterno = false;
+        $this->resetErrorBag();
+    }
+
+    public function salvarRestricao(): void
+    {
+        $this->authorize('create', [Restricao::class, $this->obra->id]);
+
+        $this->validate(
+            [
+                'atividadeIdRestricao' => 'required|string|exists:atividades,id',
+                'descricaoNova' => 'required|string|min:5',
+                'probabilidadeNova' => 'nullable|integer|min:0|max:10',
+                'impactoNova' => 'nullable|integer|min:0|max:10',
+                'prazolimiteNova' => 'nullable|date',
+                'categoriaIdNova' => 'nullable|exists:categorias_restricao,id',
+                'responsavelIdNova' => 'nullable|exists:users,id',
+            ],
+            [],
+            ['descricaoNova' => 'descrição']
+        );
+
+        $restricao = $this->transacaoSegura(fn () => Restricao::create([
+            'atividade_id' => $this->atividadeIdRestricao,
+            'descricao' => $this->descricaoNova,
+            'bloqueante' => $this->blocanteNova,
+            'probabilidade' => $this->probabilidadeNova,
+            'impacto' => $this->impactoNova,
+            'prazo_limite' => $this->prazolimiteNova,
+            'categoria_id' => $this->categoriaIdNova ?: null,
+            'responsavel_id' => ! $this->responsavelExterno ? ($this->responsavelIdNova ?: null) : null,
+            'responsavel_externo' => $this->responsavelExterno ? ($this->responsavelExternoNova ?: null) : null,
+            'status' => StatusRestricao::Aberta->value,
+            'aberta_em' => now(),
+        ]));
+
+        if (! $restricao) {
+            return;
+        }
+
+        $this->modalRestricaoAberto = false;
+        $this->resetModalRestricao();
+        $this->dispatch('show-toast', message: 'Restrição registrada.');
+        $this->invalidarComputeds();
+    }
+
+    // =========================================================================
+    // MODAL: DAR BAIXA NA RESTRIÇÃO (mesmo fluxo/Policy de
+    // ⚡lookahead.blade.php — nunca uma segunda regra de resolução)
+    // =========================================================================
+
+    public function abrirModalBaixa(string $restricaoId): void
+    {
+        $restricao = Restricao::findOrFail($restricaoId);
+        $this->authorize('resolver', $restricao);
+
+        $this->baixandoRestricaoId = $restricaoId;
+        $this->dataBaixaNova = now()->toDateString();
+        $this->textoBaixaNova = '';
+        $this->resetErrorBag();
+    }
+
+    private function resetModalBaixa(): void
+    {
+        $this->baixandoRestricaoId = null;
+        $this->dataBaixaNova = null;
+        $this->textoBaixaNova = '';
+        $this->resetErrorBag();
+    }
+
+    public function darBaixaRestricao(): void
+    {
+        $restricao = Restricao::findOrFail($this->baixandoRestricaoId);
+        $this->authorize('resolver', $restricao);
+
+        $this->validate(
+            [
+                'dataBaixaNova' => 'required|date|before_or_equal:today',
+                'textoBaixaNova' => 'nullable|string',
+            ],
+            [],
+            ['dataBaixaNova' => 'data da baixa']
+        );
+
+        $this->transacaoSegura(function () use ($restricao) {
+            if ($this->textoBaixaNova !== '') {
+                $restricao->acoes()->create(['autor_id' => Auth::id(), 'descricao' => $this->textoBaixaNova]);
+            }
+
+            $restricao->update([
+                'status' => StatusRestricao::Resolvida->value,
+                'resolvida_em' => Carbon::parse($this->dataBaixaNova),
+            ]);
+        });
+
+        if ($this->transacaoSeguraFalhou()) {
+            return;
+        }
+
+        $this->resetModalBaixa();
+        $this->dispatch('show-toast', message: 'Restrição resolvida.');
+        $this->invalidarComputeds();
+    }
+
     /**
      * Só pode entrar na seleção pra "Programar selecionadas": ainda
      * Planejado, liberada E não concluída no cronograma importado
@@ -629,6 +1611,16 @@ new class extends Component {
         if ($this->ocultarConcluidas) {
             $atividades = $atividades->where('status', '!=', StatusAtividade::Concluido);
         }
+        // Filtro de exibição por liberação (mesma fonte que o KPI/coluna
+        // Liberação, idsProntas) — numa semana congelada a liberação não é
+        // reavaliada (idsProntas() já retorna vazio nesse caso), então o
+        // filtro fica inerte de propósito, nunca escondendo tudo por engano.
+        if (! $this->semanaEstaCongelada && $this->liberacaoFiltro !== 'todas') {
+            $idsProntasArray = $this->idsProntas;
+            $atividades = $this->liberacaoFiltro === 'liberadas'
+                ? $atividades->filter(fn ($at) => $idsProntasArray->contains($at->id))
+                : $atividades->reject(fn ($at) => $idsProntasArray->contains($at->id));
+        }
         if ($atividades->isEmpty()) {
             return [];
         }
@@ -809,6 +1801,11 @@ new class extends Component {
             $this->hhPrevistoSemanaPorAtividade,
             $this->totalHhProjeto,
             $this->linhaBaseSelecionada,
+            $this->atividadeDetalhePlano,
+            $this->percentualPrevistoPeriodoPopup,
+            $this->documentosDisponiveisParaVincular,
+            $this->coberturaMateriaisPopup,
+            $this->pacotesDaAtividadePopup,
         );
     }
 
@@ -826,6 +1823,14 @@ new class extends Component {
     public function updatedPersonalizado5IdFiltro(): void { $this->invalidarComputeds(); }
     public function updatedOcultarConcluidas(): void { $this->invalidarComputeds(); }
     public function updatedFonteDatasPeriodo(): void { $this->invalidarComputeds(); }
+
+    /**
+     * Só o resultado exibido (arvoreAtividades) depende deste filtro —
+     * mesmo tratamento de ocultarConcluidas: nunca invalida idsProntas/
+     * PPC/HH/cards de período, que precisam continuar refletindo o
+     * período INTEIRO independente do que está sendo exibido agora.
+     */
+    public function updatedLiberacaoFiltro(): void { unset($this->arvoreAtividades); }
 
     /** Some sozinho assim que o usuário mexe na seleção de novo, em vez de ficar preso na tela. */
     public function updatedSelecionadas(): void { $this->erroSelecao = null; }
@@ -1376,7 +2381,8 @@ new class extends Component {
                         <tr wire:key="atividade-{{ $at->id }}"
                             x-show="!({{ $ancestraisJson }}).some(id => recolhidos.includes(id))">
                             <td style="padding-left: 24px">
-                                <span class="fw-semibold">{{ $at->nome }}</span>
+                                <span class="fw-semibold" style="cursor:pointer" title="Ver por que posso ou não posso programar esta atividade"
+                                      wire:click="verAtividadeDetalhe('{{ $at->id }}')">{{ $at->nome }}</span>
                                 @if ($at->caminho_critico)
                                     <span class="badge bg-label-danger ms-1 align-middle" title="Caminho crítico">CC</span>
                                 @endif
@@ -1548,6 +2554,873 @@ new class extends Component {
     </div>
 
     {{-- =========================================================================
+         MODAL: "LIBERAÇÃO PARA PROGRAMAÇÃO" — diagnóstico da atividade,
+         aberto ao clicar no nome na tabela. Reaproveita 100% a mesma regra
+         autoritativa de liberado/bloqueado (Atividade::scopeProntas()/
+         estaPronta()) e as mesmas 3 dimensões que ela avalia (restrições
+         bloqueantes, checklist de prontidão, Documentos de Engenharia não
+         liberados) — nunca uma segunda definição. Popup deliberadamente
+         mais enxuto que o do Lookahead (sem Curva S/lições/comentários/
+         anexos): o objetivo aqui é só responder "por que posso ou não
+         posso programar esta atividade?", pra uso na reunião semanal de
+         produção.
+         ========================================================================= --}}
+    @if ($atividadeDetalheId)
+    @php $detalhePlano = $this->atividadeDetalhePlano; @endphp
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.55)">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                @if (! $detalhePlano)
+                <div class="modal-body text-center py-5">
+                    <div class="spinner-border text-primary" role="status"></div>
+                </div>
+                @else
+                @php
+                    $atPlano = $detalhePlano['atividade'];
+                    $checklistPlano = $detalhePlano['checklist'];
+                    $okChkPlano = collect($checklistPlano)->where('concluido', true)->count();
+                    $totalChkPlano = collect($checklistPlano)->count();
+                    $documentosBloqueantesPlano = $detalhePlano['documentosBloqueantes'];
+                    $statusValPlano = $atPlano->status instanceof \App\Enums\StatusAtividade
+                        ? $atPlano->status->value
+                        : $atPlano->status;
+                    $statusLabelPlano = match ($statusValPlano) {
+                        'planejado' => 'Planejado', 'comprometido' => 'Comprometido',
+                        'em_execucao' => 'Em Execução', 'concluido' => 'Concluído',
+                        'nao_concluido' => 'Não Concluído', default => $statusValPlano,
+                    };
+                    // Mesma fonte canônica única de liberado/bloqueado do
+                    // projeto inteiro — 1 query extra aqui é aceitável (o
+                    // popup nunca renderiza em loop, ver docblock de
+                    // Atividade::estaPronta()).
+                    $atividadePlanoPronta = $atPlano->estaPronta();
+                    $restricoesBloqueantesPlano = $atPlano->restricoes->filter(fn ($r) =>
+                        $r->bloqueante && in_array($r->status->value ?? $r->status, ['aberta', 'em_tratamento', 'aguardando_terceiros'])
+                    );
+                    $restricoesNaoBloqueantesPlano = $atPlano->restricoes->filter(fn ($r) =>
+                        ! $r->bloqueante && in_array($r->status->value ?? $r->status, ['aberta', 'em_tratamento', 'aguardando_terceiros'])
+                    );
+                @endphp
+                <div class="modal-header bg-dark text-white">
+                    <div class="flex-grow-1 mb-2">
+                        <h5 class="modal-title mb-2 text-white">
+                            {{ $atPlano->nome }}
+                            @if ($atPlano->codigo_cronograma)
+                            <span class="opacity-75">({{ $atPlano->codigo_cronograma }})</span>
+                            @endif
+                        </h5>
+                        <small class="opacity-75">
+                            {{ $atPlano->disciplina?->nome ?? 'Sem disciplina' }}
+                            @if ($atPlano->frenteTrabalho)
+                            · <i class="bx bx-folder me-1"></i>{{ $atPlano->frenteTrabalho->nome }}
+                            @endif
+                            @if ($atPlano->caminho_critico)
+                            <span class="badge bg-danger ms-2">Caminho Crítico</span>
+                            @endif
+                            @if ($statusValPlano === 'concluido')
+                            <span class="badge bg-primary ms-2">Concluída</span>
+                            @elseif ($atividadePlanoPronta)
+                            <span class="badge bg-success ms-2"><i class="bx bx-check-circle me-1"></i>Liberada</span>
+                            @else
+                            <span class="badge bg-danger ms-2"><i class="bx bx-lock-alt me-1"></i>Bloqueada</span>
+                            @endif
+                        </small>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" wire:click="fecharAtividadeDetalhe"></button>
+                </div>
+
+                <div class="px-4 py-3 bg-light border-bottom">
+                    <div class="row g-3 text-center">
+                        <div class="col-6 col-md-3 col-lg">
+                            <div class="small text-muted">Início (Linha de Base)</div>
+                            <h6 class="fw-semibold mb-0">{{ $atPlano->baseline_inicio?->format('d/m/Y') ?? '—' }}</h6>
+                        </div>
+                        <div class="col-6 col-md-3 col-lg">
+                            <div class="small text-muted">Término (Linha de Base)</div>
+                            <h6 class="fw-semibold mb-0">{{ $atPlano->baseline_termino?->format('d/m/Y') ?? '—' }}</h6>
+                        </div>
+                        <div class="col-6 col-md-3 col-lg">
+                            <div class="small text-muted">Início (Tendência)</div>
+                            <h6 class="fw-semibold mb-0">{{ $atPlano->inicio_planejado?->format('d/m/Y') ?? '—' }}</h6>
+                        </div>
+                        <div class="col-6 col-md-3 col-lg">
+                            <div class="small text-muted">Término (Tendência)</div>
+                            <h6 class="fw-semibold mb-0">{{ $atPlano->data_termino?->format('d/m/Y') ?? '—' }}</h6>
+                        </div>
+                        <div class="col-6 col-md-3 col-lg">
+                            <div class="small text-muted">% Avanço</div>
+                            <h6 class="fw-semibold mb-0">{{ number_format((float) ($atPlano->percentual_concluido ?? 0), 0) }}%</h6>
+                        </div>
+                        <div class="col-6 col-md-3 col-lg">
+                            <div class="small text-muted">Status</div>
+                            <h6 class="fw-semibold mb-0">{{ $statusLabelPlano }}</h6>
+                        </div>
+                    </div>
+                </div>
+
+                {{-- Melhoria "Posto Operacional" (Seção 11) — % previsto
+                     INCREMENTAL da semana selecionada, nunca o acumulado até
+                     o fim dela (fórmula já autoritativa de CurvaAvanco::
+                     calcular(), ver percentualPrevistoPeriodoPopup()). Mostra
+                     também acumulado (previsto/realizado) quando existir
+                     dado, sem inventar nada quando não existir. --}}
+                @php $previstoPeriodo = $this->percentualPrevistoPeriodoPopup; @endphp
+                @if ($previstoPeriodo)
+                <div class="px-4 py-2 bg-white border-bottom">
+                    <div class="row g-3 text-center">
+                        <div class="col-4">
+                            <div class="small text-muted" title="HH previsto desta semana ÷ HH previsto total da atividade">% Previsto no Período</div>
+                            <h6 class="fw-semibold mb-0">
+                                {{ $previstoPeriodo['percentual_previsto_periodo'] !== null ? number_format($previstoPeriodo['percentual_previsto_periodo'], 1, ',', '.') . '%' : '—' }}
+                            </h6>
+                        </div>
+                        <div class="col-4">
+                            <div class="small text-muted" title="Previsto acumulado até o fim desta semana">% Previsto Acumulado</div>
+                            <h6 class="fw-semibold mb-0">
+                                {{ $previstoPeriodo['percentual_previsto_acumulado'] !== null ? number_format($previstoPeriodo['percentual_previsto_acumulado'], 1, ',', '.') . '%' : '—' }}
+                            </h6>
+                        </div>
+                        <div class="col-4">
+                            <div class="small text-muted" title="Realizado acumulado na última importação de avanço">% Realizado Acumulado</div>
+                            <h6 class="fw-semibold mb-0">
+                                {{ $previstoPeriodo['percentual_realizado_acumulado'] !== null ? number_format($previstoPeriodo['percentual_realizado_acumulado'], 1, ',', '.') . '%' : '—' }}
+                            </h6>
+                        </div>
+                    </div>
+                    @unless ($previstoPeriodo['tem_previsto'])
+                    <p class="small text-muted mb-0 mt-1"><i class="bx bx-info-circle me-1"></i>Sem dados de HH previsto (phased) para esta atividade.</p>
+                    @endunless
+                </div>
+                @endif
+
+                {{-- Seção "Liberação para Programação" — resumo objetivo antes
+                     do detalhe, pra responder de cara "posso ou não posso
+                     programar", sem precisar ler as 3 seções abaixo. --}}
+                <div class="px-4 py-3 border-bottom">
+                    <h6 class="fw-bold mb-2"><i class="bx bx-key me-2"></i>Liberação para Programação</h6>
+                    @if ($statusValPlano === 'concluido')
+                    <div class="alert alert-primary py-2 mb-0">
+                        <i class="bx bx-info-circle me-1"></i>Atividade já concluída no cronograma importado — liberação não se aplica.
+                    </div>
+                    @elseif ($atividadePlanoPronta)
+                    <div class="alert alert-success py-2 mb-0">
+                        <i class="bx bx-check-circle me-1"></i>Liberada — sem restrição bloqueante em aberto, checklist de prontidão completo e nenhum Documento de Engenharia pendente vinculado.
+                    </div>
+                    @else
+                    <div class="alert alert-danger py-2 mb-2">
+                        <i class="bx bx-lock-alt me-1"></i>Bloqueada — veja abaixo exatamente o(s) motivo(s).
+                    </div>
+                    <ul class="mb-0 small">
+                        <li>
+                            @if ($restricoesBloqueantesPlano->isNotEmpty())
+                            <i class="bx bx-x-circle text-danger me-1"></i>{{ $restricoesBloqueantesPlano->count() }} restrição(ões) bloqueante(s) em aberto
+                            @else
+                            <i class="bx bx-check text-success me-1"></i>Sem restrição bloqueante em aberto
+                            @endif
+                        </li>
+                        <li>
+                            @if ($totalChkPlano > 0 && $okChkPlano < $totalChkPlano)
+                            <i class="bx bx-x-circle text-danger me-1"></i>Checklist de prontidão incompleto ({{ $okChkPlano }}/{{ $totalChkPlano }})
+                            @else
+                            <i class="bx bx-check text-success me-1"></i>Checklist de prontidão completo
+                            @endif
+                        </li>
+                        <li>
+                            @if ($documentosBloqueantesPlano->isNotEmpty())
+                            <i class="bx bx-x-circle text-danger me-1"></i>{{ $documentosBloqueantesPlano->count() }} Documento(s) de Engenharia pendente(s)
+                            @else
+                            <i class="bx bx-check text-success me-1"></i>Sem Documento de Engenharia pendente vinculado
+                            @endif
+                        </li>
+                    </ul>
+                    @endif
+                </div>
+
+                <div class="modal-body p-0">
+                    <div class="row g-0">
+                        <div class="{{ $checklistPlano->isNotEmpty() ? 'col-md-8 border-end' : 'col-12' }}">
+                            <div class="p-4">
+                                <h6 class="fw-bold mb-3 d-flex align-items-center justify-content-between">
+                                    <span><i class="bx bx-block me-2 text-danger"></i>Restrições</span>
+                                    <div class="d-flex gap-2">
+                                        <span class="badge bg-secondary">{{ $atPlano->restricoes->count() }}</span>
+                                        @can('create', [Restricao::class, $obra->id])
+                                        <button class="btn btn-xs btn-outline-warning py-0 px-2" wire:click="abrirModalRestricao('{{ $atPlano->id }}')">
+                                            <i class="bx bx-plus me-1"></i>Nova Restrição
+                                        </button>
+                                        @endcan
+                                    </div>
+                                </h6>
+
+                                @if ($atPlano->restricoes->isEmpty())
+                                <div class="text-center text-muted py-4">
+                                    <i class="bx bx-check-circle fs-2 text-success d-block mb-2"></i>
+                                    Nenhuma restrição nesta atividade.
+                                </div>
+                                @else
+                                @foreach ($atPlano->restricoes as $rPlano)
+                                @php
+                                    $rsvPlano = $rPlano->status instanceof \App\Enums\StatusRestricao ? $rPlano->status->value : $rPlano->status;
+                                    $rabertaPlano = in_array($rsvPlano, ['aberta', 'em_tratamento', 'aguardando_terceiros']);
+                                    $rlabelPlano = match ($rsvPlano) {
+                                        'aberta' => 'Aberta', 'em_tratamento' => 'Em Tratamento',
+                                        'aguardando_terceiros' => 'Ag. Terceiros', 'resolvida' => 'Resolvida',
+                                        default => $rsvPlano,
+                                    };
+                                    $rcorPlano = match ($rsvPlano) {
+                                        'aberta' => 'danger', 'em_tratamento' => 'warning',
+                                        'aguardando_terceiros' => 'info', 'resolvida' => 'success',
+                                        default => 'secondary',
+                                    };
+                                    $rvencidaPlano = $rPlano->prazo_limite && $rabertaPlano && $rPlano->prazo_limite->isPast();
+                                @endphp
+                                <div class="card {{ $rPlano->bloqueante && $rabertaPlano ? 'border-danger' : 'border-light' }} mb-3 shadow-none" wire:key="restricao-plano-{{ $rPlano->id }}">
+                                    <div class="card-body py-2 px-3">
+                                        <div class="d-flex align-items-start gap-2 mb-1">
+                                            <div class="flex-grow-1 me-2">
+                                                <span style="font-size:.875rem">{{ $rPlano->descricao }}</span>
+                                                @if ($rPlano->categoria)
+                                                <span class="badge bg-label-secondary ms-1" style="font-size:.7rem">{{ $rPlano->categoria->nome }}</span>
+                                                @endif
+                                                @if ($rPlano->bloqueante)
+                                                <span class="badge bg-label-danger ms-1" style="font-size:.7rem">Bloqueante</span>
+                                                @endif
+                                            </div>
+                                            <span class="badge bg-{{ $rcorPlano }} flex-shrink-0">{{ $rlabelPlano }}</span>
+                                        </div>
+                                        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                                            <div>
+                                                @if ($rPlano->responsavel)
+                                                <small class="text-muted d-block"><i class="bx bx-user me-1"></i>{{ $rPlano->responsavel->first_name }} {{ $rPlano->responsavel->last_name }}</small>
+                                                @elseif ($rPlano->responsavel_externo)
+                                                <small class="text-muted d-block"><i class="bx bx-user me-1"></i>{{ $rPlano->responsavel_externo }}</small>
+                                                @endif
+                                                @if ($rPlano->prazo_limite)
+                                                <small class="{{ $rvencidaPlano ? 'text-danger fw-semibold' : 'text-muted' }}">
+                                                    <i class="bx bx-calendar-exclamation me-1"></i>Prazo: {{ $rPlano->prazo_limite->format('d/m/Y') }}
+                                                    @if ($rvencidaPlano) (vencido) @endif
+                                                </small>
+                                                @endif
+                                            </div>
+                                            @if ($rabertaPlano)
+                                            @can('resolver', $rPlano)
+                                            <button class="btn btn-xs btn-outline-success py-0 px-2" wire:click="abrirModalBaixa('{{ $rPlano->id }}')">
+                                                <i class="bx bx-check me-1"></i>Dar baixa
+                                            </button>
+                                            @endcan
+                                            @endif
+                                        </div>
+                                    </div>
+                                </div>
+                                @endforeach
+                                @endif
+                            </div>
+                        </div>
+
+                        @if ($checklistPlano->isNotEmpty())
+                        <div class="col-md-4">
+                            <div class="p-4">
+                                <h6 class="fw-bold mb-3">
+                                    <i class="bx bx-check-square me-2 text-success"></i>Prontidão
+                                    <span class="badge {{ $okChkPlano === $totalChkPlano ? 'bg-success' : 'bg-warning text-dark' }} ms-1">{{ $okChkPlano }}/{{ $totalChkPlano }}</span>
+                                </h6>
+                                <div class="progress mb-3" style="height:6px">
+                                    <div class="progress-bar {{ $okChkPlano === $totalChkPlano ? 'bg-success' : 'bg-warning' }}" style="width:{{ $totalChkPlano > 0 ? round($okChkPlano / $totalChkPlano * 100) : 0 }}%"></div>
+                                </div>
+                                @foreach ($checklistPlano as $itemChkPlano)
+                                <div class="form-check mb-3" wire:key="chk-plano-{{ $atPlano->id }}-{{ $itemChkPlano['id'] }}">
+                                    <input class="form-check-input" type="checkbox"
+                                           id="planochk_{{ $atPlano->id }}_{{ $itemChkPlano['id'] }}"
+                                           @checked($itemChkPlano['concluido'])
+                                           wire:click="marcarItemNaDetalhe('{{ $atPlano->id }}','{{ $itemChkPlano['id'] }}',{{ $itemChkPlano['concluido'] ? 'false' : 'true' }})">
+                                    <label class="form-check-label {{ $itemChkPlano['concluido'] ? 'text-decoration-line-through text-muted' : '' }}"
+                                           for="planochk_{{ $atPlano->id }}_{{ $itemChkPlano['id'] }}">
+                                        {{ $itemChkPlano['nome'] }}
+                                    </label>
+                                    @if ($itemChkPlano['concluido'] && $itemChkPlano['concluido_por'])
+                                    <small class="text-muted d-block">
+                                        {{ $itemChkPlano['concluido_por']->first_name }} — {{ $itemChkPlano['concluido_em']?->format('d/m/Y H:i') }}
+                                    </small>
+                                    @endif
+                                </div>
+                                @endforeach
+                            </div>
+                        </div>
+                        @endif
+                    </div>
+
+                    {{-- Informativo, nunca contado como bloqueio (item 3.D do
+                         pedido) — restrição não bloqueante aberta não impede
+                         Programar por si só, mas continua visível/tratável. --}}
+                    @if ($restricoesNaoBloqueantesPlano->isNotEmpty())
+                    <div class="border-top p-4">
+                        <h6 class="fw-bold mb-2 text-muted">
+                            <i class="bx bx-info-circle me-2"></i>Outras restrições em aberto (não bloqueantes)
+                            <span class="badge bg-label-secondary ms-1">{{ $restricoesNaoBloqueantesPlano->count() }}</span>
+                        </h6>
+                        <p class="small text-muted mb-0">Não impedem Programar, mas seguem em aberto — já listadas na seção Restrições acima.</p>
+                    </div>
+                    @endif
+
+                    {{-- =====================================================
+                         MELHORIA "POSTO OPERACIONAL" — ENGENHARIA (Seção 12).
+                         Vincular/desvincular reaproveita a MESMA relação N:N
+                         e a MESMA Policy (engenharia.pacotes) já usadas em
+                         ⚡documentos-engenharia.blade.php — liberar/emitir
+                         revisão continua exclusivamente naquela tela.
+                         ===================================================== --}}
+                    <div class="border-top p-4">
+                        <h6 class="fw-bold mb-3 d-flex align-items-center justify-content-between">
+                            <span><i class="bx bx-file-blank me-2 text-primary"></i>Documentos de Engenharia</span>
+                            <span class="badge bg-secondary">{{ $detalhePlano['documentos']->count() }}</span>
+                        </h6>
+
+                        @if ($detalhePlano['documentos']->isEmpty())
+                        <p class="text-muted small mb-3">Nenhum documento vinculado a esta atividade.</p>
+                        @else
+                        <ul class="list-group list-group-flush mb-3">
+                            @foreach ($detalhePlano['documentos'] as $docPlano)
+                            <li class="list-group-item px-0 d-flex justify-content-between align-items-start gap-2" wire:key="doc-plano-{{ $docPlano['id'] }}">
+                                <div>
+                                    <strong>{{ $docPlano['codigo'] }}</strong> — {{ $docPlano['descricao'] }}
+                                    @if ($docPlano['revisaoVigente'])
+                                    <span class="text-muted">(Rev. {{ $docPlano['revisaoVigente'] }})</span>
+                                    @endif
+                                    <br>
+                                    @if ($docPlano['liberado'])
+                                    <span class="badge bg-label-success"><i class="bx bx-check-circle me-1"></i>Liberado para construção</span>
+                                    @else
+                                    <span class="badge bg-label-danger">
+                                        <i class="bx bx-lock-alt me-1"></i>
+                                        {{ $docPlano['motivo'] === 'sem_revisao' ? 'Ainda não emitido' : 'Revisão vigente não liberada' }}
+                                    </span>
+                                    @endif
+                                </div>
+                                @if (Auth::user()?->temPermissaoNaObra($obra->id, 'engenharia.pacotes', 'editar'))
+                                <button type="button" class="btn btn-xs btn-outline-danger py-0 px-2 flex-shrink-0"
+                                        onclick="confirmarAcao(this, {
+                                            mensagem: 'Desvincular este documento da atividade?',
+                                            metodo: 'desvincularDocumento',
+                                            args: ['{{ $docPlano['id'] }}'],
+                                            corBotao: 'danger',
+                                            icone: 'bx-unlink',
+                                        })">
+                                    <i class="bx bx-unlink"></i>
+                                </button>
+                                @endif
+                            </li>
+                            @endforeach
+                        </ul>
+                        @endif
+
+                        @if (Auth::user()?->temPermissaoNaObra($obra->id, 'engenharia.pacotes', 'editar'))
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control" placeholder="Buscar documento por código ou descrição..."
+                                   wire:model.live.debounce.300ms="buscaDocumentoVincular">
+                        </div>
+                        @if ($buscaDocumentoVincular !== '')
+                        <div class="list-group list-group-flush mt-2" style="max-height: 180px; overflow-y: auto">
+                            @forelse ($this->documentosDisponiveisParaVincular as $docDisp)
+                            <button type="button" class="list-group-item list-group-item-action py-2" wire:key="doc-disp-{{ $docDisp->id }}"
+                                    wire:click="vincularDocumento('{{ $docDisp->id }}')">
+                                <strong>{{ $docDisp->codigo }}</strong> — {{ $docDisp->descricao }}
+                            </button>
+                            @empty
+                            <p class="text-muted small mb-0 py-2">Nenhum documento encontrado.</p>
+                            @endforelse
+                        </div>
+                        @endif
+                        @endif
+                    </div>
+
+                    {{-- =====================================================
+                         MELHORIA "POSTO OPERACIONAL" — MATERIAIS (Seções 6/7/9/13).
+                         Fonte autoritativa: AtividadeNecessidadeMaterial —
+                         nunca a demanda agregada do(s) Pacote(s), nunca
+                         participa da cadeia TakeOff→RP→Pacote→RC/Pedido.
+                         ===================================================== --}}
+                    <div class="border-top p-4">
+                        <h6 class="fw-bold mb-3 d-flex align-items-center justify-content-between">
+                            <span><i class="bx bx-cube me-2 text-warning"></i>Materiais para Execução</span>
+                            @if (Auth::user()?->temPermissaoNaObra($obra->id, 'restricoes.plano_semanal', 'editar'))
+                            <button type="button" class="btn btn-xs btn-outline-primary py-0 px-2" wire:click="abrirModalNecessidade">
+                                <i class="bx bx-plus me-1"></i>Adicionar Material
+                            </button>
+                            @endif
+                        </h6>
+
+                        @if ($this->coberturaMateriaisPopup->isEmpty())
+                        <p class="text-muted small mb-0">Nenhuma necessidade de material cadastrada para esta atividade.</p>
+                        @else
+                        @foreach ($this->coberturaMateriaisPopup as $linhaMat)
+                        @php
+                            $necMat = $linhaMat['necessidade'];
+                            $matEfetivo = $linhaMat['material'];
+                        @endphp
+                        <div class="card mb-2 shadow-none border" wire:key="necessidade-{{ $necMat->id }}">
+                            <div class="card-body py-2 px-3">
+                                <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                                    <div>
+                                        <strong>{{ $matEfetivo?->descricao ?? '—' }}</strong>
+                                        <span class="badge bg-label-secondary ms-1" style="font-size:.7rem">
+                                            {{ $necMat->origem === \App\Enums\OrigemNecessidadeMaterialAtividade::TakeOff ? 'Origem: Conforme Engenharia / TakeOff' : 'Origem: Necessidade operacional — Plano Semanal' }}
+                                        </span>
+                                    </div>
+                                    <span class="badge bg-{{ $linhaMat['estado']->cor() }}">{{ $linhaMat['estado']->label() }}</span>
+                                </div>
+                                @if ($necMat->observacao)
+                                <p class="small text-muted mb-1">{{ $necMat->observacao }}</p>
+                                @endif
+                                <p class="small text-muted mb-1" style="font-size:.7rem">
+                                    Registrado por {{ $necMat->autor ? "{$necMat->autor->first_name} {$necMat->autor->last_name}" : 'Usuário removido' }}
+                                    em {{ $necMat->created_at->format('d/m/Y H:i') }}
+                                </p>
+                                <div class="row g-2 small text-center mb-2">
+                                    <div class="col">
+                                        <div class="text-muted">Necessário</div>
+                                        <strong>{{ number_format($linhaMat['necessario'], 2, ',', '.') }} {{ $linhaMat['unidade_necessidade']?->codigo }}</strong>
+                                    </div>
+                                    @if ($linhaMat['unidade_compativel'])
+                                    <div class="col">
+                                        <div class="text-muted">Reservado (atividade)</div>
+                                        <strong>{{ number_format($linhaMat['reservado_atividade'], 2, ',', '.') }}</strong>
+                                    </div>
+                                    <div class="col">
+                                        <div class="text-muted">Físico (obra)</div>
+                                        <strong>{{ number_format($linhaMat['fisico_obra'], 2, ',', '.') }}</strong>
+                                    </div>
+                                    <div class="col">
+                                        <div class="text-muted">Livre (obra)</div>
+                                        <strong>{{ number_format($linhaMat['livre_obra'], 2, ',', '.') }}</strong>
+                                    </div>
+                                    <div class="col">
+                                        <div class="text-muted">Déficit</div>
+                                        <strong class="{{ $linhaMat['deficit'] > 0 ? 'text-danger' : '' }}">{{ number_format($linhaMat['deficit'], 2, ',', '.') }}</strong>
+                                    </div>
+                                    @else
+                                    <div class="col-9">
+                                        <div class="text-danger small">
+                                            <i class="bx bx-error-circle me-1"></i>Unidade da necessidade ({{ $linhaMat['unidade_necessidade']?->codigo }}) diverge da unidade do Material ({{ $linhaMat['unidade_material']?->codigo }}) — cobertura não pode ser calculada.
+                                        </div>
+                                    </div>
+                                    @endif
+                                </div>
+                                @if (Auth::user()?->temPermissaoNaObra($obra->id, 'restricoes.plano_semanal', 'editar'))
+                                <div class="d-flex gap-2">
+                                    @if ($linhaMat['estado'] === \App\Enums\EstadoNecessidadeMaterialAtividade::DisponivelParaReserva || $linhaMat['estado'] === \App\Enums\EstadoNecessidadeMaterialAtividade::Parcial)
+                                    @if ($this->pacotesDaAtividadePopup->isNotEmpty())
+                                    <button type="button" class="btn btn-xs btn-outline-success py-0 px-2" wire:click="abrirModalReservar('{{ $necMat->id }}')">
+                                        <i class="bx bx-lock-alt me-1"></i>Reservar agora
+                                    </button>
+                                    @else
+                                    <span class="small text-muted" title="Vincule esta atividade a um Pacote de Compra (aba Suprimentos) para reservar diretamente pelo popup">
+                                        <i class="bx bx-info-circle me-1"></i>Sem Pacote vinculado pra reservar
+                                    </span>
+                                    @endif
+                                    @endif
+                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" wire:click="abrirEdicaoNecessidade('{{ $necMat->id }}')">
+                                        <i class="bx bx-edit-alt"></i>
+                                    </button>
+                                    <button type="button" class="btn btn-xs btn-outline-danger py-0 px-2"
+                                            onclick="confirmarAcao(this, {
+                                                mensagem: 'Remover esta necessidade de material?',
+                                                metodo: 'removerNecessidade',
+                                                args: ['{{ $necMat->id }}'],
+                                                corBotao: 'danger',
+                                                icone: 'bx-trash',
+                                            })">
+                                        <i class="bx bx-trash"></i>
+                                    </button>
+                                </div>
+                                @endif
+                            </div>
+                        </div>
+                        @endforeach
+                        @endif
+                    </div>
+                </div>
+                @endif
+            </div>
+        </div>
+    </div>
+    @endif
+
+    {{-- =========================================================================
+         MODAL: CRIAR RESTRIÇÃO (mesmos campos de ⚡lookahead.blade.php)
+         ========================================================================= --}}
+    @if ($modalRestricaoAberto)
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bx bx-shield-alt-2 me-2"></i>Nova Restrição</h5>
+                    <button type="button" class="btn-close" wire:click="$set('modalRestricaoAberto', false)"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Descrição <span class="text-danger">*</span></label>
+                        <textarea class="form-control @error('descricaoNova') is-invalid @enderror"
+                                  rows="3" wire:model="descricaoNova"
+                                  placeholder="Descreva o impedimento com clareza..."></textarea>
+                        @error('descricaoNova')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Tipo de Restrição</label>
+                            <select class="form-select" wire:model="categoriaIdNova">
+                                <option value="">— Sem tipo —</option>
+                                @foreach ($this->categorias as $catPlano)
+                                <option value="{{ $catPlano->id }}">{{ $catPlano->nome }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Prazo limite para resolução</label>
+                            <input type="date" class="form-control" wire:model="prazolimiteNova">
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Responsável por resolver</label>
+                        <div class="mb-2">
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" id="planoRespInterno" wire:model.live="responsavelExterno" value="0">
+                                <label class="form-check-label" for="planoRespInterno">Usuário interno</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" id="planoRespExterno" wire:model.live="responsavelExterno" value="1">
+                                <label class="form-check-label" for="planoRespExterno">Externo</label>
+                            </div>
+                        </div>
+                        @if (! $responsavelExterno)
+                        <select class="form-select" wire:model="responsavelIdNova">
+                            <option value="">— Sem responsável —</option>
+                            @foreach ($this->usuariosDaObra as $uPlano)
+                            <option value="{{ $uPlano->id }}">{{ $uPlano->first_name }} {{ $uPlano->last_name }}</option>
+                            @endforeach
+                        </select>
+                        @else
+                        <input type="text" class="form-control" wire:model="responsavelExternoNova" placeholder="Nome da empresa ou pessoa externa...">
+                        @endif
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Probabilidade (0–10)</label>
+                            <input type="number" class="form-control" min="0" max="10" wire:model="probabilidadeNova">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Impacto (0–10)</label>
+                            <input type="number" class="form-control" min="0" max="10" wire:model="impactoNova">
+                        </div>
+                    </div>
+
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="planoBloqueante" wire:model="blocanteNova">
+                        <label class="form-check-label" for="planoBloqueante">
+                            <strong>Restrição bloqueante</strong>
+                            <small class="text-muted d-block">Impede que a atividade seja comprometida no Plano Semanal</small>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" wire:click="$set('modalRestricaoAberto', false)">Cancelar</button>
+                    <button type="button" class="btn btn-primary" wire:click="salvarRestricao" wire:loading.attr="disabled">
+                        Registrar Restrição
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
+
+    {{-- =========================================================================
+         MODAL: DAR BAIXA NA RESTRIÇÃO (mesmo fluxo de ⚡lookahead.blade.php)
+         ========================================================================= --}}
+    @if ($baixandoRestricaoId)
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bx bx-check-circle me-2 text-success"></i>Dar Baixa na Restrição</h5>
+                    <button type="button" class="btn-close" wire:click="$set('baixandoRestricaoId', null)"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Data da baixa <span class="text-danger">*</span></label>
+                        <input type="date" class="form-control @error('dataBaixaNova') is-invalid @enderror"
+                               wire:model="dataBaixaNova">
+                        @error('dataBaixaNova')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Observação (opcional)</label>
+                        <textarea class="form-control" rows="3" wire:model="textoBaixaNova"
+                                  placeholder="Explique como a restrição foi resolvida, se relevante..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" wire:click="$set('baixandoRestricaoId', null)">Cancelar</button>
+                    <button type="button" class="btn btn-success" wire:click="darBaixaRestricao" wire:loading.attr="disabled">
+                        Confirmar Baixa
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
+
+    {{-- =========================================================================
+         MELHORIA "POSTO OPERACIONAL" — MODAL: ADICIONAR/EDITAR NECESSIDADE
+         DE MATERIAL (Seção 13). Identidade (origem/item/material) só é
+         escolhida na CRIAÇÃO — ao editar, só quantidade/observação mudam
+         (mesma imutabilidade de identidade já documentada no Action).
+         ========================================================================= --}}
+    @if ($modalNecessidadeAberto)
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bx bx-cube me-2"></i>{{ $necessidadeEditandoId ? 'Editar Necessidade de Material' : 'Adicionar Material' }}</h5>
+                    <button type="button" class="btn-close" wire:click="$set('modalNecessidadeAberto', false)"></button>
+                </div>
+                <div class="modal-body">
+                    @if (! $necessidadeEditandoId)
+                    <div class="mb-3">
+                        <label class="form-label d-block">Origem</label>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" id="origemTakeOff" wire:model.live="origemNovaNecessidade" value="take_off">
+                            <label class="form-check-label" for="origemTakeOff">Conforme Engenharia / TakeOff</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" id="origemOperacional" wire:model.live="origemNovaNecessidade" value="operacional">
+                            <label class="form-check-label" for="origemOperacional">Necessidade adicional da atividade</label>
+                        </div>
+                        @if ($origemNovaNecessidade === 'operacional')
+                        <p class="small text-muted mb-0 mt-1">Use para materiais necessários à execução que não vieram do levantamento da Engenharia.</p>
+                        @endif
+                    </div>
+
+                    @if ($origemNovaNecessidade === 'take_off')
+                    <div class="mb-3">
+                        <label class="form-label">Item de TakeOff <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control @error('itemTakeOffIdNovaNecessidade') is-invalid @enderror"
+                               placeholder="Buscar por código ou descrição..." wire:model.live.debounce.300ms="buscaItemTakeOffNecessidade">
+                        @error('itemTakeOffIdNovaNecessidade')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                        @if ($buscaItemTakeOffNecessidade !== '')
+                        <div class="list-group list-group-flush mt-2" style="max-height: 180px; overflow-y: auto">
+                            @forelse ($this->itensTakeOffParaNecessidade as $itemDisp)
+                            <button type="button" class="list-group-item list-group-item-action py-2 {{ $itemTakeOffIdNovaNecessidade === $itemDisp->id ? 'active' : '' }}"
+                                    wire:key="item-tko-{{ $itemDisp->id }}" wire:click="$set('itemTakeOffIdNovaNecessidade', '{{ $itemDisp->id }}')">
+                                <strong>{{ $itemDisp->codigo }}</strong> — {{ $itemDisp->descricao }} ({{ number_format((float) $itemDisp->quantidade, 2, ',', '.') }})
+                            </button>
+                            @empty
+                            <p class="text-muted small mb-0 py-2">Nenhum item de TakeOff encontrado nesta obra.</p>
+                            @endforelse
+                        </div>
+                        @endif
+                        @if ($itemTakeOffIdNovaNecessidade && $this->saldoItemTakeOffSelecionado)
+                        @php $saldoTko = $this->saldoItemTakeOffSelecionado; @endphp
+                        <div class="alert alert-secondary py-2 mt-2 mb-0 small">
+                            Quantidade TakeOff: <strong>{{ number_format($saldoTko['quantidade_take_off'], 2, ',', '.') }}</strong> ·
+                            Já distribuído: <strong>{{ number_format($saldoTko['distribuido'], 2, ',', '.') }}</strong> ·
+                            Saldo disponível: <strong class="{{ $saldoTko['saldo'] < 0 ? 'text-danger' : 'text-success' }}">{{ number_format($saldoTko['saldo'], 2, ',', '.') }}</strong>
+                        </div>
+                        @endif
+                    </div>
+                    @else
+                    <div class="mb-3">
+                        <label class="form-label">Material <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control @error('materialIdNovaNecessidade') is-invalid @enderror"
+                               placeholder="Buscar por código ou descrição..." wire:model.live.debounce.300ms="buscaMaterialNecessidade">
+                        @error('materialIdNovaNecessidade')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                        @if ($buscaMaterialNecessidade !== '')
+                        <div class="list-group list-group-flush mt-2" style="max-height: 180px; overflow-y: auto">
+                            @forelse ($this->materiaisParaNecessidade as $matDisp)
+                            <button type="button" class="list-group-item list-group-item-action py-2 {{ $materialIdNovaNecessidade === $matDisp->id ? 'active' : '' }}"
+                                    wire:key="mat-disp-{{ $matDisp->id }}" wire:click="$set('materialIdNovaNecessidade', '{{ $matDisp->id }}')">
+                                <strong>{{ $matDisp->codigo }}</strong> — {{ $matDisp->descricao }}
+                            </button>
+                            @empty
+                            <p class="text-muted small mb-0 py-2">Nenhum Material encontrado no catálogo.</p>
+                            @endforelse
+                        </div>
+                        @endif
+                        @if ($this->podeCriarMaterialInline())
+                        <button type="button" class="btn btn-sm btn-outline-secondary mt-2" wire:click="abrirModalNovoMaterial">
+                            <i class="bx bx-plus me-1"></i>Criar novo Material
+                        </button>
+                        @endif
+                    </div>
+                    @endif
+                    @endif
+
+                    <div class="mb-3">
+                        <label class="form-label">Quantidade necessária <span class="text-danger">*</span></label>
+                        <input type="number" step="0.001" min="0.001" class="form-control @error('quantidadeNovaNecessidade') is-invalid @enderror"
+                               wire:model="quantidadeNovaNecessidade">
+                        @error('quantidadeNovaNecessidade')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">
+                            {{ $origemNovaNecessidade === 'operacional' || ($necessidadeEditandoId && $itemTakeOffIdNovaNecessidade === null) ? 'Justificativa' : 'Observação (opcional)' }}
+                            @if ($origemNovaNecessidade === 'operacional' && ! $necessidadeEditandoId)
+                            <span class="text-danger">*</span>
+                            @endif
+                        </label>
+                        <textarea class="form-control @error('observacaoNovaNecessidade') is-invalid @enderror" rows="2"
+                                  wire:model="observacaoNovaNecessidade"
+                                  placeholder="Por que este material é necessário..."></textarea>
+                        @error('observacaoNovaNecessidade')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" wire:click="$set('modalNecessidadeAberto', false)">Cancelar</button>
+                    <button type="button" class="btn btn-primary" wire:click="salvarNecessidade" wire:loading.attr="disabled">
+                        Salvar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
+
+    {{-- =========================================================================
+         MELHORIA "POSTO OPERACIONAL" — MODAL: NOVO MATERIAL MESTRE (inline,
+         sem sair do popup). Reaproveita EXATAMENTE os mesmos campos/regras
+         do cadastro oficial (⚡estoque.blade.php::salvarMaterial()), via a
+         mesma Action (App\Actions\Estoque\CriarMaterial) — nunca uma versão
+         simplificada. Nunca oferecido pra origem=take_off (ver
+         AtualizarNecessidadeMaterialAtividade::criarTakeOff() — o Material
+         dessa origem é sempre derivado do ItemTakeOff, jamais criado aqui).
+         Fica em CIMA do modal de necessidade (z-index maior) — o popup da
+         atividade e o modal de necessidade permanecem montados por trás,
+         nunca perdem contexto/estado.
+         ========================================================================= --}}
+    @if ($modalNovoMaterialAberto)
+    {{-- z-index explícito e ALTO (nunca só "+10" arbitrário) — achado real
+         de correção (reprodução em navegador real): os modais já abertos
+         nesta mesma página (popup de detalhe da atividade + "Adicionar
+         Material") computam `z-index:1090` no CSS do tema (Vuexy/Bootstrap,
+         que sobrescreve o default do Bootstrap puro) — um valor MENOR aqui
+         (1060, usado antes desta correção) faz este modal renderizar
+         literalmente ATRÁS dos outros dois, invisível e inclicável (o
+         backdrop do modal de cima intercepta 100% dos cliques na tela
+         inteira). 1100 garante margem segura acima de QUALQUER modal já
+         empilhado nesta página. --}}
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5); z-index:1100">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bx bx-cube-alt me-2"></i>Novo Material</h5>
+                    <button type="button" class="btn-close" wire:click="fecharModalNovoMaterial"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Código <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control @error('novoMaterialCodigo') is-invalid @enderror" wire:model="novoMaterialCodigo">
+                        @error('novoMaterialCodigo')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Descrição <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control @error('novoMaterialDescricao') is-invalid @enderror" wire:model="novoMaterialDescricao">
+                        @error('novoMaterialDescricao')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Unidade de Medida <span class="text-danger">*</span></label>
+                        <select class="form-select @error('novoMaterialUnidadeMedidaId') is-invalid @enderror" wire:model="novoMaterialUnidadeMedidaId">
+                            <option value="">Selecione...</option>
+                            @foreach ($this->unidadesMedidaParaNovoMaterial as $u)
+                            <option value="{{ $u->id }}">{{ $u->codigo }} — {{ $u->nome }}</option>
+                            @endforeach
+                        </select>
+                        @error('novoMaterialUnidadeMedidaId')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Família (opcional)</label>
+                        <select class="form-select" wire:model="novoMaterialFamiliaId">
+                            <option value="">—</option>
+                            @foreach ($this->familiasMaterialParaNovoMaterial as $f)
+                            <option value="{{ $f->id }}">{{ $f->nome }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Modo de Rastreabilidade <span class="text-danger">*</span></label>
+                        <select class="form-select" wire:model="novoMaterialModoRastreabilidade">
+                            @foreach (\App\Enums\ModoRastreabilidadeMaterial::cases() as $modo)
+                            <option value="{{ $modo->value }}">{{ $modo->label() }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <p class="small text-muted mb-0"><i class="bx bx-info-circle me-1"></i>Este cadastro fica registrado como criado a partir do Plano Semanal (reunião de programação) — nunca como se tivesse vindo da Engenharia.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" wire:click="fecharModalNovoMaterial">Cancelar</button>
+                    <button type="button" class="btn btn-primary" wire:click="salvarNovoMaterialInline" wire:loading.attr="disabled">
+                        Salvar e usar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
+
+    {{-- =========================================================================
+         MELHORIA "POSTO OPERACIONAL" — MODAL: RESERVAR AGORA (Seção 7).
+         Reserva NUNCA automática — só este clique explícito, reaproveitando
+         App\Actions\Estoque\CriarReservaEstoque, a mesma Action já usada
+         em ⚡estoque.blade.php.
+         ========================================================================= --}}
+    @if ($necessidadeReservandoId)
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bx bx-lock-alt me-2 text-success"></i>Reservar Material para esta Atividade</h5>
+                    <button type="button" class="btn-close" wire:click="$set('necessidadeReservandoId', null)"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Pacote de Compra <span class="text-danger">*</span></label>
+                        <select class="form-select @error('pacoteIdReserva') is-invalid @enderror" wire:model="pacoteIdReserva">
+                            <option value="">— Selecione —</option>
+                            @foreach ($this->pacotesDaAtividadePopup as $pacotePop)
+                            <option value="{{ $pacotePop->id }}">{{ $pacotePop->codigo }} — {{ $pacotePop->nome }}</option>
+                            @endforeach
+                        </select>
+                        @error('pacoteIdReserva')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Local de Estoque <span class="text-danger">*</span></label>
+                        <select class="form-select @error('localIdReserva') is-invalid @enderror" wire:model="localIdReserva">
+                            <option value="">— Selecione —</option>
+                            @foreach ($this->locaisParaReserva as $localPop)
+                            <option value="{{ $localPop->id }}">{{ $localPop->nome }}</option>
+                            @endforeach
+                        </select>
+                        @error('localIdReserva')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Quantidade a reservar <span class="text-danger">*</span></label>
+                        <input type="number" step="0.001" min="0.001" class="form-control @error('quantidadeReserva') is-invalid @enderror"
+                               wire:model="quantidadeReserva">
+                        @error('quantidadeReserva')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" wire:click="$set('necessidadeReservandoId', null)">Cancelar</button>
+                    <button type="button" class="btn btn-success" wire:click="confirmarReserva" wire:loading.attr="disabled">
+                        Confirmar Reserva
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
+
+    {{-- =========================================================================
          CANVA LATERAL DE FILTROS — mesmo mecanismo do Quadro de Restrições e
          do Lookahead (resources/views/pages/radar/⚡restricoes.blade.php e
          ⚡lookahead.blade.php): painel fixo na borda direita, escondido via
@@ -1653,6 +3526,14 @@ new class extends Component {
                         @foreach ($this->personalizados5 as $p)
                         <option value="{{ $p->id }}">{{ $p->nome }}</option>
                         @endforeach
+                    </select>
+                </div>
+                <div class="col-12">
+                    <label class="form-label small text-muted mb-1">Liberação</label>
+                    <select class="form-select form-select-sm" wire:model.live="liberacaoFiltro">
+                        <option value="todas">Todas</option>
+                        <option value="liberadas">Liberadas</option>
+                        <option value="bloqueadas">Bloqueadas</option>
                     </select>
                 </div>
                 <div class="col-12">

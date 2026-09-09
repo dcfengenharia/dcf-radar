@@ -972,6 +972,45 @@ class TenantIsolationTest extends TestCase
         $this->assertNull(\App\Models\ReservaEstoque::find($reservaB->id));
     }
 
+    /** Melhoria "Posto Operacional" — atividade_necessidades_material, as 2 origens. */
+    public function test_atividade_necessidade_material_query_is_scoped_to_authenticated_tenant(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $atividadeB = Atividade::factory()->create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id]);
+        $unidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'M', 'nome' => 'Metro B']);
+        $materialB = \App\Models\Material::create([
+            'tenant_id' => $tenantB->id, 'codigo' => 'MAT-ANM-B', 'descricao' => 'Material B',
+            'unidade_medida_id' => $unidadeB->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+        ]);
+
+        $docB = \App\Models\DocumentoEngenharia::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DB', 'descricao' => 'D']);
+        $revB = $docB->revisoes()->create(['tenant_id' => $tenantB->id, 'revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'E']);
+        $listaB = \App\Models\ListaEngenharia::create(['tenant_id' => $tenantB->id, 'documento_engenharia_revisao_id' => $revB->id, 'tipo' => 'material', 'codigo' => 'LMB']);
+        $itemTakeOffB = \App\Models\ItemTakeOff::create([
+            'tenant_id' => $tenantB->id, 'lista_engenharia_id' => $listaB->id, 'codigo' => 'ITB',
+            'descricao' => 'Item B', 'unidade_medida_id' => $unidadeB->id, 'quantidade' => 100,
+        ]);
+
+        $necessidadeOperacionalB = \App\Models\AtividadeNecessidadeMaterial::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'atividade_id' => $atividadeB->id,
+            'origem' => 'operacional', 'material_id' => $materialB->id, 'unidade_medida_id' => $unidadeB->id,
+            'quantidade_necessaria' => 10, 'observacao' => 'Necessário',
+        ]);
+        $necessidadeTakeOffB = \App\Models\AtividadeNecessidadeMaterial::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'atividade_id' => $atividadeB->id,
+            'origem' => 'take_off', 'item_take_off_id' => $itemTakeOffB->id, 'unidade_medida_id' => $unidadeB->id,
+            'quantidade_necessaria' => 20,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\AtividadeNecessidadeMaterial::find($necessidadeOperacionalB->id));
+        $this->assertNull(\App\Models\AtividadeNecessidadeMaterial::find($necessidadeTakeOffB->id));
+    }
+
     public function test_aplicacao_material_estoque_query_is_scoped_to_authenticated_tenant(): void
     {
         [$tenantA, $userA] = $this->makeTenantWithUser();

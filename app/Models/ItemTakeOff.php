@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
@@ -92,5 +93,11 @@ class ItemTakeOff extends Model
     public function autor(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by_id');
+    }
+
+    /** Melhoria "Posto Operacional" — distribuição deste item às Atividades que o necessitam (ver App\Support\Estoque\ConciliacaoNecessidadeAtividade). */
+    public function necessidadesAtividade(): HasMany
+    {
+        return $this->hasMany(AtividadeNecessidadeMaterial::class);
     }
 }

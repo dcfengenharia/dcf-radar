@@ -28,8 +28,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  *
  * **Imutabilidade (fecha o Achado C2)**: campos factuais (material_id,
  * local_estoque_id, unidade_estoque_id, item_suprimento_id,
- * destinacao_planejada_material_id, quantidade, tenant_id, obra_id)
- * NUNCA são reescritos após a criação — `App\Observers\
+ * destinacao_planejada_material_id, necessidade_atividade_id (Melhoria
+ * "Posto Operacional"), quantidade, tenant_id, obra_id) NUNCA são
+ * reescritos após a criação — `App\Observers\
  * ReservaEstoqueObserver::updating()` bloqueia QUALQUER `save()`/
  * `update()` de instância incondicionalmente. A única transição válida
  * (`Ativa -> Liberada`) é feita por `App\Actions\Estoque\
@@ -52,6 +53,7 @@ class ReservaEstoque extends Model
         'local_estoque_id',
         'unidade_estoque_id',
         'destinacao_planejada_material_id',
+        'necessidade_atividade_id',
         'quantidade',
         'status',
         'liberado_em',
@@ -90,6 +92,12 @@ class ReservaEstoque extends Model
     public function destinacaoPlanejada(): BelongsTo
     {
         return $this->belongsTo(DestinacaoPlanejadaMaterial::class, 'destinacao_planejada_material_id');
+    }
+
+    /** Melhoria "Posto Operacional" — rótulo opcional (Seção 7): pra qual necessidade de Atividade esta Reserva foi feita, quando informado. Nunca teto/autoridade física — o teto continua sendo sempre o saldo físico (SaldoEstoque/SaldoReserva). */
+    public function necessidadeAtividade(): BelongsTo
+    {
+        return $this->belongsTo(AtividadeNecessidadeMaterial::class, 'necessidade_atividade_id');
     }
 
     public function autor(): BelongsTo

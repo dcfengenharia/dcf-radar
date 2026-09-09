@@ -6,6 +6,7 @@ use App\Enums\ModoRastreabilidadeMaterial;
 use App\Enums\TipoLocalEstoque;
 use App\Exceptions\ReservaEstoqueInvalidaException;
 use App\Exceptions\SaldoFisicoInsuficienteException;
+use App\Models\AtividadeNecessidadeMaterial;
 use App\Models\DestinacaoPlanejadaMaterial;
 use App\Models\ItemSuprimento;
 use App\Models\LocalEstoque;
@@ -56,6 +57,15 @@ use Illuminate\Support\Facades\DB;
  * uma Frente fake). Quando `$destinacao` é informada, ela precisa
  * pertencer ao MESMO Pacote (`item_suprimento_id`) — não só ao mesmo
  * Material — checagem nova em `garantirDestinacaoCompativel()`.
+ *
+ * **Melhoria "Posto Operacional" (Seção 7, aprovada)**: `$necessidade`
+ * opcional novo — rótulo de finalidade análogo a `$destinacao`, mas
+ * apontando pra `AtividadeNecessidadeMaterial` em vez de
+ * `DestinacaoPlanejadaMaterial`. Puramente aditivo (parâmetro nomeado
+ * opcional no fim, default `null`) — nenhum caller existente precisa
+ * mudar. Nunca reserva automaticamente: continua sendo sempre uma
+ * chamada explícita a esta MESMA Action, disparada por um clique
+ * humano no popup do Plano Semanal.
  */
 class CriarReservaEstoque
 {
@@ -68,8 +78,9 @@ class CriarReservaEstoque
         ?DestinacaoPlanejadaMaterial $destinacao = null,
         ?User $usuario = null,
         ?string $observacao = null,
+        ?AtividadeNecessidadeMaterial $necessidade = null,
     ): ReservaEstoque {
-        return DB::transaction(function () use ($pacote, $material, $local, $quantidade, $unidade, $destinacao, $usuario, $observacao) {
+        return DB::transaction(function () use ($pacote, $material, $local, $quantidade, $unidade, $destinacao, $usuario, $observacao, $necessidade) {
             $this->garantirQuantidadePositiva($quantidade);
             $this->garantirMaterialAtivo($material);
             $this->garantirLocalAtivo($local);
@@ -77,6 +88,7 @@ class CriarReservaEstoque
             $this->garantirUnidadeCompativel($material, $local, $unidade);
             $this->garantirQuantidadeSerialUnitaria($material, $quantidade);
             $this->garantirDestinacaoCompativel($destinacao, $pacote, $material, $local);
+            $this->garantirNecessidadeCompativel($necessidade, $material, $local);
 
             if ($unidade) {
                 $unidadeTravada = UnidadeEstoque::whereKey($unidade->id)->lockForUpdate()->firstOrFail();
@@ -110,6 +122,7 @@ class CriarReservaEstoque
                 'local_estoque_id' => $local->id,
                 'unidade_estoque_id' => $unidade?->id,
                 'destinacao_planejada_material_id' => $destinacao?->id,
+                'necessidade_atividade_id' => $necessidade?->id,
                 'quantidade' => $quantidade,
                 'status' => \App\Enums\StatusReservaEstoque::Ativa->value,
                 'created_by_id' => $usuario?->id,
@@ -233,6 +246,29 @@ class CriarReservaEstoque
 
         if ($destinacao->obra_id !== $local->obra_id) {
             throw new ReservaEstoqueInvalidaException('A Destinação Planejada selecionada não pertence à mesma obra deste Local de Estoque.');
+        }
+    }
+
+    /**
+     * Melhoria "Posto Operacional" — reserva sem necessidade rotulada é
+     * permitida (`$necessidade=null`, mesmo espírito de `$destinacao`
+     * opcional); quando presente, precisa ser do MESMO Material efetivo
+     * (`AtividadeNecessidadeMaterial::material()`, já resolve
+     * corretamente as 2 origens) e da MESMA obra do Local — nunca
+     * confiado só à UI, sempre revalidado aqui.
+     */
+    private function garantirNecessidadeCompativel(?AtividadeNecessidadeMaterial $necessidade, Material $material, LocalEstoque $local): void
+    {
+        if (! $necessidade) {
+            return;
+        }
+
+        if ($necessidade->material()?->id !== $material->id) {
+            throw new ReservaEstoqueInvalidaException('A necessidade selecionada é de outro Material.');
+        }
+
+        if ($necessidade->obra_id !== $local->obra_id) {
+            throw new ReservaEstoqueInvalidaException('A necessidade selecionada não pertence à mesma obra deste Local de Estoque.');
         }
     }
 }
