@@ -4,9 +4,25 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 
 // SITE
-Route::get('/', function () {
-    return view('site.index');
-});
+Route::get('/', [App\Http\Controllers\SiteController::class, 'index'])->name('site.index');
+
+Route::get('/solucao', [App\Http\Controllers\SiteController::class, 'solucao'])->name('site.solucao');
+
+Route::get('/plataforma', [App\Http\Controllers\SiteController::class, 'plataforma'])->name('site.plataforma');
+
+Route::get('/diagnostico', [App\Http\Controllers\SiteController::class, 'diagnostico'])->name('site.diagnostico');
+
+Route::get('/conteudos', [App\Http\Controllers\SiteController::class, 'conteudos'])->name('site.conteudos');
+
+Route::get('/tutoriais', [App\Http\Controllers\SiteController::class, 'tutoriais'])->name('site.tutoriais');
+
+Route::get('/politica-privacidade', [App\Http\Controllers\SiteController::class, 'politica_privacidade'])->name('site.politica-privacidade');
+
+Route::get('/termos-uso', [App\Http\Controllers\SiteController::class, 'termos_uso'])->name('site.termos-uso');
+
+Route::get('/politica-cookies', [App\Http\Controllers\SiteController::class, 'politica_cookies'])->name('site.politica-cookies');
+
+
 
 // CLIENTE — acesso público (sem login) a um Report específico, só via
 // link assinado gerado em ⚡relatorio-detalhe.blade.php::gerarLinkCliente().

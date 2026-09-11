@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\OrigemNecessidadeMaterialAtividade;
+use App\Enums\StatusRequisicaoCompra;
 use App\Models\Concerns\BelongsToTenant;
 use App\Models\Concerns\HasAuthorship;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
@@ -83,6 +84,18 @@ class AtividadeNecessidadeMaterial extends Model
         return $this->hasMany(ReservaEstoque::class, 'necessidade_atividade_id');
     }
 
+    /** Rastreabilidade Quantitativa, Etapa 1 — em quais itens de RC esta parcela já foi detalhada. */
+    public function parcelasRequisicaoCompra(): HasMany
+    {
+        return $this->hasMany(RequisicaoCompraItemParcela::class, 'atividade_necessidade_material_id');
+    }
+
+    /** Idem, no nível de Pedido — sempre herdado da quota já detalhada na RC (nunca uma segunda fonte). */
+    public function parcelasPedidoCompra(): HasMany
+    {
+        return $this->hasMany(PedidoCompraItemParcela::class, 'atividade_necessidade_material_id');
+    }
+
     /**
      * Material EFETIVO desta necessidade — sempre derivado via
      * ItemTakeOff quando origem=take_off (nunca copiado/cacheado,
@@ -114,5 +127,37 @@ class AtividadeNecessidadeMaterial extends Model
         return (float) $this->reservas()
             ->where('status', \App\Enums\StatusReservaEstoque::Ativa->value)
             ->sum('quantidade');
+    }
+
+    /**
+     * Rastreabilidade Quantitativa, Etapa 1 — "quanto desta necessidade
+     * já foi detalhado OFICIALMENTE em Requisições de Compra" — mesma
+     * filosofia exata de
+     * `AlocacaoRequisicaoPacote::quantidadeConsumidaOficialPorRc()`
+     * (19.4.CORREÇÃO): RC `Rascunho` NUNCA conta como consumo oficial,
+     * só `Emitida`/`Concluida` — múltiplos rascunhos concorrentes podem
+     * cada um detalhar até o saldo cheio; só a emissão
+     * (`App\Actions\Suprimentos\EmitirRequisicaoCompra`) revalida de
+     * verdade e serializa.
+     */
+    public function quantidadeDetalhadaOficialEmRc(?string $excluirParcelaId = null): float
+    {
+        $query = RequisicaoCompraItemParcela::query()
+            ->where('atividade_necessidade_material_id', $this->id)
+            ->whereHas('requisicaoCompraItem.requisicaoCompra', fn ($q) => $q->whereIn('status', [
+                StatusRequisicaoCompra::Emitida->value,
+                StatusRequisicaoCompra::Concluida->value,
+            ]));
+
+        if ($excluirParcelaId) {
+            $query->where('id', '!=', $excluirParcelaId);
+        }
+
+        return (float) $query->sum('quantidade');
+    }
+
+    public function saldoOficialParaDetalheRc(?string $excluirParcelaId = null): float
+    {
+        return round((float) $this->quantidade_necessaria - $this->quantidadeDetalhadaOficialEmRc($excluirParcelaId), 3);
     }
 }

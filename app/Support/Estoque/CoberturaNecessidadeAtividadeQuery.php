@@ -4,8 +4,10 @@ namespace App\Support\Estoque;
 
 use App\Enums\EstadoNecessidadeMaterialAtividade;
 use App\Enums\StatusReservaEstoque;
+use App\Models\AlocacaoRequisicaoPacote;
 use App\Models\Atividade;
 use App\Models\AtividadeNecessidadeMaterial;
+use App\Models\ItemSuprimento;
 use App\Models\ReservaEstoque;
 use Illuminate\Support\Collection;
 
@@ -131,6 +133,81 @@ class CoberturaNecessidadeAtividadeQuery
                 'estado' => self::classificar($faltanteParaReservar, $livreObra, $reservadoAtividade),
             ];
         })->values();
+    }
+
+    /**
+     * Correção Segura do Falso Positivo (Revisão Arquitetural 2, Seção
+     * 13) — "correspondência inequívoca" entre um Pacote de Suprimentos
+     * e as `AtividadeNecessidadeMaterial` desta Atividade que ele
+     * efetivamente atende: `origem=TakeOff` casa por `item_take_off_id`
+     * (mesmo ItemTakeOff alcançado pelas `AlocacaoRequisicaoPacote`
+     * deste Pacote, via `requisicaoItem.item_take_off_id`);
+     * `origem=Operacional` casa por `material_id` (mesmo Material
+     * resolvido pelo `item_take_off_id.material_id` dessas mesmas
+     * alocações). Nunca inferido por texto/nome — sempre por FK real.
+     *
+     * @return Collection<int, AtividadeNecessidadeMaterial>
+     */
+    public static function necessidadesRelevantesParaPacote(Atividade $atividade, ItemSuprimento $pacote): Collection
+    {
+        $alocacoes = AlocacaoRequisicaoPacote::where('item_suprimento_id', $pacote->id)
+            ->with('requisicaoItem.itemTakeOff:id,material_id')
+            ->get();
+
+        $itemTakeOffIds = $alocacoes->pluck('requisicaoItem.itemTakeOff.id')->filter()->unique()->values();
+        $materialIds = $alocacoes->pluck('requisicaoItem.itemTakeOff.material_id')->filter()->unique()->values();
+
+        if ($itemTakeOffIds->isEmpty() && $materialIds->isEmpty()) {
+            return collect();
+        }
+
+        return AtividadeNecessidadeMaterial::query()
+            ->where('atividade_id', $atividade->id)
+            ->where(function ($query) use ($itemTakeOffIds, $materialIds) {
+                $query->whereIn('item_take_off_id', $itemTakeOffIds)
+                    ->orWhereIn('material_id', $materialIds);
+            })
+            ->get();
+    }
+
+    /**
+     * Correção Segura do Falso Positivo (Seção 13-17) — usada só pelos
+     * sincronizadores automáticos de Restrição de Suprimentos, NUNCA
+     * pela Central de Prontidão/popup do Plano Semanal (que continuam
+     * usando `porAtividade()` diretamente, uma linha por necessidade).
+     *
+     * Retorna:
+     * - `null` — nenhuma `AtividadeNecessidadeMaterial` deste Pacote
+     *   nesta Atividade foi encontrada (sem correspondência inequívoca)
+     *   — o chamador NUNCA deve suprimir o alerta comercial neste caso,
+     *   mantendo o comportamento de sempre.
+     * - `true` — TODAS as necessidades relevantes estão `Coberta` ou
+     *   `DisponivelParaReserva` (o Material já está fisicamente na obra,
+     *   comprometido ou livre o suficiente) — o alerta comercial NUNCA
+     *   deve virar bloqueio operacional desta Atividade.
+     * - `false` — pelo menos uma necessidade relevante NÃO está coberta
+     *   — o comportamento de bloqueio de sempre é preservado.
+     */
+    public static function estadoCobreTodasParaPacote(Atividade $atividade, ItemSuprimento $pacote): ?bool
+    {
+        $relevantes = self::necessidadesRelevantesParaPacote($atividade, $pacote);
+
+        if ($relevantes->isEmpty()) {
+            return null;
+        }
+
+        $cobertura = self::porAtividade($atividade)->keyBy(fn (array $linha) => $linha['necessidade']->id);
+
+        foreach ($relevantes as $necessidade) {
+            $linha = $cobertura->get($necessidade->id);
+            $estado = $linha['estado'] ?? null;
+
+            if (! in_array($estado, [EstadoNecessidadeMaterialAtividade::Coberta, EstadoNecessidadeMaterialAtividade::DisponivelParaReserva], true)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

@@ -24,6 +24,17 @@ use App\Models\UnidadeEstoque;
  * exposto fora de área autenticada (Seção 26); tenant/obra sempre
  * revalidados aqui, nunca confiado só à UI (Seção 15).
  *
+ * **Ciclo 20, Etapa 20.8.CORREÇÃO — fallback pro código HUMANO do
+ * Material Mestre** (achado real: o campo "Escanear ou digitar código"
+ * nunca aceitava o `Material.codigo` de catálogo, ex. "EX-003" — só o QR
+ * estruturado `MAT:{ulid}`, apesar do rótulo da tela sugerir o contrário).
+ * Quando o texto digitado NÃO contém `:` (nunca é um código estruturado
+ * válido), tenta resolver como `Material::codigo` exato — SÓ Material,
+ * nunca Lote/Serial/Local (que só existem via o formato estruturado,
+ * identidade física não tem "código humano" equivalente). Mesma
+ * tenant-safety do resto da classe (BelongsToTenant já filtra) e mesma
+ * regra de "Material/Local inativo nunca bloqueia a resolução" abaixo.
+ *
  * **Cross-tenant — decisão de segurança deliberada**: `Material`/
  * `UnidadeEstoque`/`LocalEstoque` usam `BelongsToTenant` — um ULID de
  * OUTRO tenant escaneado aqui simplesmente não é encontrado pelo
@@ -56,36 +67,43 @@ class ResolverCodigoEstoque
         }
 
         if (! str_contains($codigo, ':')) {
-            throw new CodigoEstoqueInvalidoException('Código inválido — formato não reconhecido.');
+            // Fallback pro código humano do Material Mestre (ver docblock
+            // da classe) — nunca tentado pra Lote/Serial/Local.
+            $entidade = Material::where('codigo', $codigo)->first();
+            if (! $entidade) {
+                throw new CodigoEstoqueInvalidoException('Código desconhecido — nenhuma entidade corresponde a ele.');
+            }
+
+            $tipo = 'material';
+        } else {
+            [$prefixo, $ulid] = explode(':', $codigo, 2);
+            $prefixo = strtoupper(trim($prefixo));
+            $ulid = trim($ulid);
+
+            if ($ulid === '') {
+                throw new CodigoEstoqueInvalidoException('Código inválido — formato não reconhecido.');
+            }
+
+            $entidade = match ($prefixo) {
+                'MAT' => Material::find($ulid),
+                'UNI' => UnidadeEstoque::find($ulid),
+                'LOC' => LocalEstoque::find($ulid),
+                default => throw new CodigoEstoqueInvalidoException("Código inválido — tipo '{$prefixo}' não reconhecido."),
+            };
+
+            if (! $entidade) {
+                // Cobre tanto "nunca existiu" quanto "existe, mas é de outro
+                // tenant" (BelongsToTenant já filtrou) — nunca diferenciado
+                // pro chamador, por design (ver docblock da classe).
+                throw new CodigoEstoqueInvalidoException('Código desconhecido — nenhuma entidade corresponde a ele.');
+            }
+
+            $tipo = match ($prefixo) {
+                'MAT' => 'material',
+                'UNI' => 'unidade',
+                'LOC' => 'local',
+            };
         }
-
-        [$prefixo, $ulid] = explode(':', $codigo, 2);
-        $prefixo = strtoupper(trim($prefixo));
-        $ulid = trim($ulid);
-
-        if ($ulid === '') {
-            throw new CodigoEstoqueInvalidoException('Código inválido — formato não reconhecido.');
-        }
-
-        $entidade = match ($prefixo) {
-            'MAT' => Material::find($ulid),
-            'UNI' => UnidadeEstoque::find($ulid),
-            'LOC' => LocalEstoque::find($ulid),
-            default => throw new CodigoEstoqueInvalidoException("Código inválido — tipo '{$prefixo}' não reconhecido."),
-        };
-
-        if (! $entidade) {
-            // Cobre tanto "nunca existiu" quanto "existe, mas é de outro
-            // tenant" (BelongsToTenant já filtrou) — nunca diferenciado
-            // pro chamador, por design (ver docblock da classe).
-            throw new CodigoEstoqueInvalidoException('Código desconhecido — nenhuma entidade corresponde a ele.');
-        }
-
-        $tipo = match ($prefixo) {
-            'MAT' => 'material',
-            'UNI' => 'unidade',
-            'LOC' => 'local',
-        };
 
         if ($obraIdEsperada !== null) {
             $obraDaEntidade = match ($tipo) {

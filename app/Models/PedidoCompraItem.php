@@ -55,6 +55,12 @@ class PedidoCompraItem extends Model
         return $this->belongsTo(RequisicaoCompraItem::class);
     }
 
+    /** Rastreabilidade Quantitativa, Etapa 1 — distribuição deste item por Atividade (parcelas de necessidade). */
+    public function parcelas(): HasMany
+    {
+        return $this->hasMany(PedidoCompraItemParcela::class, 'pedido_compra_item_id');
+    }
+
     /**
      * Ciclo 19, Etapa 19.6 — ordenado pela ORDEM DE REGISTRO (created_at/id
      * desc, nunca `recebido_em` — mesmo princípio de `GrdDistribuicao::

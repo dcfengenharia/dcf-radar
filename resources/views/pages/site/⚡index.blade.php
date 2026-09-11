@@ -20,16 +20,16 @@ $configData = Helper::appClasses();
         <div class="hero-text-box text-center">
           <h1 class="text-primary hero-title display-4 fw-bold">
             O Cronograma mostra QUANDO fazer. <br>
-            A DCF.eng mostra se é possível fazer.
+            A DCF mostra se está PREPARADO para fazer.
           </h1>
           <h2 class="hero-sub-title h6 mb-4 pb-1">
-            A maioria dos projetos morre antes mesmo de começar. <br class="d-none d-lg-block" />
-            Vamos além de barras de Gantt estáticas: trazemos uma <mark>visão ampla</mark> do que é planejamento e transformamos os prazos do papel em ações reais.
+            Muitas obras não atrasam por falta de cronograma. <br class="d-none d-lg-block" />
+            Atrasam porque projetos, materiais, liberações, recursos e decisões não ficam prontos no <mark>momento necessário</mark>.
           </h2>
           <div class="landing-hero-btn d-inline-block position-relative">
-            <span class="hero-btn-item position-absolute d-none d-md-flex text-heading">solicite uma demonstração
-              <img src="{{asset('assets/img/front-pages/icons/Join-community-arrow.png')}}" alt="Conheça mais" class="scaleX-n1-rtl" /></span>
-            <a href="#landingPricing" class="btn btn-warning">COMECE A PLANEJAR AGORA 😎</a>
+            <a href="#landingPricing" class="btn btn-warning">SOLICITAR DIAGNÓSTICO</a>
+            <br>
+            <small class="text-muted">Sem compromisso. Apenas uma avaliação rápida.</small>
           </div>
         </div>
         <div id="heroDashboardAnimation" class="hero-animation-img">
@@ -45,17 +45,16 @@ $configData = Helper::appClasses();
     <div class="landing-hero-blank"></div>
   </section>
 
-
   <section id="landingFeatures" class="section-py landing-features">
     <div class="container">
       <div class="text-center mb-3 pb-1">
         <span class="badge bg-label-primary">Antecipe Gargalos</span>
       </div>
       <h3 class="text-center mb-1">
-        O seu gráfico de Gantt está escondendo os reais riscos do projeto.
+        Antecipe o que pode impedir sua obra de avançar.
       </h3>
       <p class="text-center mb-3 mb-md-5 pb-3">
-        O atraso não acontece na execução, acontece nos bastidores. Assuma o controle de todos os preparativos antes que uma pequena falha custe meses de trabalho.
+        Planejamento integrado, prontidão e controle das interfaces entre Engenharia, Suprimentos e Construção — com método especializado, mentoria e software próprio.
       </p>
       <div class="features-icon-wrapper row gx-0 gy-4 g-sm-5">
         <div class="col-lg-4 col-sm-6 text-center features-icon-box">
@@ -115,9 +114,67 @@ $configData = Helper::appClasses();
       </div>
     </div>
   </section>
-  <!-- Useful features: End -->
 
-  <!-- Real customers reviews: Start -->
+  <section id="landingFeatures" class="section-py landing-features">
+    <div class="container">
+      <div class="row align-items-center justify-content-between">
+        <div class="col-lg-5">
+          <div class="section-title">
+            <p class="text-danger text-uppercase fw-bold mb-3"><mark>O PAPEL ACEITA TUDO!</mark></p>
+            <h1>Uma camada de gestão entre o cronograma e a execução.</h1>
+            <div class="content mb-0 mt-4">
+              <p>
+                A DCF.eng não pretende substituir Primavera P6, Microsoft Project, ERP ou quaisquer outros sistemas. <br>
+                Nós organizamos a rotina que conecta o planejamento formal às condições reais necessárias para executar.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-6">
+          <div class="difference-of-us-item p-3 rounded mr-0 me-lg-4">
+            <div class="d-block d-sm-flex align-items-center m-2">
+              <div class="me-4 mb-4 mb-sm-0">
+                <div class="badge bg-label-primary p-3 rounded mb-3">
+                  <i class='bx bx-check-shield fs-3'></i>
+                </div>
+              </div>
+              <div class="block">
+                <h3 class="mb-3">Planejamento integrado</h3>
+                <p class="mb-0">Transforme o cronograma em uma visão coordenada das necessidades de Engenharia, Suprimentos e Construção.</p>
+              </div>
+            </div>
+          </div>
+          <div class="difference-of-us-item p-3 rounded mr-0 me-lg-4">
+            <div class="d-block d-sm-flex align-items-center m-2">
+              <div class="me-4 mb-4 mb-sm-0">
+                <div class="badge bg-label-primary p-3 rounded mb-3">
+                  <i class='bx bx-check-shield fs-3'></i>
+                </div>
+              </div>
+              <div class="block">
+                <h3 class="mb-3">Gestão da prontidão</h3>
+                <p class="mb-0">Identifique antecipadamente o que precisa ser resolvido para que cada atividade possa entrar no plano de execução.</p>
+              </div>
+            </div>
+          </div>
+          <div class="difference-of-us-item p-3 rounded mr-0 me-lg-4">
+            <div class="d-block d-sm-flex align-items-center m-2">
+              <div class="me-4 mb-4 mb-sm-0">
+                <div class="badge bg-label-primary p-3 rounded mb-3">
+                  <i class='bx bx-check-shield fs-3'></i>
+                </div>
+              </div>
+              <div class="block">
+                <h3 class="mb-3">Controle das interfaces</h3>
+                <p class="mb-0">Dê responsável, prazo, criticidade e rastreabilidade às restrições que atravessam diferentes áreas do projeto.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section id="landingReviews" class="section-py bg-body landing-reviews pb-0">
     <!-- What people say slider: Start -->
     <div class="container">
@@ -354,9 +411,7 @@ $configData = Helper::appClasses();
     </div>
     <!-- Logo slider: End -->
   </section>
-  <!-- Real customers reviews: End -->
 
-  <!-- Our great team: Start -->
   <section id="landingTeam" class="section-py landing-team">
     <div class="container">
       <div class="text-center mb-3 pb-1">
@@ -365,7 +420,7 @@ $configData = Helper::appClasses();
       <h3 class="text-center mb-1"><span class="section-title">Supported</span> by Real People</h3>
       <p class="text-center mb-md-5 pb-3">Who is behind these great-looking interfaces?</p>
       <div class="row gy-5 mt-2">
-        <div class="col-lg-3 col-sm-6">
+        <div class="col-12">
           <div class="card mt-3 mt-lg-0 shadow-none">
             <div class="bg-label-primary position-relative team-image-box">
               <img src="{{asset('assets/img/front-pages/landing-page/team-member-1.png')}}" class="position-absolute card-img-position bottom-0 start-50 scaleX-n1-rtl img-fluid" alt="human image" />
@@ -376,45 +431,10 @@ $configData = Helper::appClasses();
             </div>
           </div>
         </div>
-        <div class="col-lg-3 col-sm-6">
-          <div class="card mt-3 mt-lg-0 shadow-none">
-            <div class="bg-label-info position-relative team-image-box">
-              <img src="{{asset('assets/img/front-pages/landing-page/team-member-2.png')}}" class="position-absolute card-img-position bottom-0 start-50 scaleX-n1-rtl img-fluid" alt="human image" />
-            </div>
-            <div class="card-body border border-label-info border-top-0 text-center">
-              <h5 class="card-title mb-0">Paul Miles</h5>
-              <p class="text-muted mb-0">UI Designer</p>
-            </div>
-          </div>
-        </div>
-        <div class="col-lg-3 col-sm-6">
-          <div class="card mt-3 mt-lg-0 shadow-none">
-            <div class="bg-label-danger position-relative team-image-box">
-              <img src="{{asset('assets/img/front-pages/landing-page/team-member-3.png')}}" class="position-absolute card-img-position bottom-0 start-50 scaleX-n1-rtl img-fluid" alt="human image" />
-            </div>
-            <div class="card-body border border-label-danger border-top-0 text-center">
-              <h5 class="card-title mb-0">Nannie Ford</h5>
-              <p class="text-muted mb-0">Development Lead</p>
-            </div>
-          </div>
-        </div>
-        <div class="col-lg-3 col-sm-6">
-          <div class="card mt-3 mt-lg-0 shadow-none">
-            <div class="bg-label-success position-relative team-image-box">
-              <img src="{{asset('assets/img/front-pages/landing-page/team-member-4.png')}}" class="position-absolute card-img-position bottom-0 start-50 scaleX-n1-rtl img-fluid" alt="human image" />
-            </div>
-            <div class="card-body border border-label-success border-top-0 text-center">
-              <h5 class="card-title mb-0">Chris Watkins</h5>
-              <p class="text-muted mb-0">Marketing Manager</p>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </section>
-  <!-- Our great team: End -->
 
-  <!-- Pricing plans: Start -->
   <section id="landingPricing" class="section-py bg-body landing-pricing">
     <div class="container">
       <div class="text-center mb-3 pb-1">
@@ -587,9 +607,7 @@ $configData = Helper::appClasses();
       </div>
     </div>
   </section>
-  <!-- Pricing plans: End -->
 
-  <!-- Fun facts: Start -->
   <section id="landingFunFacts" class="section-py landing-fun-facts">
     <div class="container">
       <div class="row gy-3">
@@ -644,9 +662,7 @@ $configData = Helper::appClasses();
       </div>
     </div>
   </section>
-  <!-- Fun facts: End -->
 
-  <!-- FAQ: Início -->
   <section id="landingFAQ" class="section-py bg-body landing-faq">
     <div class="container">
       <div class="text-center mb-3 pb-1">
@@ -662,35 +678,35 @@ $configData = Helper::appClasses();
         </div>
         <div class="col-lg-7">
           <div class="accordion accordion-header-primary" id="accordionExample">
+
             <div class="card accordion-item active">
               <h2 class="accordion-header" id="headingOne">
                 <button type="button" class="accordion-button" data-bs-toggle="collapse" data-bs-target="#accordionOne" aria-expanded="true" aria-controls="accordionOne">
-                  Minha obra já está em andamento, posso contratar o serviço?
+                  A DCF.eng substitui o Primavera P6 ou o Microsoft Project?
                 </button>
               </h2>
-
               <div id="accordionOne" class="accordion-collapse collapse show" data-bs-parent="#accordionExample">
                 <div class="accordion-body">
-                  <strong>Claro!</strong> Muitos clientes chegam com obras já iniciadas.
-                  <a href="">Clique aqui</a> para fazer uma análise da sua situação atual, identificamos os desvios e estabelecemos o controle a partir dali.
-                  Parar o sangramento o quanto antes evita prejuízos maiores.
+                  <strong>Não!</strong> O cronograma continua sendo a referência temporal do projeto.  <br>
+                  A DCF.eng complementa essa estrutura, organizando as restrições, a prontidão e as interfaces necessárias para que as atividades possam ser executadas.
                 </div>
               </div>
             </div>
+
             <div class="card accordion-item">
               <h2 class="accordion-header" id="headingTwo">
                 <button type="button" class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#accordionTwo" aria-expanded="false" aria-controls="accordionTwo">
-                  Qual o valor do serviço de consultoria?
+                  A DCF.eng atualiza diariamente as informações da obra?
                 </button>
               </h2>
               <div id="accordionTwo" class="accordion-collapse collapse" aria-labelledby="headingTwo" data-bs-parent="#accordionExample">
                 <div class="accordion-body">
-                  Nosso valor é calculado com base no escopo, tamanho e complexidade da obra.
-                  Na prática, o retorno identificado em planejamento e no controle de desvios tende a superar esse investimento.
-                  Solicite um diagnóstico gratuito para receber uma proposta personalizada. <a href="">Clique aqui</a>.
+                  <strong>Não!</strong> A atualização operacional é responsabilidade da equipe da obra. <br>
+                  Durante a implantação, capacitamos os usuários e estruturamos a rotina para que as informações sejam registradas de forma consistente.
                 </div>
               </div>
             </div>
+
             <div class="card accordion-item">
               <h2 class="accordion-header" id="headingThree">
                 <button type="button" class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#accordionThree" aria-expanded="false" aria-controls="accordionThree">
@@ -704,47 +720,76 @@ $configData = Helper::appClasses();
                 </div>
               </div>
             </div>
+
             <div class="card accordion-item">
               <h2 class="accordion-header" id="headingFour">
                 <button type="button" class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#accordionFour" aria-expanded="false" aria-controls="accordionFour">
-                  Qual o prazo para receber um planejamento?
+                  A implantação precisa ser presencial?
                 </button>
               </h2>
               <div id="accordionFour" class="accordion-collapse collapse" aria-labelledby="headingFour" data-bs-parent="#accordionExample">
                 <div class="accordion-body">
-                  Após o diagnóstico inicial e recebimento de toda a documentação necessária (projeto, especificações, medições), o prazo médio para entrega de um planejamento completo é de 15 a 30 dias úteis.
-                  Os prazos variam conforme a complexidade da obra.
+                  <strong>Não necessariamente.</strong> O processo foi concebido para funcionar de forma predominantemente digital, com reuniões remotas, capacitação, acompanhamento e suporte. <br>
+                  Atividades presenciais podem ser contratadas quando fizerem sentido para o projeto.
                 </div>
               </div>
             </div>
+
             <div class="card accordion-item">
               <h2 class="accordion-header" id="headingFive">
-                <button type="button" class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#accordionFive" aria-expanded="false" aria-controls="accordionFive">
-                  Como são feitos os relatórios de acompanhamento?
+                <button type="button" class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#accordionSeis" aria-expanded="false" aria-controls="accordionFive">
+                  O serviço é software ou consultoria?
                 </button>
               </h2>
-              <div id="accordionFive" class="accordion-collapse collapse" aria-labelledby="headingFive" data-bs-parent="#accordionExample">
+              <div id="accordionSeis" class="accordion-collapse collapse" aria-labelledby="headingFive" data-bs-parent="#accordionExample">
                 <div class="accordion-body">
-                  Os relatórios são entregues semanalmente e incluem: percentual de execução física, comparativo previsto vs. realizado, status do cronograma, próximas atividades e alertas de risco.
-                  Tudo documentado e entregue em formato digital de fácil leitura.
+                  <mark>É uma solução híbrida.</mark> A plataforma organiza o processo e preserva o histórico; a implantação e a mentoria ajudam a equipe a utilizar o método corretamente e conquistar autonomia.
                 </div>
               </div>
             </div>
+
+            <div class="card accordion-item">
+              <h2 class="accordion-header" id="headingFive">
+                <button type="button" class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#accordionSete" aria-expanded="false" aria-controls="accordionFive">
+                  A DCF garante o cumprimento dos prazos da obra?
+                </button>
+              </h2>
+              <div id="accordionSete" class="accordion-collapse collapse" aria-labelledby="headingFive" data-bs-parent="#accordionExample">
+                <div class="accordion-body">
+                  <strong>Não!!</strong> As decisões, informações e ações permanecem sob responsabilidade dos gestores e executores do projeto. <br>
+                  A solução aumenta a visibilidade, a disciplina e a capacidade de antecipação, apoiando melhores decisões.
+                </div>
+              </div>
+            </div>
+
+            <div class="card accordion-item">
+              <h2 class="accordion-header" id="headingFive">
+                <button type="button" class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#accordionOito" aria-expanded="false" aria-controls="accordionFive">
+                  Quanto tempo leva a implantação?
+                </button>
+              </h2>
+              <div id="accordionOito" class="accordion-collapse collapse" aria-labelledby="headingFive" data-bs-parent="#accordionExample">
+                <div class="accordion-body">
+                  O prazo depende da complexidade da obra, da qualidade dos dados disponíveis e da disponibilidade da equipe. <br>
+                  Essas variáveis são avaliadas no diagnóstico inicial e consideradas na proposta comercial.
+                </div>
+              </div>
+            </div>
+
+
           </div>
         </div>
       </div>
     </div>
   </section>
-  <!-- FAQ: Término -->
 
-  <!-- CTA: Start -->
   <section id="landingCTA" class="section-py landing-cta p-lg-0 pb-0">
     <div class="container">
       <div class="row align-items-center gy-5 gy-lg-0">
         <div class="col-lg-6 text-center text-lg-start">
           <h6 class="h2 text-primary fw-bold mb-1">Pronto(a) para iniciar?</h6>
-          <p class="fw-medium mb-4">Inicie seu projeto com uma avaliação gratuita de 7 dias</p>
-          <a href="{{url('/front-pages/payment')}}" class="btn btn-primary">Quero iniciar</a>
+          <p class="fw-medium mb-4">Faça seu diagnóstico gratuito e entenda como a DCF pode ajudar sua obra.</p>
+          <a href="#" class="btn btn-warning">SOLICITAR DIAGNÓSTICO</a>
         </div>
         <div class="col-lg-6 pt-lg-5 text-center text-lg-end">
           <img src="{{asset('assets/img/front-pages/landing-page/cta-dashboard.png')}}" alt="cta dashboard" class="img-fluid" />
@@ -752,9 +797,7 @@ $configData = Helper::appClasses();
       </div>
     </div>
   </section>
-  <!-- CTA: End -->
 
-  <!-- Contact Us: Start -->
   <section id="landingContact" class="section-py bg-body landing-contact">
     <div class="container">
       <div class="text-center mb-3 pb-1">
@@ -827,5 +870,5 @@ $configData = Helper::appClasses();
       </div>
     </div>
   </section>
-  <!-- Contact Us: End -->
+
 </div>

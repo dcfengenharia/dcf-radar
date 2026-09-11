@@ -9,6 +9,7 @@ use App\Models\Atividade;
 use App\Models\CategoriaRestricao;
 use App\Models\ItemSuprimento;
 use App\Models\Restricao;
+use App\Support\Estoque\CoberturaNecessidadeAtividadeQuery;
 use App\Support\Suprimentos\AlertaCadeiaSuprimento;
 use App\Support\Suprimentos\ConciliacaoRecebimento;
 use Carbon\Carbon;
@@ -145,10 +146,22 @@ class SincronizarRestricaoCadeiaSuprimento
             $necessidade = $atividade->inicio_planejado;
             $condicaoC = $temMaterialPendente && $hoje->gte($necessidade);
 
-            if ($condicaoC) {
+            // Correção Segura do Falso Positivo (Revisão Arquitetural 2,
+            // Seção 13-17) — mesmo princípio já aplicado em
+            // `SincronizarRestricaoSuprimento::sincronizarItem()`: a
+            // Condição C (material formal ainda não recebido) é sempre
+            // sobre o processo COMERCIAL do Pacote, nunca sobre se a
+            // necessidade específica de Material desta Atividade já
+            // está fisicamente coberta por Estoque/Reserva. Sem
+            // correspondência inequívoca (`null`), o comportamento
+            // histórico é preservado.
+            $cobertoPorEstoque = CoberturaNecessidadeAtividadeQuery::estadoCobreTodasParaPacote($atividade, $pacote);
+            $bloquearPorFaltaDeMaterial = $condicaoC && $cobertoPorEstoque !== true;
+
+            if ($bloquearPorFaltaDeMaterial) {
                 static::abrirOuManter($pacote, $atividade, $restricao, $necessidade);
             } else {
-                static::resolverSeAberta($restricao, $userId);
+                static::resolverSeAberta($restricao, $userId, $condicaoC ? 'cobertura' : 'prazo');
             }
         }
     }
@@ -226,16 +239,20 @@ class SincronizarRestricaoCadeiaSuprimento
         });
     }
 
-    private static function resolverSeAberta(?Restricao $restricao, ?string $userId): void
+    private static function resolverSeAberta(?Restricao $restricao, ?string $userId, string $motivo = 'prazo'): void
     {
         if (! $restricao || ! in_array($restricao->status->value, self::STATUS_ABERTOS, true)) {
             return;
         }
 
         if ($userId) {
+            $descricao = $motivo === 'cobertura'
+                ? 'Restrição resolvida automaticamente: a necessidade de Material desta atividade já está coberta por estoque/reserva específica (o Pacote pode continuar com material formal pendente comercialmente).'
+                : 'Restrição resolvida automaticamente: material da cadeia formal de Suprimentos recebido ou necessidade não mais vigente.';
+
             $restricao->acoes()->create([
                 'autor_id' => $userId,
-                'descricao' => 'Restrição resolvida automaticamente: material da cadeia formal de Suprimentos recebido ou necessidade não mais vigente.',
+                'descricao' => $descricao,
             ]);
         }
 

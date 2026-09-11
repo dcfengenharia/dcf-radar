@@ -22,6 +22,7 @@ use App\Actions\Estoque\CriarInventarioEstoque;
 use App\Actions\Estoque\IniciarInventarioEstoque;
 use App\Actions\Estoque\RegistrarContagemInventario;
 use App\Actions\Estoque\AdicionarItemInesperadoInventario;
+use App\Actions\Estoque\AdicionarMaterialQuantitativoInesperadoInventario;
 use App\Actions\Estoque\MoverInventarioParaAnalise;
 use App\Actions\Estoque\AprovarAjusteInventario;
 use App\Actions\Estoque\ConcluirInventarioEstoque;
@@ -3062,6 +3063,32 @@ new class extends Component {
             ->first();
 
         if (! $item) {
+            // 20.7.CORREÇÃO — Material Quantitativo com saldo sistêmico
+            // zero no instante do snapshot (nunca capturado por
+            // IniciarInventarioEstoque) tem uma porta de entrada própria
+            // aqui — nunca via "Registrar serial inesperado", restrita a
+            // Serializado. A Action decide, com base no modo de
+            // rastreabilidade real do Material, se cria o item ou rejeita
+            // com mensagem específica (Lote/Serializado continuam exigindo
+            // a identidade física da Unidade, nunca aceitos só pelo código
+            // do Material Mestre).
+            if ($resultado->tipo === 'material') {
+                try {
+                    $this->garantirPermissaoInventario('criar');
+                    $item = app(AdicionarMaterialQuantitativoInesperadoInventario::class)
+                        ->execute($inventario, $resultado->entidade, Auth::user());
+                } catch (InventarioEstoqueInvalidoException $e) {
+                    $this->scanErro = $e->getMessage();
+
+                    return;
+                }
+
+                unset($this->itensInventarioDetalhe);
+                $this->abrirModalContagem($item->id);
+
+                return;
+            }
+
             $this->scanErro = 'Este item não faz parte do snapshot deste Inventário — se for um serial físico inesperado, use "Registrar serial inesperado".';
 
             return;

@@ -23,77 +23,79 @@ use Livewire\Component;
  * sob demanda em vez de auto-abrir por computed property no mount.
  */
 new class extends Component {
-    use ExecutaComTransacaoSegura;
+  use ExecutaComTransacaoSegura;
 
-    public string $tipo = '';
-    public string $mensagem = '';
-    public string $urlOrigem = '';
-    public bool $enviando = false;
+  public string $tipo = '';
+  public string $mensagem = '';
+  public string $urlOrigem = '';
+  public bool $enviando = false;
 
-    protected function rules(): array
-    {
-        return [
-            'tipo' => ['required', Rule::in(array_column(TipoFeedback::cases(), 'value'))],
-            'mensagem' => ['required', 'string', 'min:10', 'max:2000'],
-        ];
+  protected function rules(): array
+  {
+    return [
+      'tipo' => ['required', Rule::in(array_column(TipoFeedback::cases(), 'value'))],
+      'mensagem' => ['required', 'string', 'min:10', 'max:2000'],
+    ];
+  }
+
+  protected function messages(): array
+  {
+    return [
+      'tipo.required' => 'Selecione o tipo de mensagem.',
+      'mensagem.required' => 'Escreva sua mensagem.',
+      'mensagem.min' => 'Sua mensagem precisa ter pelo menos :min caracteres.',
+      'mensagem.max' => 'Sua mensagem não pode ter mais de :max caracteres.',
+    ];
+  }
+
+  public function abrir(string $url): void
+  {
+    $this->urlOrigem = $url;
+  }
+
+  public function enviar(): void
+  {
+    $this->enviando = true;
+    $this->mensagem = trim($this->mensagem);
+
+    $chaveThrottle = 'enviar-feedback:' . Auth::id();
+    if (RateLimiter::tooManyAttempts($chaveThrottle, 5)) {
+      $segundos = RateLimiter::availableIn($chaveThrottle);
+      $this->enviando = false;
+      $this->addError('mensagem', "Muitos envios em pouco tempo. Tente de novo em {$segundos} segundos.");
+      return;
     }
 
-    protected function messages(): array
-    {
-        return [
-            'tipo.required' => 'Selecione o tipo de mensagem.',
-            'mensagem.required' => 'Escreva sua mensagem.',
-            'mensagem.min' => 'Sua mensagem precisa ter pelo menos :min caracteres.',
-            'mensagem.max' => 'Sua mensagem não pode ter mais de :max caracteres.',
-        ];
+    $this->validate();
+    RateLimiter::hit($chaveThrottle, 300);
+
+    $this->transacaoSegura(function () {
+      $feedback = Feedback::create([
+        'tenant_id' => TenantContext::currentId(),
+        'user_id' => Auth::id(),
+        'tipo' => $this->tipo,
+        'mensagem' => $this->mensagem,
+        'url_origem' => $this->urlOrigem ?: null,
+      ]);
+
+      Notification::route('mail', 'contato@dcf.eng.br')->notify(new NovoFeedbackNotification($feedback));
+
+      Auth::user()->notify(new AgradecimentoFeedbackNotification());
+    }, 'Não foi possível enviar seu feedback neste momento. Verifique sua conexão e tente novamente.');
+
+    $this->enviando = false;
+
+    if ($this->transacaoSeguraFalhou()) {
+      return;
     }
 
-    public function abrir(string $url): void
-    {
-        $this->urlOrigem = $url;
-    }
-
-    public function enviar(): void
-    {
-        $this->enviando = true;
-        $this->mensagem = trim($this->mensagem);
-
-        $chaveThrottle = 'enviar-feedback:'.Auth::id();
-        if (RateLimiter::tooManyAttempts($chaveThrottle, 5)) {
-            $segundos = RateLimiter::availableIn($chaveThrottle);
-            $this->enviando = false;
-            $this->addError('mensagem', "Muitos envios em pouco tempo. Tente de novo em {$segundos} segundos.");
-            return;
-        }
-
-        $this->validate();
-        RateLimiter::hit($chaveThrottle, 300);
-
-        $this->transacaoSegura(function () {
-            $feedback = Feedback::create([
-                'tenant_id' => TenantContext::currentId(),
-                'user_id' => Auth::id(),
-                'tipo' => $this->tipo,
-                'mensagem' => $this->mensagem,
-                'url_origem' => $this->urlOrigem ?: null,
-            ]);
-
-            Notification::route('mail', 'contato@dcf.eng.br')
-                ->notify(new NovoFeedbackNotification($feedback));
-
-            Auth::user()->notify(new AgradecimentoFeedbackNotification());
-        }, 'Não foi possível enviar seu feedback neste momento. Verifique sua conexão e tente novamente.');
-
-        $this->enviando = false;
-
-        if ($this->transacaoSeguraFalhou()) {
-            return;
-        }
-
-        $this->reset(['tipo', 'mensagem', 'urlOrigem']);
-        $this->dispatch('fechar-modal-suporte');
-        $this->dispatch('show-toast', message: 'Obrigado pelo seu feedback! Sua contribuição foi enviada com sucesso e nos ajudará a melhorar o sistema.');
-    }
+    $this->reset(['tipo', 'mensagem', 'urlOrigem']);
+    $this->dispatch('fechar-modal-suporte');
+    $this->dispatch(
+      'show-toast',
+      message: 'Obrigado pelo seu feedback! Sua contribuição foi enviada com sucesso e nos ajudará a melhorar o sistema.'
+    );
+  }
 };
 ?>
 
@@ -105,7 +107,10 @@ new class extends Component {
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="text-muted mb-3">Encontrou um erro, tem uma sugestão ou uma crítica? Conte pra gente — sua contribuição ajuda a melhorar o sistema durante esta fase de testes.</p>
+                <p class="text-muted mb-3">
+                  <strong>Fala comigo bb!!</strong> <br>
+                  Encontrou um erro, tem uma sugestão ou uma crítica? Conte pra gente! Sua contribuição ajuda a melhorar o sistema durante esta fase de testes.
+                </p>
 
                 <div class="mb-3">
                     <label class="form-label" for="suporteTipo">Tipo de mensagem</label>

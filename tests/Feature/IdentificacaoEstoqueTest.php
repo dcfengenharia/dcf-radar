@@ -327,6 +327,81 @@ class IdentificacaoEstoqueTest extends TestCase
         }
     }
 
+    // =========================================================
+    // 20.7.CORREÇÃO — fallback pro código humano do Material Mestre
+    // (achado real: "EX-003" era rejeitado como "formato não
+    // reconhecido" — o campo só aceitava o QR estruturado MAT:{ulid}).
+    // =========================================================
+
+    public function test_g2_codigo_humano_do_material_resolve_tipo_material(): void
+    {
+        $material = $this->criarMaterial(['codigo' => 'EX-003']);
+
+        $resultado = ResolverCodigoEstoque::resolver('EX-003');
+
+        $this->assertSame('material', $resultado->tipo);
+        $this->assertTrue($resultado->entidade->is($material));
+        $this->assertTrue($resultado->ativo);
+    }
+
+    public function test_g3_codigo_humano_inexistente_lanca_desconhecido(): void
+    {
+        try {
+            ResolverCodigoEstoque::resolver('NAO-EXISTE-999');
+            $this->fail('esperava CodigoEstoqueInvalidoException');
+        } catch (CodigoEstoqueInvalidoException $e) {
+            $this->assertStringContainsString('desconhecido', $e->getMessage());
+        }
+    }
+
+    public function test_g4_codigo_humano_de_outro_tenant_nunca_resolve(): void
+    {
+        $outroTenant = Tenant::factory()->create();
+        \App\Support\TenantContext::actingAs($outroTenant, function () use ($outroTenant) {
+            $outraUnidade = UnidadeMedida::create(['tenant_id' => $outroTenant->id, 'codigo' => 'M-OUTRO2', 'nome' => 'Metro']);
+            Material::create([
+                'tenant_id' => $outroTenant->id, 'codigo' => 'EX-003', 'descricao' => 'X',
+                'unidade_medida_id' => $outraUnidade->id, 'modo_rastreabilidade' => 'quantitativo', 'ativo' => true,
+            ]);
+        });
+
+        // Autenticado como $this->user (tenant original), que NUNCA tem
+        // um Material com este código — mesma mensagem de "desconhecido"
+        // que um código que nunca existiu em lugar nenhum.
+        try {
+            ResolverCodigoEstoque::resolver('EX-003');
+            $this->fail('esperava CodigoEstoqueInvalidoException');
+        } catch (CodigoEstoqueInvalidoException $e) {
+            $this->assertStringContainsString('desconhecido', $e->getMessage());
+        }
+    }
+
+    public function test_g5_codigo_humano_material_inativo_resolve_mas_sinaliza(): void
+    {
+        $material = $this->criarMaterial(['codigo' => 'EX-INATIVO', 'ativo' => false]);
+
+        $resultado = ResolverCodigoEstoque::resolver('EX-INATIVO');
+
+        $this->assertSame('material', $resultado->tipo);
+        $this->assertFalse($resultado->ativo);
+    }
+
+    public function test_g6_codigo_estruturado_continua_funcionando_apos_o_fallback(): void
+    {
+        // Regressão explícita: o fallback pro código humano nunca pode
+        // interferir no caminho MAT:{ulid}/UNI:{ulid}/LOC:{ulid} já
+        // existente — mesmo um Material cujo `codigo` humano parece um
+        // ULID válido continua resolvendo pela via estruturada quando o
+        // texto contém ':'.
+        $material = $this->criarMaterial(['codigo' => 'EX-003']);
+        $codigoEstruturado = GeradorCodigoEstoque::codigoMaterial($material);
+
+        $resultado = ResolverCodigoEstoque::resolver($codigoEstruturado);
+
+        $this->assertSame('material', $resultado->tipo);
+        $this->assertTrue($resultado->entidade->is($material));
+    }
+
     public function test_h_cross_obra_bloqueado(): void
     {
         $outraObra = Work::factory()->create(['tenant_id' => $this->tenant->id]);

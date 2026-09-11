@@ -10,6 +10,7 @@ use App\Models\CategoriaRestricao;
 use App\Models\ItemSuprimento;
 use App\Models\Restricao;
 use App\Services\SuprimentoScheduler;
+use App\Support\Estoque\CoberturaNecessidadeAtividadeQuery;
 
 /**
  * Ponte entre o Mapa de Suprimentos e o motor de restrições/prontidão já
@@ -65,15 +66,33 @@ class SincronizarRestricaoSuprimento
         $status = $scheduler->statusDoItem($item);
 
         $item = $item->fresh(['atividades']);
-        $emRisco = in_array($status, [StatusItemSuprimento::EmRisco, StatusItemSuprimento::Atrasado], true);
+        $emRiscoComercial = in_array($status, [StatusItemSuprimento::EmRisco, StatusItemSuprimento::Atrasado], true);
 
         foreach ($item->atividades as $atividade) {
             $restricao = static::buscarRestricao($item, $atividade);
 
-            if ($emRisco) {
+            // Correção Segura do Falso Positivo (Revisão Arquitetural 2,
+            // Seção 13-17): risco COMERCIAL do Pacote (`$emRiscoComercial`,
+            // calculado acima, JAMAIS alterado por esta checagem — o
+            // status/atraso do Pacote continua existindo normalmente pro
+            // Mapa de Suprimentos/Cockpit/histórico) é uma pergunta
+            // diferente de bloqueio OPERACIONAL desta Atividade. Só
+            // bloqueia quando, ALÉM de comercialmente em risco, não há
+            // correspondência inequívoca comprovando que a necessidade
+            // específica de Material já está fisicamente coberta
+            // (Coberta/DisponívelParaReserva) — sem correspondência
+            // nenhuma (`null`), o comportamento histórico é preservado.
+            $cobertoPorEstoque = CoberturaNecessidadeAtividadeQuery::estadoCobreTodasParaPacote($atividade, $item);
+            $bloquearPorFaltaDeMaterial = $emRiscoComercial && $cobertoPorEstoque !== true;
+
+            if ($bloquearPorFaltaDeMaterial) {
                 static::abrirOuAtualizar($item, $atividade, $restricao);
             } elseif ($restricao && in_array($restricao->status->value, self::STATUS_ABERTOS, true)) {
-                static::resolverAutomaticamente($restricao, $userId);
+                static::resolverAutomaticamente(
+                    $restricao,
+                    $userId,
+                    $emRiscoComercial ? 'cobertura' : 'prazo'
+                );
             }
         }
     }
@@ -152,12 +171,26 @@ class SincronizarRestricaoSuprimento
         ]);
     }
 
-    private static function resolverAutomaticamente(Restricao $restricao, ?string $userId): void
+    /**
+     * Correção Segura do Falso Positivo — `$motivo` distingue, no
+     * histórico da Restrição (Seção 14 do pedido: "preservar
+     * histórico/timestamps"), as duas causas possíveis de resolução
+     * automática, nunca a mesma frase pras duas: `'prazo'` (o Pacote
+     * voltou ao prazo comercialmente, comportamento de sempre) ou
+     * `'cobertura'` (o Pacote pode continuar comercialmente atrasado —
+     * a Atividade deixou de estar bloqueada porque a necessidade
+     * específica de Material já está fisicamente coberta).
+     */
+    private static function resolverAutomaticamente(Restricao $restricao, ?string $userId, string $motivo = 'prazo'): void
     {
         if ($userId) {
+            $descricao = $motivo === 'cobertura'
+                ? 'Restrição resolvida automaticamente: a necessidade de Material desta atividade já está coberta por estoque/reserva específica (o processo de compra pode continuar em atraso comercialmente).'
+                : 'Restrição resolvida automaticamente: item de suprimento voltou ao prazo.';
+
             $restricao->acoes()->create([
                 'autor_id' => $userId,
-                'descricao' => 'Restrição resolvida automaticamente: item de suprimento voltou ao prazo.',
+                'descricao' => $descricao,
             ]);
         }
 

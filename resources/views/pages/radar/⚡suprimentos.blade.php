@@ -104,6 +104,16 @@ new class extends Component {
   public string $recebimentoLocalNova = '';
   public string $recebimentoObservacaoNova = '';
 
+  // ---- Rastreabilidade Quantitativa, Etapa 1 — Distribuição por Atividade (item de RC) ----
+  public ?string $rcItemParcelaAbertoId = null;
+  public ?string $rcParcelaNecessidadeIdNovo = null;
+  public string $rcParcelaQuantidadeNovo = '';
+
+  // ---- Rastreabilidade Quantitativa, Etapa 1 — Destinação planejada por Atividade (item de Pedido) ----
+  public ?string $pedidoItemParcelaAbertoId = null;
+  public ?string $pedidoParcelaNecessidadeIdNovo = null;
+  public string $pedidoParcelaQuantidadeNovo = '';
+
   public function mount(Work $obra): void
   {
     $this->obra = $obra;
@@ -149,6 +159,25 @@ new class extends Component {
   private function resolverEtapaRcDaObraAtual(string $id): \App\Models\RequisicaoCompraEtapa
   {
     return \App\Models\RequisicaoCompraEtapa::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  // ---- Rastreabilidade Quantitativa, Etapa 1 — mesma disciplina de resolvers obra-scoped ----
+
+  private function resolverNecessidadeDaObraAtual(string $id): \App\Models\AtividadeNecessidadeMaterial
+  {
+    return \App\Models\AtividadeNecessidadeMaterial::where('obra_id', $this->obra->id)->findOrFail($id);
+  }
+
+  private function resolverParcelaRcDaObraAtual(string $id): \App\Models\RequisicaoCompraItemParcela
+  {
+    return \App\Models\RequisicaoCompraItemParcela::whereHas('requisicaoCompraItem.requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  private function resolverParcelaPedidoDaObraAtual(string $id): \App\Models\PedidoCompraItemParcela
+  {
+    return \App\Models\PedidoCompraItemParcela::whereHas('pedidoCompraItem.pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
       ->findOrFail($id);
   }
 
@@ -503,6 +532,67 @@ new class extends Component {
     })->filter(fn ($a) => $a->saldo_para_rc > 0)->values();
   }
 
+  /**
+   * Rastreabilidade Quantitativa, Etapa 1 — "Distribuição por Atividade"
+   * de UM item de RC (Seção 10 do pedido). `necessidades_disponiveis`
+   * sugere só as `AtividadeNecessidadeMaterial` com correspondência
+   * inequívoca de Material (mesmo `item_take_off_id`/`material_id`
+   * alcançado por este item, via `CoberturaNecessidadeAtividadeQuery::
+   * necessidadesRelevantesParaPacote()`-like resolução direta aqui) E
+   * saldo > 0 — nunca seleciona automaticamente quando há ambiguidade
+   * (não seleciona nada sozinho, só filtra o que é elegível).
+   */
+  #[Computed]
+  public function distribuicaoRcItemAberta(): ?array
+  {
+    if (! $this->rcItemParcelaAbertoId) {
+      return null;
+    }
+
+    $item = \App\Models\RequisicaoCompraItem::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->with(['alocacao.requisicaoItem.itemTakeOff', 'parcelas.necessidade.atividade.frenteTrabalho'])
+      ->find($this->rcItemParcelaAbertoId);
+
+    if (! $item) {
+      return null;
+    }
+
+    $itemTakeOff = $item->alocacao?->requisicaoItem?->itemTakeOff;
+    $itemTakeOffId = $itemTakeOff?->id;
+    $materialId = $itemTakeOff?->material_id;
+
+    $necessidadesDisponiveis = collect();
+
+    if ($itemTakeOffId || $materialId) {
+      $jaUsadas = $item->parcelas->pluck('atividade_necessidade_material_id');
+
+      $necessidadesDisponiveis = \App\Models\AtividadeNecessidadeMaterial::where('obra_id', $this->obra->id)
+        ->where(function ($query) use ($itemTakeOffId, $materialId) {
+          $query->when($itemTakeOffId, fn ($q) => $q->orWhere('item_take_off_id', $itemTakeOffId))
+            ->when($materialId, fn ($q) => $q->orWhere('material_id', $materialId));
+        })
+        ->whereNotIn('id', $jaUsadas)
+        ->with('atividade.frenteTrabalho')
+        ->get()
+        ->map(function (\App\Models\AtividadeNecessidadeMaterial $necessidade) {
+          $necessidade->saldo_para_rc = $necessidade->saldoOficialParaDetalheRc();
+          return $necessidade;
+        })
+        ->filter(fn ($n) => $n->saldo_para_rc > 0.0005)
+        ->values();
+    }
+
+    $totalDetalhado = (float) $item->parcelas->sum('quantidade');
+
+    return [
+      'item' => $item,
+      'necessidades_disponiveis' => $necessidadesDisponiveis,
+      'parcelas' => $item->parcelas,
+      'total_detalhado' => $totalDetalhado,
+      'saldo_a_distribuir' => round((float) $item->quantidade - $totalDetalhado, 3),
+    ];
+  }
+
   // =========================================================================
   // Ciclo 19, Etapa 19.5 — Pedidos/Ordens de Compra (dentro do detalhe da RC)
   // =========================================================================
@@ -574,6 +664,61 @@ new class extends Component {
       $rcItem->saldo_para_pedido = round((float) $rcItem->quantidade - (float) ($consumidoOficial[$rcItem->id] ?? 0), 3);
       return $rcItem;
     })->filter(fn ($i) => $i->saldo_para_pedido > 0)->values();
+  }
+
+  /**
+   * Rastreabilidade Quantitativa, Etapa 1 — "Destinação planejada por
+   * Atividade" de UM item de Pedido (Seção 11 do pedido). `disponiveis`
+   * sugere APENAS as parcelas que a própria `RequisicaoCompraItem` mãe
+   * já detalhou (`item->requisicaoCompraItem->parcelas`) — NUNCA
+   * proporcional/inferida (Seção 2, decisão fechada). `quota_rc`, em
+   * cada linha já distribuída, é sempre a quantidade EXATA que a RC
+   * detalhou pra aquele par (nunca recalculada/estimada).
+   */
+  #[Computed]
+  public function distribuicaoPedidoItemAberta(): ?array
+  {
+    if (! $this->pedidoItemParcelaAbertoId) {
+      return null;
+    }
+
+    $item = \App\Models\PedidoCompraItem::whereHas('pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->with([
+        'requisicaoCompraItem.parcelas.necessidade.atividade.frenteTrabalho',
+        'parcelas.necessidade.atividade.frenteTrabalho',
+      ])
+      ->find($this->pedidoItemParcelaAbertoId);
+
+    if (! $item) {
+      return null;
+    }
+
+    $rcParcelasPorNecessidade = $item->requisicaoCompraItem->parcelas->keyBy('atividade_necessidade_material_id');
+    $jaUsadas = $item->parcelas->pluck('atividade_necessidade_material_id');
+
+    $disponiveis = $item->requisicaoCompraItem->parcelas
+      ->whereNotIn('atividade_necessidade_material_id', $jaUsadas)
+      ->map(function (\App\Models\RequisicaoCompraItemParcela $rcParcela) {
+        $rcParcela->saldo_para_pedido = $rcParcela->saldoOficialParaPedido();
+        return $rcParcela;
+      })
+      ->filter(fn ($p) => $p->saldo_para_pedido > 0.0005)
+      ->values();
+
+    $parcelasComQuota = $item->parcelas->map(function (\App\Models\PedidoCompraItemParcela $parcela) use ($rcParcelasPorNecessidade) {
+      $parcela->quota_rc = (float) ($rcParcelasPorNecessidade[$parcela->atividade_necessidade_material_id]->quantidade ?? 0);
+      return $parcela;
+    });
+
+    $totalDetalhado = (float) $item->parcelas->sum('quantidade');
+
+    return [
+      'item' => $item,
+      'disponiveis' => $disponiveis,
+      'parcelas' => $parcelasComQuota,
+      'total_detalhado' => $totalDetalhado,
+      'saldo_a_distribuir' => round((float) $item->quantidade_pedida - $totalDetalhado, 3),
+    ];
   }
 
   #[Computed]
@@ -1209,6 +1354,9 @@ new class extends Component {
     $this->rcObservacaoNovo = '';
     $this->rcItemAlocacaoIdNovo = null;
     $this->rcItemQuantidadeNovo = '';
+    $this->rcItemParcelaAbertoId = null;
+    $this->rcParcelaNecessidadeIdNovo = null;
+    $this->rcParcelaQuantidadeNovo = '';
   }
 
   public function criarRcRascunho(): void
@@ -1270,6 +1418,73 @@ new class extends Component {
 
     unset($this->rcAberta, $this->alocacoesComSaldoParaRc);
     $this->dispatch('show-toast', message: 'Item removido.');
+  }
+
+  // ---- Rastreabilidade Quantitativa, Etapa 1 — Distribuição por Atividade (item de RC) ----
+
+  public function abrirDistribuicaoRcItem(string $itemId): void
+  {
+    // Resolve (e descarta) via resolver obra-scoped antes de aceitar o
+    // id — mesma disciplina de `abrirModalRc()`/item 8/9 da 19.4.CORREÇÃO.
+    $item = $this->resolverItemRcDaObraAtual($itemId);
+
+    $this->rcItemParcelaAbertoId = $item->id;
+    $this->rcParcelaNecessidadeIdNovo = null;
+    $this->rcParcelaQuantidadeNovo = '';
+    unset($this->distribuicaoRcItemAberta);
+  }
+
+  public function fecharDistribuicaoRcItem(): void
+  {
+    $this->rcItemParcelaAbertoId = null;
+    $this->rcParcelaNecessidadeIdNovo = null;
+    $this->rcParcelaQuantidadeNovo = '';
+  }
+
+  public function adicionarParcelaRc(): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->rcParcelaNecessidadeIdNovo || $this->rcParcelaQuantidadeNovo === '') {
+      $this->dispatch('show-toast', message: 'Selecione uma Atividade e informe a quantidade.', type: 'error');
+      return;
+    }
+
+    try {
+      $item = $this->resolverItemRcDaObraAtual($this->rcItemParcelaAbertoId);
+      $necessidade = $this->resolverNecessidadeDaObraAtual($this->rcParcelaNecessidadeIdNovo);
+
+      (new \App\Actions\Suprimentos\AtualizarDistribuicaoParcelaRequisicaoCompra())->adicionarParcela(
+        $item,
+        $necessidade,
+        (float) str_replace(',', '.', $this->rcParcelaQuantidadeNovo),
+        Auth::user(),
+      );
+    } catch (\App\Exceptions\ParcelaNecessidadeInvalidaException|\App\Exceptions\SaldoParcelaNecessidadeInsuficienteException|\App\Exceptions\RequisicaoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->rcParcelaNecessidadeIdNovo = null;
+    $this->rcParcelaQuantidadeNovo = '';
+    unset($this->distribuicaoRcItemAberta, $this->rcAberta);
+    $this->dispatch('show-toast', message: 'Distribuição por Atividade adicionada.');
+  }
+
+  public function removerParcelaRc(string $parcelaId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $parcela = $this->resolverParcelaRcDaObraAtual($parcelaId);
+      (new \App\Actions\Suprimentos\AtualizarDistribuicaoParcelaRequisicaoCompra())->removerParcela($parcela);
+    } catch (\App\Exceptions\RequisicaoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->distribuicaoRcItemAberta, $this->rcAberta);
+    $this->dispatch('show-toast', message: 'Distribuição por Atividade removida.');
   }
 
   public function emitirRc(): void
@@ -1375,6 +1590,9 @@ new class extends Component {
     $this->pedidoObservacaoNovo = '';
     $this->pedidoItemRcItemIdNovo = null;
     $this->pedidoItemQuantidadeNovo = '';
+    $this->pedidoItemParcelaAbertoId = null;
+    $this->pedidoParcelaNecessidadeIdNovo = null;
+    $this->pedidoParcelaQuantidadeNovo = '';
   }
 
   public function abrirPedidoDetalhe(string $pedidoId): void
@@ -1474,6 +1692,71 @@ new class extends Component {
 
     unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido);
     $this->dispatch('show-toast', message: 'Item removido.');
+  }
+
+  // ---- Rastreabilidade Quantitativa, Etapa 1 — Destinação planejada por Atividade (item de Pedido) ----
+
+  public function abrirDistribuicaoPedidoItem(string $itemId): void
+  {
+    $item = $this->resolverItemPedidoDaObraAtual($itemId);
+
+    $this->pedidoItemParcelaAbertoId = $item->id;
+    $this->pedidoParcelaNecessidadeIdNovo = null;
+    $this->pedidoParcelaQuantidadeNovo = '';
+    unset($this->distribuicaoPedidoItemAberta);
+  }
+
+  public function fecharDistribuicaoPedidoItem(): void
+  {
+    $this->pedidoItemParcelaAbertoId = null;
+    $this->pedidoParcelaNecessidadeIdNovo = null;
+    $this->pedidoParcelaQuantidadeNovo = '';
+  }
+
+  public function adicionarParcelaPedido(): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->pedidoParcelaNecessidadeIdNovo || $this->pedidoParcelaQuantidadeNovo === '') {
+      $this->dispatch('show-toast', message: 'Selecione uma Atividade e informe a quantidade.', type: 'error');
+      return;
+    }
+
+    try {
+      $item = $this->resolverItemPedidoDaObraAtual($this->pedidoItemParcelaAbertoId);
+      $necessidade = $this->resolverNecessidadeDaObraAtual($this->pedidoParcelaNecessidadeIdNovo);
+
+      (new \App\Actions\Suprimentos\AtualizarDistribuicaoParcelaPedidoCompra())->adicionarParcela(
+        $item,
+        $necessidade,
+        (float) str_replace(',', '.', $this->pedidoParcelaQuantidadeNovo),
+        Auth::user(),
+      );
+    } catch (\App\Exceptions\ParcelaNecessidadeInvalidaException|\App\Exceptions\SaldoParcelaPedidoInsuficienteException|\App\Exceptions\PedidoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->pedidoParcelaNecessidadeIdNovo = null;
+    $this->pedidoParcelaQuantidadeNovo = '';
+    unset($this->distribuicaoPedidoItemAberta, $this->pedidoAberto);
+    $this->dispatch('show-toast', message: 'Destinação planejada por Atividade adicionada.');
+  }
+
+  public function removerParcelaPedido(string $parcelaId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $parcela = $this->resolverParcelaPedidoDaObraAtual($parcelaId);
+      (new \App\Actions\Suprimentos\AtualizarDistribuicaoParcelaPedidoCompra())->removerParcela($parcela);
+    } catch (\App\Exceptions\PedidoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->distribuicaoPedidoItemAberta, $this->pedidoAberto);
+    $this->dispatch('show-toast', message: 'Destinação planejada por Atividade removida.');
   }
 
   public function emitirPedido(): void
@@ -2221,6 +2504,7 @@ new class extends Component {
                                 <tr>
                                     <th>Item</th>
                                     <th class="text-end">Quantidade</th>
+                                    <th>Distribuição por Atividade</th>
                                     <th></th>
                                 </tr>
                             </thead>
@@ -2230,6 +2514,11 @@ new class extends Component {
                                 <tr wire:key="rcitem-{{ $rcItem->id }}">
                                     <td>{{ $ito?->descricao ?? '—' }}</td>
                                     <td class="text-end">{{ number_format((float) $rcItem->quantidade, 3, ',', '.') }} {{ $ito?->unidadeMedida?->codigo }}</td>
+                                    <td>
+                                        <button type="button" class="btn btn-xs btn-outline-primary py-0 px-2" wire:click="abrirDistribuicaoRcItem('{{ $rcItem->id }}')">
+                                            <i class="bx bx-sitemap me-1"></i>{{ $rcItem->parcelas->count() }} atividade(s)
+                                        </button>
+                                    </td>
                                     <td class="text-end">
                                         <button class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerItemRc('{{ $rcItem->id }}')">
                                             <i class="bx bx-trash"></i>
@@ -2237,11 +2526,83 @@ new class extends Component {
                                     </td>
                                 </tr>
                                 @empty
-                                <tr><td colspan="3" class="text-center text-muted py-3">Nenhum item adicionado ainda.</td></tr>
+                                <tr><td colspan="4" class="text-center text-muted py-3">Nenhum item adicionado ainda.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>
                     </div>
+
+                    @if($this->rcItemParcelaAbertoId && $this->distribuicaoRcItemAberta)
+                    @php $distRc = $this->distribuicaoRcItemAberta; @endphp
+                    {{-- Rastreabilidade Quantitativa, Etapa 1 — "Distribuição por Atividade" de um item de RC. Nunca proporcional/inferida: cada linha é uma escolha explícita, validada contra o saldo real (Guardas A/B). --}}
+                    <div class="card mb-3">
+                        <div class="card-header d-flex justify-content-between align-items-center py-2">
+                            <strong class="small">Distribuição por Atividade — {{ $distRc['item']->alocacao?->requisicaoItem?->itemTakeOff?->descricao }}</strong>
+                            <button type="button" class="btn-close btn-sm" wire:click="fecharDistribuicaoRcItem"></button>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 text-center small mb-3">
+                                <div class="col-4"><div class="text-muted">Quantidade do item</div><div class="fw-bold">{{ number_format((float) $distRc['item']->quantidade, 3, ',', '.') }}</div></div>
+                                <div class="col-4"><div class="text-muted">Distribuído</div><div class="fw-bold">{{ number_format($distRc['total_detalhado'], 3, ',', '.') }}</div></div>
+                                <div class="col-4"><div class="text-muted">Saldo a distribuir</div><div class="fw-bold">{{ number_format($distRc['saldo_a_distribuir'], 3, ',', '.') }}</div></div>
+                            </div>
+
+                            <table class="table table-sm align-middle mb-3">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Atividade</th>
+                                        <th>Frente</th>
+                                        <th>Origem</th>
+                                        <th class="text-end">Necessária</th>
+                                        <th class="text-end">Nesta RC</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse ($distRc['parcelas'] as $parcela)
+                                    <tr wire:key="rc-parcela-{{ $parcela->id }}">
+                                        <td>{{ $parcela->necessidade?->atividade?->nome ?? '—' }}</td>
+                                        <td>{{ $parcela->necessidade?->atividade?->frenteTrabalho?->nome ?? '—' }}</td>
+                                        <td>{{ $parcela->necessidade?->origem?->label() }}</td>
+                                        <td class="text-end">{{ number_format((float) ($parcela->necessidade?->quantidade_necessaria ?? 0), 3, ',', '.') }}</td>
+                                        <td class="text-end">{{ number_format((float) $parcela->quantidade, 3, ',', '.') }}</td>
+                                        <td class="text-end">
+                                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerParcelaRc('{{ $parcela->id }}')">
+                                                <i class="bx bx-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    @empty
+                                    <tr><td colspan="6" class="text-center text-muted py-2">Informação insuficiente — nenhuma Atividade detalhada ainda para este item.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+
+                            @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-6">
+                                    <label class="form-label small">Atividade (necessidade compatível, com saldo)</label>
+                                    <select class="form-select form-select-sm" wire:model="rcParcelaNecessidadeIdNovo">
+                                        <option value="">Selecione</option>
+                                        @foreach($distRc['necessidades_disponiveis'] as $necessidade)
+                                        <option value="{{ $necessidade->id }}">
+                                            {{ $necessidade->atividade?->nome }} — necessário {{ number_format((float) $necessidade->quantidade_necessaria, 3, ',', '.') }}, saldo {{ number_format($necessidade->saldo_para_rc, 3, ',', '.') }}
+                                        </option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Quantidade nesta RC</label>
+                                    <input type="text" class="form-control form-control-sm" wire:model="rcParcelaQuantidadeNovo">
+                                </div>
+                                <div class="col-md-3">
+                                    <button type="button" class="btn btn-sm btn-primary w-100" wire:click="adicionarParcelaRc">Adicionar</button>
+                                </div>
+                            </div>
+                            @endif
+                        </div>
+                    </div>
+                    @endif
 
                     @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
                     <div class="row g-2 align-items-end mb-3">
@@ -2441,6 +2802,7 @@ new class extends Component {
                                     <th>Item</th>
                                     <th class="text-end">Pedido</th>
                                     @if($pedido->status->value === 'rascunho')
+                                    <th>Distribuição por Atividade</th>
                                     <th></th>
                                     @else
                                     <th class="text-end">Recebido</th>
@@ -2457,6 +2819,11 @@ new class extends Component {
                                     <td>{{ $pedidoItem->descricao_snapshot ?? $pedidoItem->requisicaoCompraItem?->descricao_snapshot ?? '—' }}</td>
                                     <td class="text-end">{{ number_format((float) $pedidoItem->quantidade_pedida, 3, ',', '.') }} {{ $pedidoItem->unidade_snapshot ?? $pedidoItem->requisicaoCompraItem?->unidade_snapshot }}</td>
                                     @if($pedido->status->value === 'rascunho')
+                                    <td>
+                                        <button type="button" class="btn btn-xs btn-outline-primary py-0 px-2" wire:click="abrirDistribuicaoPedidoItem('{{ $pedidoItem->id }}')">
+                                            <i class="bx bx-sitemap me-1"></i>{{ $pedidoItem->parcelas->count() }} atividade(s)
+                                        </button>
+                                    </td>
                                     <td class="text-end">
                                         <button class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerItemPedido('{{ $pedidoItem->id }}')">
                                             <i class="bx bx-trash"></i>
@@ -2543,6 +2910,76 @@ new class extends Component {
                     </div>
 
                     @if($pedido->status->value === 'rascunho')
+                        @if($this->pedidoItemParcelaAbertoId && $this->distribuicaoPedidoItemAberta)
+                        @php $distPedido = $this->distribuicaoPedidoItemAberta; @endphp
+                        {{-- Rastreabilidade Quantitativa, Etapa 1 — "Destinação planejada por Atividade" do item do Pedido. Só oferece as parcelas que a própria RC já detalhou (nunca proporcional/inferida). --}}
+                        <div class="card mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                <strong class="small">Destinação planejada por Atividade — {{ $distPedido['item']->descricao_snapshot ?? $distPedido['item']->requisicaoCompraItem?->descricao_snapshot }}</strong>
+                                <button type="button" class="btn-close btn-sm" wire:click="fecharDistribuicaoPedidoItem"></button>
+                            </div>
+                            <div class="card-body">
+                                <div class="row g-2 text-center small mb-3">
+                                    <div class="col-4"><div class="text-muted">Quantidade do Pedido</div><div class="fw-bold">{{ number_format((float) $distPedido['item']->quantidade_pedida, 3, ',', '.') }}</div></div>
+                                    <div class="col-4"><div class="text-muted">Distribuído</div><div class="fw-bold">{{ number_format($distPedido['total_detalhado'], 3, ',', '.') }}</div></div>
+                                    <div class="col-4"><div class="text-muted">Saldo a distribuir</div><div class="fw-bold">{{ number_format($distPedido['saldo_a_distribuir'], 3, ',', '.') }}</div></div>
+                                </div>
+
+                                <table class="table table-sm align-middle mb-3">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Atividade</th>
+                                            <th>Frente</th>
+                                            <th class="text-end">Disponível na RC</th>
+                                            <th class="text-end">Neste Pedido</th>
+                                            <th></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @forelse ($distPedido['parcelas'] as $parcelaPedido)
+                                        <tr wire:key="pedido-parcela-{{ $parcelaPedido->id }}">
+                                            <td>{{ $parcelaPedido->necessidade?->atividade?->nome ?? '—' }}</td>
+                                            <td>{{ $parcelaPedido->necessidade?->atividade?->frenteTrabalho?->nome ?? '—' }}</td>
+                                            <td class="text-end">{{ number_format($parcelaPedido->quota_rc, 3, ',', '.') }}</td>
+                                            <td class="text-end">{{ number_format((float) $parcelaPedido->quantidade, 3, ',', '.') }}</td>
+                                            <td class="text-end">
+                                                <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerParcelaPedido('{{ $parcelaPedido->id }}')">
+                                                    <i class="bx bx-trash"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        @empty
+                                        <tr><td colspan="5" class="text-center text-muted py-2">Informação insuficiente — nenhuma Atividade detalhada ainda para este item.</td></tr>
+                                        @endforelse
+                                    </tbody>
+                                </table>
+
+                                @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                <div class="row g-2 align-items-end">
+                                    <div class="col-md-6">
+                                        <label class="form-label small">Atividade (só as já detalhadas na RC de origem, com saldo)</label>
+                                        <select class="form-select form-select-sm" wire:model="pedidoParcelaNecessidadeIdNovo">
+                                            <option value="">Selecione</option>
+                                            @foreach($distPedido['disponiveis'] as $rcParcelaDisponivel)
+                                            <option value="{{ $rcParcelaDisponivel->atividade_necessidade_material_id }}">
+                                                {{ $rcParcelaDisponivel->necessidade?->atividade?->nome }} — saldo {{ number_format($rcParcelaDisponivel->saldo_para_pedido, 3, ',', '.') }}
+                                            </option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label small">Quantidade neste Pedido</label>
+                                        <input type="text" class="form-control form-control-sm" wire:model="pedidoParcelaQuantidadeNovo">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <button type="button" class="btn btn-sm btn-primary w-100" wire:click="adicionarParcelaPedido">Adicionar</button>
+                                    </div>
+                                </div>
+                                @endif
+                            </div>
+                        </div>
+                        @endif
+
                         @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
                         <div class="row g-2 align-items-end mb-3">
                             <div class="col-md-7">

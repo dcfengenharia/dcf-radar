@@ -3,10 +3,12 @@
 namespace App\Actions\Suprimentos;
 
 use App\Enums\StatusPedidoCompra;
+use App\Exceptions\ParcelaNecessidadeInvalidaException;
 use App\Exceptions\PedidoCompraImutavelException;
 use App\Exceptions\SaldoRequisicaoCompraInsuficienteException;
 use App\Models\PedidoCompra;
 use App\Models\PedidoCompraItem;
+use App\Models\PedidoCompraItemParcela;
 use App\Models\RequisicaoCompraItem;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -56,6 +58,7 @@ class AtualizarRascunhoPedidoCompra
             $rcItem = RequisicaoCompraItem::whereKey($item->requisicao_compra_item_id)->lockForUpdate()->firstOrFail();
             $this->garantirQuantidadePositiva($novaQuantidade);
             $this->validarSaldo($rcItem, $novaQuantidade, excluirItemId: $item->id);
+            $this->garantirNaoAbaixoDoDetalhadoPorParcela($item, $novaQuantidade);
 
             $item->update(['quantidade_pedida' => $novaQuantidade]);
         });
@@ -91,6 +94,24 @@ class AtualizarRascunhoPedidoCompra
     {
         if ($quantidade <= 0) {
             throw new InvalidArgumentException('A quantidade pedida precisa ser maior que zero.');
+        }
+    }
+
+    /**
+     * Rastreabilidade Quantitativa, Etapa 1 — mesmo raciocínio de
+     * `AtualizarRascunhoRequisicaoCompra::garantirNaoAbaixoDoDetalhadoPorParcela()`,
+     * um nível abaixo: reduzir `quantidade_pedida` não pode quebrar a
+     * guarda "soma das parcelas deste PedidoItem <= quantidade_pedida"
+     * retroativamente.
+     */
+    private function garantirNaoAbaixoDoDetalhadoPorParcela(PedidoCompraItem $item, float $novaQuantidade): void
+    {
+        $jaDetalhado = (float) PedidoCompraItemParcela::where('pedido_compra_item_id', $item->id)->sum('quantidade');
+
+        if ($novaQuantidade < $jaDetalhado - 0.0005) {
+            throw new ParcelaNecessidadeInvalidaException(
+                "Este item já tem {$jaDetalhado} distribuído por Atividade — reduza a distribuição antes de reduzir a quantidade pedida abaixo desse valor."
+            );
         }
     }
 

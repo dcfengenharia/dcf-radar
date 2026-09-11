@@ -6,9 +6,12 @@ use App\Enums\StatusRequisicaoCompra;
 use App\Exceptions\RequisicaoCompraEmissaoInvalidaException;
 use App\Exceptions\RequisicaoCompraImutavelException;
 use App\Exceptions\SaldoAlocacaoInsuficienteException;
+use App\Exceptions\SaldoParcelaNecessidadeInsuficienteException;
 use App\Models\AlocacaoRequisicaoPacote;
+use App\Models\AtividadeNecessidadeMaterial;
 use App\Models\RequisicaoCompra;
 use App\Models\RequisicaoCompraEtapa;
+use App\Models\RequisicaoCompraItemParcela;
 use App\Models\User;
 use App\Models\Work;
 use App\Support\DiasUteisCalculator;
@@ -102,6 +105,61 @@ class EmitirRequisicaoCompra
                         $saldoDisponivel,
                         $quantidadeDesejada
                     );
+                }
+            }
+
+            // Rastreabilidade Quantitativa, Etapa 1 — revalida a Guarda B
+            // (soma por parcela em RCs comercialmente válidas <=
+            // quantidade_necessaria) sob lock, fechando a mesma corrida
+            // já fechada acima pra `quantidade_alocada`: múltiplos
+            // rascunhos concorrentes podiam, cada um, detalhar até o
+            // saldo cheio de uma mesma necessidade — só a emissão
+            // serializa de verdade.
+            $parcelasDestaRc = RequisicaoCompraItemParcela::whereIn('requisicao_compra_item_id', $itens->pluck('id'))->get();
+
+            if ($parcelasDestaRc->isNotEmpty()) {
+                $necessidadeIds = $parcelasDestaRc->pluck('atividade_necessidade_material_id')->unique()->sort()->values()->all();
+
+                $necessidadesTravadas = AtividadeNecessidadeMaterial::whereIn('id', $necessidadeIds)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get()
+                    ->keyBy('id');
+
+                $consumidoOutrasRcsPorNecessidade = DB::table('requisicao_compra_item_parcelas')
+                    ->join('requisicao_compra_itens', 'requisicao_compra_itens.id', '=', 'requisicao_compra_item_parcelas.requisicao_compra_item_id')
+                    ->whereIn('requisicao_compra_item_parcelas.atividade_necessidade_material_id', $necessidadeIds)
+                    ->where('requisicao_compra_itens.requisicao_compra_id', '!=', $rc->id)
+                    ->whereIn('requisicao_compra_itens.requisicao_compra_id', function ($query) {
+                        $query->select('id')->from('requisicoes_compra')
+                            ->whereIn('status', [StatusRequisicaoCompra::Emitida->value, StatusRequisicaoCompra::Concluida->value]);
+                    })
+                    ->groupBy('requisicao_compra_item_parcelas.atividade_necessidade_material_id')
+                    ->selectRaw('requisicao_compra_item_parcelas.atividade_necessidade_material_id as necessidade_id, SUM(requisicao_compra_item_parcelas.quantidade) as total')
+                    ->pluck('total', 'necessidade_id');
+
+                $totalEstaRcPorNecessidade = $parcelasDestaRc->groupBy('atividade_necessidade_material_id')
+                    ->map(fn ($grupo) => (float) $grupo->sum('quantidade'));
+
+                foreach ($totalEstaRcPorNecessidade as $necessidadeId => $totalEstaRc) {
+                    $necessidade = $necessidadesTravadas->get($necessidadeId);
+
+                    if (! $necessidade) {
+                        throw new RequisicaoCompraEmissaoInvalidaException('Uma necessidade referenciada pelo detalhamento por Atividade desta requisição não foi encontrada.');
+                    }
+
+                    $outras = (float) ($consumidoOutrasRcsPorNecessidade[$necessidadeId] ?? 0);
+                    $totalFinal = round($outras + $totalEstaRc, 3);
+
+                    if ($totalFinal > (float) $necessidade->quantidade_necessaria + 0.0005) {
+                        $saldoDisponivel = round((float) $necessidade->quantidade_necessaria - $outras, 3);
+
+                        throw new SaldoParcelaNecessidadeInsuficienteException(
+                            "O detalhamento por Atividade desta requisição excede a necessidade disponível ({$saldoDisponivel} restante, {$totalEstaRc} detalhado nesta RC) — outra Requisição de Compra já emitida consumiu parte dela enquanto este rascunho estava aberto.",
+                            $saldoDisponivel,
+                            $totalEstaRc
+                        );
+                    }
                 }
             }
 

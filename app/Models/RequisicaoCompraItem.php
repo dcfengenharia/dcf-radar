@@ -56,6 +56,12 @@ class RequisicaoCompraItem extends Model
         return $this->hasMany(PedidoCompraItem::class, 'requisicao_compra_item_id');
     }
 
+    /** Rastreabilidade Quantitativa, Etapa 1 — distribuição deste item por Atividade (parcelas de necessidade). */
+    public function parcelas(): HasMany
+    {
+        return $this->hasMany(RequisicaoCompraItemParcela::class, 'requisicao_compra_item_id');
+    }
+
     /**
      * Ciclo 19, Etapa 19.5.CORREÇÃO-preventiva — mesma filosofia já
      * estabelecida em `AlocacaoRequisicaoPacote::

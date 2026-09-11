@@ -6,10 +6,13 @@ use App\Enums\StatusPedidoCompra;
 use App\Exceptions\FornecedorPedidoInvalidoException;
 use App\Exceptions\PedidoCompraEmissaoInvalidaException;
 use App\Exceptions\PedidoCompraImutavelException;
+use App\Exceptions\SaldoParcelaPedidoInsuficienteException;
 use App\Exceptions\SaldoRequisicaoCompraInsuficienteException;
 use App\Models\Fornecedor;
 use App\Models\PedidoCompra;
+use App\Models\PedidoCompraItemParcela;
 use App\Models\RequisicaoCompraItem;
+use App\Models\RequisicaoCompraItemParcela;
 use App\Models\User;
 use App\Models\Work;
 use App\Support\SincronizarRestricaoCadeiaSuprimento;
@@ -121,6 +124,42 @@ class EmitirPedidoCompra
                         $saldoDisponivel,
                         $quantidadeDesejada
                     );
+                }
+            }
+
+            // Rastreabilidade Quantitativa, Etapa 1 — revalida, sob lock,
+            // que o detalhamento por Atividade deste Pedido continua
+            // dentro da quota que a RC de origem ofereceu, fechando a
+            // mesma corrida já fechada acima pra `quantidade_pedida`.
+            $parcelasDoPedido = PedidoCompraItemParcela::whereIn('pedido_compra_item_id', $itens->pluck('id'))->get();
+
+            if ($parcelasDoPedido->isNotEmpty()) {
+                $parcelasPorItem = $parcelasDoPedido->groupBy('pedido_compra_item_id');
+
+                foreach ($parcelasPorItem as $pedidoItemId => $grupo) {
+                    $item = $itens->firstWhere('id', $pedidoItemId);
+
+                    foreach ($grupo->groupBy('atividade_necessidade_material_id') as $necessidadeId => $subgrupo) {
+                        $rcParcela = RequisicaoCompraItemParcela::where('requisicao_compra_item_id', $item->requisicao_compra_item_id)
+                            ->where('atividade_necessidade_material_id', $necessidadeId)
+                            ->lockForUpdate()
+                            ->first();
+
+                        if (! $rcParcela) {
+                            throw new PedidoCompraEmissaoInvalidaException('Uma necessidade detalhada neste Pedido não foi encontrada na Requisição de Compra de origem.');
+                        }
+
+                        $totalEsteItem = (float) $subgrupo->sum('quantidade');
+                        $saldoDisponivel = $rcParcela->saldoOficialParaPedido();
+
+                        if ($totalEsteItem > $saldoDisponivel + 0.0005) {
+                            throw new SaldoParcelaPedidoInsuficienteException(
+                                "O detalhamento por Atividade de um item deste Pedido excede a quota ainda disponível ({$saldoDisponivel}) na Requisição de Compra de origem — outro Pedido já emitido consumiu parte dela enquanto este rascunho estava aberto.",
+                                $saldoDisponivel,
+                                $totalEsteItem
+                            );
+                        }
+                    }
                 }
             }
 

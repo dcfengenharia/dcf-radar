@@ -3,11 +3,13 @@
 namespace App\Actions\Suprimentos;
 
 use App\Enums\StatusRequisicaoCompra;
+use App\Exceptions\ParcelaNecessidadeInvalidaException;
 use App\Exceptions\RequisicaoCompraImutavelException;
 use App\Exceptions\SaldoAlocacaoInsuficienteException;
 use App\Models\AlocacaoRequisicaoPacote;
 use App\Models\RequisicaoCompra;
 use App\Models\RequisicaoCompraItem;
+use App\Models\RequisicaoCompraItemParcela;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
@@ -60,6 +62,7 @@ class AtualizarRascunhoRequisicaoCompra
             $alocacao = AlocacaoRequisicaoPacote::whereKey($item->alocacao_requisicao_pacote_id)->lockForUpdate()->firstOrFail();
             $this->garantirQuantidadePositiva($novaQuantidade);
             $this->validarSaldo($alocacao, $novaQuantidade, excluirItemId: $item->id);
+            $this->garantirNaoAbaixoDoDetalhadoPorParcela($item, $novaQuantidade);
 
             $item->update(['quantidade' => $novaQuantidade]);
         });
@@ -95,6 +98,25 @@ class AtualizarRascunhoRequisicaoCompra
     {
         if ($quantidade <= 0) {
             throw new InvalidArgumentException('A quantidade precisa ser maior que zero.');
+        }
+    }
+
+    /**
+     * Rastreabilidade Quantitativa, Etapa 1 — a Guarda A de
+     * `AtualizarDistribuicaoParcelaRequisicaoCompra` (soma das parcelas
+     * desta RCItem <= RCItem.quantidade) só é verificada no momento de
+     * ADICIONAR/ALTERAR uma parcela — reduzir a própria `quantidade` do
+     * item DEPOIS de já detalhado por Atividade poderia quebrar essa
+     * invariante retroativamente sem este guard.
+     */
+    private function garantirNaoAbaixoDoDetalhadoPorParcela(RequisicaoCompraItem $item, float $novaQuantidade): void
+    {
+        $jaDetalhado = (float) RequisicaoCompraItemParcela::where('requisicao_compra_item_id', $item->id)->sum('quantidade');
+
+        if ($novaQuantidade < $jaDetalhado - 0.0005) {
+            throw new ParcelaNecessidadeInvalidaException(
+                "Este item já tem {$jaDetalhado} distribuído por Atividade — reduza a distribuição antes de reduzir a quantidade abaixo desse valor."
+            );
         }
     }
 
