@@ -22,6 +22,6 @@
 
 @section('content')
 
-<h1>Termos de Uso</h1>
+<livewire:pages::site.termos_uso />
 
 @endsection

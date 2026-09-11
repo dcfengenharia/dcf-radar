@@ -22,6 +22,6 @@
 
 @section('content')
 
-<h1>Diagnóstico</h1>
+<livewire:pages::site.diagnostico />
 
 @endsection

@@ -22,6 +22,6 @@
 
 @section('content')
 
-<h1>Plataforma</h1>
+<livewire:pages::site.plataforma />
 
 @endsection

@@ -42,6 +42,9 @@
             <li class="mb-3">
               <a href="javascript:;" class="footer-link">Política de Privacidade<span class="badge rounded bg-primary ms-2 px-2">New</span></a>
             </li>
+            <li class="mb-3">
+              <a href="javascript:;" class="footer-link">Política de Cookies</a>
+            </li>
             <li>
               <a href="javascript:;" target="_blank" class="footer-link">Login</a>
             </li>

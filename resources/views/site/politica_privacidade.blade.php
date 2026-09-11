@@ -22,6 +22,6 @@
 
 @section('content')
 
-<h1>Política de Privacidade</h1>
+<livewire:pages::site.politica_privacidade />
 
 @endsection

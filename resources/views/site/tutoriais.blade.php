@@ -22,6 +22,6 @@
 
 @section('content')
 
-<h1>Tutoriais</h1>
+<livewire:pages::site.tutoriais />
 
 @endsection

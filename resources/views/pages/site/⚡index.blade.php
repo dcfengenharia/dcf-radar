@@ -27,7 +27,7 @@ $configData = Helper::appClasses();
             Atrasam porque projetos, materiais, liberações, recursos e decisões não ficam prontos no <mark>momento necessário</mark>.
           </h2>
           <div class="landing-hero-btn d-inline-block position-relative">
-            <a href="#landingPricing" class="btn btn-warning">SOLICITAR DIAGNÓSTICO</a>
+            <a href="{{ route('site.diagnostico') }}" class="btn btn-warning">SOLICITAR DIAGNÓSTICO</a>
             <br>
             <small class="text-muted">Sem compromisso. Apenas uma avaliação rápida.</small>
           </div>
@@ -789,7 +789,7 @@ $configData = Helper::appClasses();
         <div class="col-lg-6 text-center text-lg-start">
           <h6 class="h2 text-primary fw-bold mb-1">Pronto(a) para iniciar?</h6>
           <p class="fw-medium mb-4">Faça seu diagnóstico gratuito e entenda como a DCF pode ajudar sua obra.</p>
-          <a href="#" class="btn btn-warning">SOLICITAR DIAGNÓSTICO</a>
+          <a href="{{ route('site.diagnostico') }}" class="btn btn-warning">SOLICITAR DIAGNÓSTICO</a>
         </div>
         <div class="col-lg-6 pt-lg-5 text-center text-lg-end">
           <img src="{{asset('assets/img/front-pages/landing-page/cta-dashboard.png')}}" alt="cta dashboard" class="img-fluid" />
