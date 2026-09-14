@@ -2,11 +2,13 @@
 
 namespace App\Models;
 
+use App\Enums\StatusAdjudicacaoRequisicaoCompra;
 use App\Models\Concerns\BelongsToTenant;
 use App\Models\Concerns\HasAuthorship;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Rastreabilidade Quantitativa — Etapa 1. Quanto de um `PedidoCompraItem`
@@ -51,5 +53,23 @@ class PedidoCompraItemParcela extends Model
     public function autor(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by_id');
+    }
+
+    /** Etapa 2.CORREÇÃO — proveniência: quais adjudicações (por parcela) foram atribuídas a este consumo. */
+    public function consumosAdjudicacao(): HasMany
+    {
+        return $this->hasMany(PedidoCompraItemAdjudicacao::class, 'pedido_compra_item_parcela_id');
+    }
+
+    /**
+     * Soma já atribuída explicitamente a alguma `RequisicaoCompraAdjudicacaoItem`
+     * COM detalhamento de Atividade (esta parcela específica) — usada só
+     * pra checar completude de atribuição na emissão (Etapa 2.CORREÇÃO).
+     */
+    public function quantidadeAtribuidaAdjudicacao(): float
+    {
+        return (float) PedidoCompraItemAdjudicacao::where('pedido_compra_item_parcela_id', $this->id)
+            ->whereHas('adjudicacaoItem.adjudicacao', fn ($q) => $q->where('status', StatusAdjudicacaoRequisicaoCompra::Ativa->value))
+            ->sum('quantidade');
     }
 }

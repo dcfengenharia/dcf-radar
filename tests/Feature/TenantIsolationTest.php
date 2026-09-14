@@ -884,12 +884,95 @@ class TenantIsolationTest extends TestCase
             'origem_cadeia_suprimento_id' => $pacoteB->id,
         ]);
 
+        // Etapa 3 — Prazo Comercial do Pedido: pedido_compra_previsoes_entrega.
+        $previsaoB = \App\Models\PedidoCompraPrevisaoEntrega::create([
+            'tenant_id' => $tenantB->id, 'pedido_compra_id' => $pedidoB->id,
+            'data_prevista' => now(), 'origem' => 'inicial', 'registrado_em' => now(),
+        ]);
+
+        // Fechamento Adversarial Etapa 3 — recebimento_pedido_parcelas.
+        $unidadeNecessidadeB = UnidadeMedida::create(['tenant_id' => $tenantB->id, 'codigo' => 'PZ', 'nome' => 'Peça B']);
+        $necessidadeB = \App\Models\AtividadeNecessidadeMaterial::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id,
+            'atividade_id' => Atividade::factory()->create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id])->id,
+            'origem' => 'take_off', 'item_take_off_id' => $itemB->id, 'unidade_medida_id' => $unidadeNecessidadeB->id,
+            'quantidade_necessaria' => 5,
+        ]);
+        $parcelaPedidoB = \App\Models\PedidoCompraItemParcela::create([
+            'tenant_id' => $tenantB->id, 'pedido_compra_item_id' => $pedidoItemB->id,
+            'atividade_necessidade_material_id' => $necessidadeB->id, 'quantidade' => 2,
+        ]);
+        $distribuicaoB = \App\Models\RecebimentoPedidoParcela::create([
+            'tenant_id' => $tenantB->id, 'recebimento_pedido_id' => $recebimentoB->id,
+            'pedido_compra_item_parcela_id' => $parcelaPedidoB->id, 'quantidade' => 1,
+        ]);
+
         $this->actingAs($userA);
 
         $this->assertNull(\App\Models\PedidoCompra::find($pedidoB->id));
+        $this->assertNull(\App\Models\RecebimentoPedidoParcela::find($distribuicaoB->id));
         $this->assertNull(\App\Models\PedidoCompraItem::find($pedidoItemB->id));
         $this->assertNull(\App\Models\RecebimentoPedido::find($recebimentoB->id));
         $this->assertNull(\App\Models\Restricao::find($restricaoAutomaticaB->id));
+        $this->assertNull(\App\Models\PedidoCompraPrevisaoEntrega::find($previsaoB->id));
+    }
+
+    /** Etapa 2 (Adjudicação + Dossiê) — requisicao_compra_anexos/requisicao_compra_adjudicacoes/requisicao_compra_adjudicacao_itens. */
+    public function test_requisicao_compra_adjudicacao_e_anexo_sao_escopados_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $documentoB = DocumentoEngenharia::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'codigo' => 'DOC-B', 'descricao' => 'Documento B',
+        ]);
+        $revisaoB = $documentoB->revisoes()->create([
+            'tenant_id' => $tenantB->id, 'revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'Emissão B',
+        ]);
+        $listaB = \App\Models\ListaEngenharia::create([
+            'tenant_id' => $tenantB->id, 'documento_engenharia_revisao_id' => $revisaoB->id, 'tipo' => 'material', 'codigo' => 'LM-001',
+        ]);
+        $itemB = ItemTakeOff::create([
+            'tenant_id' => $tenantB->id, 'lista_engenharia_id' => $listaB->id, 'descricao' => 'Item B', 'quantidade' => 10,
+        ]);
+        $rpB = \App\Models\RequisicaoPlanejamento::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'status' => 'rascunho',
+        ]);
+        $rpItemB = \App\Models\RequisicaoPlanejamentoItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_id' => $rpB->id, 'item_take_off_id' => $itemB->id, 'quantidade_requisitada' => 5,
+        ]);
+        $pacoteB = ItemSuprimento::create(['tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Pacote B']);
+        $alocacaoB = \App\Models\AlocacaoRequisicaoPacote::create([
+            'tenant_id' => $tenantB->id, 'requisicao_planejamento_item_id' => $rpItemB->id, 'item_suprimento_id' => $pacoteB->id, 'quantidade_alocada' => 5,
+        ]);
+        $rcB = \App\Models\RequisicaoCompra::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'item_suprimento_id' => $pacoteB->id, 'status' => 'emitida',
+        ]);
+        $rcItemB = \App\Models\RequisicaoCompraItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_compra_id' => $rcB->id, 'alocacao_requisicao_pacote_id' => $alocacaoB->id, 'quantidade' => 3,
+        ]);
+        $fornecedorB = \App\Models\Fornecedor::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'nome' => 'Fornecedor B',
+        ]);
+        $anexoB = \App\Models\RequisicaoCompraAnexo::create([
+            'tenant_id' => $tenantB->id, 'requisicao_compra_id' => $rcB->id, 'tipo_documento' => 'proposta',
+            'nome_original' => 'proposta.pdf', 'caminho_arquivo' => 'requisicao-compra-anexos/x/y.pdf', 'tamanho_bytes' => 100,
+        ]);
+        $adjudicacaoB = \App\Models\RequisicaoCompraAdjudicacao::create([
+            'tenant_id' => $tenantB->id, 'requisicao_compra_id' => $rcB->id, 'fornecedor_id' => $fornecedorB->id,
+            'status' => 'ativa', 'decidido_em' => now(), 'justificativa' => 'Menor preço',
+        ]);
+        $adjudicacaoItemB = \App\Models\RequisicaoCompraAdjudicacaoItem::create([
+            'tenant_id' => $tenantB->id, 'requisicao_compra_adjudicacao_id' => $adjudicacaoB->id,
+            'requisicao_compra_item_id' => $rcItemB->id, 'quantidade' => 3,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\RequisicaoCompraAnexo::find($anexoB->id));
+        $this->assertNull(\App\Models\RequisicaoCompraAdjudicacao::find($adjudicacaoB->id));
+        $this->assertNull(\App\Models\RequisicaoCompraAdjudicacaoItem::find($adjudicacaoItemB->id));
     }
 
     /** Ciclo 20, Etapa 20.1 — materiais/locais_estoque/unidades_estoque/movimentacoes_estoque. */
@@ -1480,5 +1563,22 @@ class TenantIsolationTest extends TestCase
         $this->actingAs($userA);
 
         $this->assertNull(\App\Models\LicaoAprendidaReaplicacaoAvaliacao::find($avaliacaoB->id));
+    }
+
+    /** Home Executiva (Ciclo 25, Fechamento) — ultimo_acesso_home_por_usuario_obra. */
+    public function test_ultimo_acesso_home_e_escopado_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $acessoB = \App\Models\UltimoAcessoHome::create([
+            'tenant_id' => $tenantB->id, 'obra_id' => $obraB->id, 'user_id' => $userB->id,
+            'ultimo_acesso_em' => now(),
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\UltimoAcessoHome::find($acessoB->id));
     }
 }

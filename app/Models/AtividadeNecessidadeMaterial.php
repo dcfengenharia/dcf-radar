@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Enums\OrigemNecessidadeMaterialAtividade;
+use App\Enums\StatusAdjudicacaoRequisicaoCompra;
+use App\Enums\StatusPedidoCompra;
 use App\Enums\StatusRequisicaoCompra;
 use App\Models\Concerns\BelongsToTenant;
 use App\Models\Concerns\HasAuthorship;
@@ -159,5 +161,43 @@ class AtividadeNecessidadeMaterial extends Model
     public function saldoOficialParaDetalheRc(?string $excluirParcelaId = null): float
     {
         return round((float) $this->quantidade_necessaria - $this->quantidadeDetalhadaOficialEmRc($excluirParcelaId), 3);
+    }
+
+    /**
+     * Etapa 3 — "quanto desta necessidade já foi ADJUDICADO (Ativo) a
+     * algum fornecedor" — mesma filosofia exata de
+     * `quantidadeDetalhadaOficialEmRc()`, um nível abaixo na cadeia
+     * (Etapa 1 parcela → Etapa 2 adjudicação). Como a granularidade
+     * coerente da Etapa 2 já garante que um item COM parcela(s) só pode
+     * ser adjudicado POR parcela (nunca direto no item), somar via
+     * `requisicao_compra_item_parcela_id IN (...)` sobre as parcelas
+     * desta necessidade é sempre completo e correto — nunca perde
+     * adjudicação item-level "escondida", porque ela estruturalmente não
+     * pode existir pra um item que tem parcela.
+     */
+    public function quantidadeAdjudicadaAtiva(): float
+    {
+        $parcelaIds = $this->parcelasRequisicaoCompra()->pluck('id');
+        if ($parcelaIds->isEmpty()) {
+            return 0.0;
+        }
+
+        return (float) RequisicaoCompraAdjudicacaoItem::whereIn('requisicao_compra_item_parcela_id', $parcelaIds)
+            ->whereHas('adjudicacao', fn ($q) => $q->where('status', StatusAdjudicacaoRequisicaoCompra::Ativa->value))
+            ->sum('quantidade');
+    }
+
+    /**
+     * Etapa 3 — "quanto desta necessidade já foi PEDIDO oficialmente"
+     * (só Pedido `Emitido` conta, mesma filosofia de sempre — Rascunho
+     * nunca é consumo oficial). Sempre via `PedidoCompraItemParcela`
+     * (Etapa 1, explícito), nunca por Material/Pacote/fornecedor
+     * (heurística proibida — Seção 35 do pedido de Etapa 3).
+     */
+    public function quantidadePedidaOficial(): float
+    {
+        return (float) $this->parcelasPedidoCompra()
+            ->whereHas('pedidoCompraItem.pedidoCompra', fn ($q) => $q->where('status', StatusPedidoCompra::Emitido->value))
+            ->sum('quantidade');
     }
 }

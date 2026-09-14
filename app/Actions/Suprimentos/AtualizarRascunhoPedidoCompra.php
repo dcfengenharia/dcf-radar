@@ -5,6 +5,7 @@ namespace App\Actions\Suprimentos;
 use App\Enums\StatusPedidoCompra;
 use App\Exceptions\ParcelaNecessidadeInvalidaException;
 use App\Exceptions\PedidoCompraImutavelException;
+use App\Exceptions\SaldoAdjudicacaoFornecedorInsuficienteException;
 use App\Exceptions\SaldoRequisicaoCompraInsuficienteException;
 use App\Models\PedidoCompra;
 use App\Models\PedidoCompraItem;
@@ -27,6 +28,16 @@ use InvalidArgumentException;
  * filosofia de 19.4.CORREÇÃO): múltiplos rascunhos de Pedido podem
  * reservar até o saldo oficial CHEIO cada um — só a emissão revalida de
  * verdade.
+ *
+ * **Etapa 2 (Adjudicação) — 3º teto, só quando o item NÃO tem parcela**:
+ * `validarSaldoAdjudicacao()` só é chamada quando `$rcItem` nunca foi
+ * detalhado por Atividade (Etapa 1) — quando TEM parcela, o teto de
+ * fornecedor é aplicado no nível da parcela, em
+ * `AtualizarDistribuicaoParcelaPedidoCompra` (só ali se sabe, de fato,
+ * qual necessidade está sendo consumida). Compatibilidade (Seção 13):
+ * se o item nunca teve NENHUMA adjudicação Ativa registrada (soma
+ * total = 0), o teto é pulado por completo — RC/Pedido antigos sem
+ * adjudicação continuam funcionando exatamente como antes desta etapa.
  */
 class AtualizarRascunhoPedidoCompra
 {
@@ -40,6 +51,7 @@ class AtualizarRascunhoPedidoCompra
             $this->garantirMesmaRc($pedido, $rcItem);
             $this->garantirQuantidadePositiva($quantidade);
             $this->validarSaldo($rcItem, $quantidade, excluirItemId: null);
+            $this->validarSaldoAdjudicacao($rcItem, $pedido->fornecedor_id, $quantidade, excluirItemId: null);
 
             return PedidoCompraItem::create([
                 'pedido_compra_id' => $pedido->id,
@@ -58,6 +70,7 @@ class AtualizarRascunhoPedidoCompra
             $rcItem = RequisicaoCompraItem::whereKey($item->requisicao_compra_item_id)->lockForUpdate()->firstOrFail();
             $this->garantirQuantidadePositiva($novaQuantidade);
             $this->validarSaldo($rcItem, $novaQuantidade, excluirItemId: $item->id);
+            $this->validarSaldoAdjudicacao($rcItem, $pedido->fornecedor_id, $novaQuantidade, excluirItemId: $item->id);
             $this->garantirNaoAbaixoDoDetalhadoPorParcela($item, $novaQuantidade);
 
             $item->update(['quantidade_pedida' => $novaQuantidade]);
@@ -123,6 +136,37 @@ class AtualizarRascunhoPedidoCompra
             throw new SaldoRequisicaoCompraInsuficienteException(
                 "Quantidade solicitada ({$quantidadeDesejada}) excede o saldo oficial ainda disponível ({$saldoDisponivel}) deste item da Requisição de Compra.",
                 $saldoDisponivel,
+                $quantidadeDesejada
+            );
+        }
+    }
+
+    /**
+     * Etapa 2 (Adjudicação) — o 3º teto: um Pedido só pode consumir a
+     * quota que foi efetivamente ADJUDICADA ao seu próprio fornecedor.
+     * Só se aplica quando o item nunca foi detalhado por Atividade (o
+     * caso com parcela é tratado em
+     * `AtualizarDistribuicaoParcelaPedidoCompra::validarSaldoAdjudicacao()`)
+     * E quando existe QUALQUER adjudicação Ativa registrada pra este
+     * item (compatibilidade — Seção 13: RC/Pedido sem nenhuma
+     * adjudicação nunca disparam este teto).
+     */
+    private function validarSaldoAdjudicacao(RequisicaoCompraItem $rcItem, string $fornecedorId, float $quantidadeDesejada, ?string $excluirItemId): void
+    {
+        if ($rcItem->parcelas()->exists()) {
+            return;
+        }
+
+        if ($rcItem->quantidadeAdjudicadaAtivaSemParcela() <= 0.0005) {
+            return;
+        }
+
+        $saldoFornecedor = $rcItem->saldoAdjudicadoParaFornecedor($fornecedorId, $excluirItemId);
+
+        if ($quantidadeDesejada > $saldoFornecedor + 0.0005) {
+            throw new SaldoAdjudicacaoFornecedorInsuficienteException(
+                "Quantidade solicitada ({$quantidadeDesejada}) excede a quota adjudicada a este fornecedor ({$saldoFornecedor}) para este item — este item foi adjudicado a fornecedor(es) específico(s).",
+                $saldoFornecedor,
                 $quantidadeDesejada
             );
         }

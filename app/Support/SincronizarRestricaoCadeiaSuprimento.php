@@ -175,7 +175,17 @@ class SincronizarRestricaoCadeiaSuprimento
 
     private static function abrirOuManter(ItemSuprimento $pacote, Atividade $atividade, ?Restricao $restricao, Carbon $necessidade): void
     {
-        $descricao = "Material do Pacote \"{$pacote->nome}\" ainda não recebido para a data de necessidade da atividade.";
+        // Motor Definitivo de Risco de Suprimentos V1 (Seção 24) —
+        // descrição quantitativa e precisa quando existe correspondência
+        // inequívoca com `AtividadeNecessidadeMaterial`; sem
+        // correspondência, preserva o texto genérico histórico (Seção 31 —
+        // nunca inventar quantidade sobre uma correspondência que não
+        // existe).
+        $descricao = \App\Support\Suprimentos\DescricaoRestricaoSuprimento::paraPacoteEAtividade(
+            $atividade,
+            $pacote,
+            "Material do Pacote \"{$pacote->nome}\" ainda não recebido para a data de necessidade da atividade."
+        );
 
         if ($restricao && in_array($restricao->status->value, self::STATUS_ABERTOS, true)) {
             // já aberta — só atualiza prazo/descrição se algo mudou,

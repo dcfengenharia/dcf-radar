@@ -14,7 +14,7 @@
         <button class="navbar-toggler border-0 px-0 me-2" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
           <i class="tf-icons bx bx-menu bx-sm align-middle"></i>
         </button>
-        <!-- Mobile menu toggle: End-->l
+        <!-- Mobile menu toggle: End-->
         <a href="javascript:;" class="app-brand-link">
           <img src="{{ asset('assets/img/logos/logo_oficial.png') }}" alt="" class="w-px-150 h-auto">
 

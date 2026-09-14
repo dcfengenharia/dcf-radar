@@ -82,6 +82,28 @@ class PedidoCompra extends Model
         return $this->hasMany(PedidoCompraItem::class);
     }
 
+    /**
+     * Etapa 3 — histórico append-only da evolução da promessa comercial,
+     * mais recente primeiro (ordem de REGISTRO — `registrado_em`/
+     * `created_at`/`id` — nunca `data_prevista`, que é só o valor
+     * prometido, não quando a promessa foi feita).
+     */
+    public function previsoesEntrega(): HasMany
+    {
+        return $this->hasMany(PedidoCompraPrevisaoEntrega::class)
+            ->orderByDesc('registrado_em')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
+    }
+
+    /** A previsão VIGENTE é sempre `data_prevista_entrega` (Seção 6 — única autoridade, snapshot disciplinado). */
+    public function ultimaPrevisaoRegistrada(): ?PedidoCompraPrevisaoEntrega
+    {
+        return $this->relationLoaded('previsoesEntrega')
+            ? $this->previsoesEntrega->first()
+            : $this->previsoesEntrega()->first();
+    }
+
     public function estaRascunho(): bool
     {
         return $this->status === StatusPedidoCompra::Rascunho;

@@ -39,10 +39,16 @@ use Ramsey\Uuid\Uuid;
  *   evento IDÊNTICO enquanto a projeção não mudar; se um novo Pedido
  *   mudar a projeção (mesmo por 1 dia), é um novo alerta.
  * - Pedido atrasado: `(pedido_id, data_prevista_entrega)` —
- *   `data_prevista_entrega` é IMUTÁVEL desde a emissão (19.5), então esta
- *   chave nasce UMA VEZ na vida do Pedido — nunca reenviada nos dias
- *   seguintes enquanto ele continuar atrasado, e nunca reaberta depois
- *   (Pedido completo nunca "reatrasa" na mesma data de previsão).
+ *   `data_prevista_entrega` era IMUTÁVEL desde a emissão até a Etapa 3
+ *   (Prazo Comercial + Histórico de Promessa), que passou a permitir
+ *   revisão pós-emissão via `App\Actions\Suprimentos\
+ *   AtualizarPrevisaoEntregaPedidoCompra` — a chave continua correta sem
+ *   nenhuma mudança de código aqui: como ela EMBUTE o valor atual do
+ *   campo, uma revisão genuína (a promessa mudou de verdade) produz uma
+ *   chave NOVA por construção (comportamento desejável — a mudança de
+ *   promessa é um fato novo, merece novo alerta); voltar a uma data JÁ
+ *   usada antes cai na MESMA chave já gravada, absorvida pela idempotência
+ *   (`notifications.id` como PRIMARY KEY) — nunca duplica, nunca quebra.
  * - Restrição criada: `(restricao_id, aberta_em)` — `aberta_em` só muda
  *   quando a Restrição é CRIADA ou REABERTA (novo episódio, seção 11 do
  *   pedido) — nunca em atualizações de rotina (ex.: prazo_limite

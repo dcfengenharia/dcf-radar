@@ -45,6 +45,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithFileUploads;
 use Maatwebsite\Excel\Facades\Excel;
@@ -102,6 +103,13 @@ new class extends Component {
   public bool $responsavelExterno = false;
 
   // ---- Modal detalhe / matriz de prontidão ----
+  // Home Executiva (Ciclo 25) — deep-link real pro popup de detalhe de
+  // UMA atividade (Seção 10 do pedido: "atividade → detalhe/prontidão").
+  // Só sincroniza a IDENTIDADE da atividade com a URL — nunca a lê de
+  // volta pra decidir nenhuma outra coisa; `atividadeDetalhe()`/demais
+  // computeds já resolvem tudo a partir deste valor, exatamente como já
+  // faziam quando só `verAtividade()` o definia.
+  #[Url(as: 'atividade')]
   public ?string $modalAtividadeId = null;
   public string $comentarioNovoAtividade = '';
   public ?string $modalBaselineId = null; // Baseline selecionada só pra Curva S do popup — independente do $linhaBaseId da página

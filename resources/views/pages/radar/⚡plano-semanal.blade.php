@@ -54,6 +54,7 @@ use App\Models\Work;
 use App\Services\CurvaAvanco;
 use App\Support\Concerns\ExecutaComTransacaoSegura;
 use App\Support\Estoque\CoberturaNecessidadeAtividadeQuery;
+use App\Support\Suprimentos\EstadoAtendimentoNecessidadeMaterialQuery;
 use App\Support\Estoque\ConciliacaoNecessidadeAtividade;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
@@ -849,6 +850,23 @@ new class extends Component {
         }
 
         return CoberturaNecessidadeAtividadeQuery::porAtividade($detalhe['atividade']);
+    }
+
+    /**
+     * Etapa 3 — Estado de Atendimento por Necessidade/Parcela (Seção 29).
+     * Read-model único (EstadoAtendimentoNecessidadeMaterialQuery, nunca uma
+     * segunda fórmula) — sob demanda, só quando o popup está aberto, mesmo
+     * padrão de coberturaMateriaisPopup() acima.
+     */
+    #[Computed]
+    public function atendimentoMateriaisPopup(): Collection
+    {
+        $detalhe = $this->atividadeDetalhePlano;
+        if (! $detalhe) {
+            return collect();
+        }
+
+        return EstadoAtendimentoNecessidadeMaterialQuery::porAtividade($detalhe['atividade']);
     }
 
     /** Pacotes de Compra já vinculados a esta Atividade (item_suprimento_atividades) — únicos elegíveis pra "Reservar agora" (CriarReservaEstoque exige um Pacote). */
@@ -3005,6 +3023,53 @@ new class extends Component {
                                     </div>
                                     @endif
                                 </div>
+
+                                {{-- Etapa 3 — Estado de Atendimento comercial/compromisso
+                                     (Seção 29) — mesma superfície única, sem duplicar em
+                                     Suprimentos. Read-model derivado, nunca persistido. --}}
+                                @php $linhaAtend = $this->atendimentoMateriaisPopup->firstWhere('necessidade.id', $necMat->id); @endphp
+                                @if ($linhaAtend)
+                                <div class="border-top pt-2 mt-1">
+                                    <div class="row g-2 small text-center mb-2">
+                                        <div class="col">
+                                            <div class="text-muted">Adjudicado</div>
+                                            <strong>{{ number_format($linhaAtend['quantidade_adjudicada'], 2, ',', '.') }}</strong>
+                                        </div>
+                                        <div class="col">
+                                            <div class="text-muted">Pedido</div>
+                                            <strong>{{ number_format($linhaAtend['quantidade_pedida'], 2, ',', '.') }}</strong>
+                                        </div>
+                                        <div class="col">
+                                            <div class="text-muted">Recebido</div>
+                                            <strong>{{ number_format($linhaAtend['quantidade_recebida'], 2, ',', '.') }}</strong>
+                                        </div>
+                                    </div>
+                                    <div class="d-flex flex-wrap gap-2 align-items-center mb-1">
+                                        <span class="badge bg-{{ $linhaAtend['estado_comercial']->cor() }}">
+                                            {{ $linhaAtend['estado_comercial']->label() }}
+                                        </span>
+                                        <span class="badge bg-{{ $linhaAtend['estado_compromisso']->cor() }}">
+                                            {{ $linhaAtend['estado_compromisso']->label() }}
+                                        </span>
+                                        @if ($linhaAtend['data_prometida_relevante'])
+                                        <span class="small text-muted">
+                                            Promessa: {{ $linhaAtend['data_prometida_relevante']->format('d/m/Y') }}
+                                            @if ($linhaAtend['folga_dias'] !== null)
+                                            ({{ $linhaAtend['folga_dias'] >= 0 ? 'folga de '.$linhaAtend['folga_dias'] : 'atraso de '.abs($linhaAtend['folga_dias']) }} dia(s))
+                                            @endif
+                                        </span>
+                                        @endif
+                                    </div>
+                                    @if (! empty($linhaAtend['qualidade_informacao']))
+                                    <div class="small text-muted" style="font-size:.7rem">
+                                        @foreach ($linhaAtend['qualidade_informacao'] as $flag)
+                                        <span class="d-block"><i class="bx bx-info-circle me-1"></i>{{ $flag->label() }}</span>
+                                        @endforeach
+                                    </div>
+                                    @endif
+                                </div>
+                                @endif
+
                                 @if (Auth::user()?->temPermissaoNaObra($obra->id, 'restricoes.plano_semanal', 'editar'))
                                 <div class="d-flex gap-2">
                                     @if ($linhaMat['estado'] === \App\Enums\EstadoNecessidadeMaterialAtividade::DisponivelParaReserva || $linhaMat['estado'] === \App\Enums\EstadoNecessidadeMaterialAtividade::Parcial)

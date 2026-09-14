@@ -3,7 +3,7 @@
 // Variables
 return [
     'creatorName' => 'Danúzio Ferreira',
-    'creatorUrl' => 'https://www.instagram.com/dcf.eng',
+    'creatorUrl' => 'https://www.linkedin.com/in/danuzioferreira/',
     'templateName' => 'DCF.eng',
     'templateSuffix' => 'Planejamento & Controle de Obras',
     'templateVersion' => '1.0.0',

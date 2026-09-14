@@ -87,6 +87,18 @@ class RequisicaoCompra extends Model
         return $this->hasMany(PedidoCompra::class);
     }
 
+    /** Etapa 2 — dossiê documental (Proposta/Contrato/Parecer/Mapa Comparativo/Correspondência/Outro). */
+    public function anexos(): HasMany
+    {
+        return $this->hasMany(RequisicaoCompraAnexo::class);
+    }
+
+    /** Etapa 2 — decisões comerciais de adjudicação (N por RC, cada uma com seu próprio fornecedor). */
+    public function adjudicacoes(): HasMany
+    {
+        return $this->hasMany(RequisicaoCompraAdjudicacao::class);
+    }
+
     public function estaRascunho(): bool
     {
         return $this->status === StatusRequisicaoCompra::Rascunho;

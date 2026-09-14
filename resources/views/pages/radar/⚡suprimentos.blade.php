@@ -3,6 +3,7 @@
 use App\Actions\Suprimentos\AtualizarRascunhoRequisicaoCompra;
 use App\Enums\SerieAvanco;
 use App\Enums\StatusItemSuprimento;
+use App\Enums\StatusAdjudicacaoRequisicaoCompra;
 use App\Enums\StatusPedidoCompra;
 use App\Enums\StatusRequisicaoCompra;
 use App\Exports\SuprimentosExport;
@@ -29,13 +30,15 @@ use App\Support\Concerns\ExecutaComTransacaoSegura;
 use App\Support\SincronizarRestricaoSuprimento;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 use Maatwebsite\Excel\Facades\Excel;
 
 new class extends Component {
-  use ExecutaComTransacaoSegura;
+  use ExecutaComTransacaoSegura, WithFileUploads;
 
   public Work $obra;
 
@@ -97,12 +100,26 @@ new class extends Component {
   public ?string $pedidoItemRcItemIdNovo = null;
   public string $pedidoItemQuantidadeNovo = '';
 
+  // ---- Etapa 2.CORREÇÃO — ponte de proveniência (Pedido x Adjudicação) ----
+  public ?string $pedidoProvenienciaAdjudicacaoItemIdNovo = null;
+  public string $pedidoProvenienciaQuantidadeNovo = '';
+
+  // ---- Etapa 3 — Prazo Comercial do Pedido + Histórico de Promessa ----
+  public bool $pedidoPrevisaoFormAberto = false;
+  public string $pedidoPrevisaoDataNova = '';
+  public string $pedidoPrevisaoMotivoNovo = '';
+  public string $pedidoPrevisaoObservacaoNova = '';
+
   // ---- Ciclo 19, Etapa 19.6 — Recebimento Físico (dentro do item do Pedido) ----
   public ?string $recebimentoItemAbertoId = null;
   public string $recebimentoQuantidadeNova = '';
   public string $recebimentoDataNova = '';
   public string $recebimentoLocalNova = '';
   public string $recebimentoObservacaoNova = '';
+
+  // ---- Fechamento Adversarial Etapa 3 — distribuição de recebimento por necessidade/parcela ----
+  public ?string $distribuicaoRecebimentoAbertoId = null;
+  public array $distribuicaoQuantidadesNovas = [];
 
   // ---- Rastreabilidade Quantitativa, Etapa 1 — Distribuição por Atividade (item de RC) ----
   public ?string $rcItemParcelaAbertoId = null;
@@ -113,6 +130,25 @@ new class extends Component {
   public ?string $pedidoItemParcelaAbertoId = null;
   public ?string $pedidoParcelaNecessidadeIdNovo = null;
   public string $pedidoParcelaQuantidadeNovo = '';
+
+  // ---- Etapa 2 — Dossiê Documental da RC (anexos) ----
+  public $rcAnexoNovo = null; // upload via WithFileUploads
+  public string $rcAnexoTipoNovo = '';
+  public ?string $rcAnexoFornecedorIdNovo = null;
+  public string $rcAnexoDescricaoNovo = '';
+  public string $rcAnexoValorNovo = '';
+  public string $rcAnexoPrazoNovo = '';
+  public string $rcAnexoValidadeNovo = '';
+  public ?string $rcAnexoSubstituiIdNovo = null;
+
+  // ---- Etapa 2 — Adjudicação Quantitativa ----
+  public ?string $rcAdjudicacaoDetalheId = null;
+  public ?string $rcAdjudicacaoFornecedorIdNovo = null;
+  public string $rcAdjudicacaoJustificativaNovo = '';
+  public string $rcAdjudicacaoObservacaoNovo = '';
+  public ?string $rcAdjudicacaoAnexoIdNovo = null;
+  public ?string $rcAdjudicacaoItemAlvoNovo = null; // 'rcitem:{id}' ou 'parcela:{id}'
+  public string $rcAdjudicacaoItemQuantidadeNovo = '';
 
   public function mount(Work $obra): void
   {
@@ -202,6 +238,50 @@ new class extends Component {
   private function resolverItemPedidoDaObraAtual(string $id): \App\Models\PedidoCompraItem
   {
     return \App\Models\PedidoCompraItem::whereHas('pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  // ---- Fechamento Adversarial Etapa 3 — mesma disciplina de resolvers obra-scoped ----
+
+  private function resolverRecebimentoDaObraAtual(string $id): \App\Models\RecebimentoPedido
+  {
+    return \App\Models\RecebimentoPedido::whereHas('pedidoCompraItem.pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  private function resolverDistribuicaoRecebimentoDaObraAtual(string $id): \App\Models\RecebimentoPedidoParcela
+  {
+    return \App\Models\RecebimentoPedidoParcela::whereHas(
+      'recebimentoPedido.pedidoCompraItem.pedidoCompra',
+      fn ($q) => $q->where('obra_id', $this->obra->id)
+    )->findOrFail($id);
+  }
+
+  // ---- Etapa 2 — mesma disciplina de resolvers obra-scoped ----
+
+  private function resolverAnexoRcDaObraAtual(string $id): \App\Models\RequisicaoCompraAnexo
+  {
+    return \App\Models\RequisicaoCompraAnexo::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  private function resolverAdjudicacaoDaObraAtual(string $id): \App\Models\RequisicaoCompraAdjudicacao
+  {
+    return \App\Models\RequisicaoCompraAdjudicacao::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  private function resolverAdjudicacaoItemDaObraAtual(string $id): \App\Models\RequisicaoCompraAdjudicacaoItem
+  {
+    return \App\Models\RequisicaoCompraAdjudicacaoItem::whereHas('adjudicacao.requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->findOrFail($id);
+  }
+
+  // ---- Etapa 2.CORREÇÃO — ponte de proveniência (Pedido x Adjudicação) ----
+
+  private function resolverConsumoAdjudicacaoDaObraAtual(string $id): \App\Models\PedidoCompraItemAdjudicacao
+  {
+    return \App\Models\PedidoCompraItemAdjudicacao::whereHas('pedidoCompraItem.pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
       ->findOrFail($id);
   }
 
@@ -719,6 +799,249 @@ new class extends Component {
       'total_detalhado' => $totalDetalhado,
       'saldo_a_distribuir' => round((float) $item->quantidade_pedida - $totalDetalhado, 3),
     ];
+  }
+
+  /**
+   * Etapa 2.CORREÇÃO — alvos (item sem parcela, ou parcela) do Pedido
+   * aberto que têm adjudicação Ativa do próprio fornecedor do Pedido
+   * registrada — a atribuição explícita via `PedidoCompraItemAdjudicacao`
+   * é exigida na emissão sempre que esta lista não estiver vazia (mesma
+   * regra já validada em `EmitirPedidoCompra`, nunca duplicada aqui —
+   * esta tela só ORIENTA o usuário, o backend é quem garante de verdade).
+   */
+  #[Computed]
+  public function pedidoItensExigemProveniencia(): array
+  {
+    $pedido = $this->pedidoAberto;
+    if (! $pedido || $pedido->status->value !== 'rascunho') {
+      return [];
+    }
+
+    $linhas = [];
+
+    foreach ($pedido->itens as $item) {
+      $rcItem = $item->requisicaoCompraItem;
+      if (! $rcItem) {
+        continue;
+      }
+
+      if (! $rcItem->parcelas()->exists()) {
+        if ($rcItem->quantidadeAdjudicadaAtivaSemParcela() > 0.0005) {
+          $linhas[] = $this->montarLinhaProveniencia(
+            'item',
+            $item->id,
+            $item->descricao_snapshot ?? $rcItem->descricao_snapshot,
+            (float) $item->quantidade_pedida,
+            $item->quantidadeAtribuidaAdjudicacaoSemParcela(),
+            $rcItem->id,
+            null,
+            $pedido->fornecedor_id,
+            $item,
+          );
+        }
+        continue;
+      }
+
+      foreach ($item->parcelas as $parcela) {
+        $rcParcela = $rcItem->parcelas->firstWhere('atividade_necessidade_material_id', $parcela->atividade_necessidade_material_id);
+        if (! $rcParcela || $rcParcela->quantidadeAdjudicadaAtiva() <= 0.0005) {
+          continue;
+        }
+
+        $linhas[] = $this->montarLinhaProveniencia(
+          'parcela',
+          $parcela->id,
+          ($parcela->necessidade?->atividade?->nome ?? 'Atividade') . ' — ' . ($item->descricao_snapshot ?? $rcItem->descricao_snapshot),
+          (float) $parcela->quantidade,
+          $parcela->quantidadeAtribuidaAdjudicacao(),
+          $rcItem->id,
+          $rcParcela->id,
+          $pedido->fornecedor_id,
+          $parcela,
+        );
+      }
+    }
+
+    return $linhas;
+  }
+
+  private function montarLinhaProveniencia(string $tipo, string $alvoId, string $rotulo, float $quantidadeAlvo, float $atribuido, string $rcItemId, ?string $rcParcelaId, string $fornecedorId, $alvoModel): array
+  {
+    $disponiveis = \App\Models\RequisicaoCompraAdjudicacaoItem::where('requisicao_compra_item_id', $rcItemId)
+      ->where('requisicao_compra_item_parcela_id', $rcParcelaId)
+      ->whereHas('adjudicacao', fn ($q) => $q->where('status', StatusAdjudicacaoRequisicaoCompra::Ativa->value)->where('fornecedor_id', $fornecedorId))
+      ->with('adjudicacao.fornecedor')
+      ->get()
+      ->filter(fn ($ai) => $ai->saldoNaoConsumidoViaBridge() > 0.0005)
+      ->values();
+
+    return [
+      'tipo' => $tipo,
+      'alvo_id' => $alvoId,
+      'rotulo' => $rotulo,
+      'quantidade_alvo' => $quantidadeAlvo,
+      'atribuido' => $atribuido,
+      'saldo_a_atribuir' => round($quantidadeAlvo - $atribuido, 3),
+      'disponiveis' => $disponiveis,
+      'consumos' => $alvoModel->consumosAdjudicacao()->with('adjudicacaoItem.adjudicacao.fornecedor')->get(),
+    ];
+  }
+
+  public function atribuirProvenienciaAdjudicacao(string $alvoTipo, string $alvoId): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->pedidoProvenienciaAdjudicacaoItemIdNovo || $this->pedidoProvenienciaQuantidadeNovo === '') {
+      $this->dispatch('show-toast', message: 'Selecione a adjudicação de origem e informe a quantidade.', type: 'error');
+      return;
+    }
+
+    try {
+      $adjudicacaoItem = $this->resolverAdjudicacaoItemDaObraAtual($this->pedidoProvenienciaAdjudicacaoItemIdNovo);
+      $quantidade = (float) str_replace(',', '.', $this->pedidoProvenienciaQuantidadeNovo);
+
+      if ($alvoTipo === 'parcela') {
+        $parcelaPedido = $this->resolverParcelaPedidoDaObraAtual($alvoId);
+        (new \App\Actions\Suprimentos\AtualizarProvenienciaAdjudicacaoPedidoCompra())->adicionarConsumo(
+          $parcelaPedido->pedidoCompraItem,
+          $parcelaPedido,
+          $adjudicacaoItem,
+          $quantidade,
+          Auth::user(),
+        );
+      } else {
+        $pedidoItem = $this->resolverItemPedidoDaObraAtual($alvoId);
+        (new \App\Actions\Suprimentos\AtualizarProvenienciaAdjudicacaoPedidoCompra())->adicionarConsumo(
+          $pedidoItem,
+          null,
+          $adjudicacaoItem,
+          $quantidade,
+          Auth::user(),
+        );
+      }
+    } catch (\App\Exceptions\ProvenienciaAdjudicacaoInvalidaException|\App\Exceptions\SaldoAdjudicacaoInsuficienteException|\App\Exceptions\AdjudicacaoConsumidaPorPedidoException|\App\Exceptions\PedidoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->pedidoProvenienciaAdjudicacaoItemIdNovo = '';
+    $this->pedidoProvenienciaQuantidadeNovo = '';
+    unset($this->pedidoAberto, $this->distribuicaoPedidoItemAberta, $this->pedidoItensExigemProveniencia);
+    $this->dispatch('show-toast', message: 'Origem (adjudicação) atribuída.');
+  }
+
+  public function removerProvenienciaAdjudicacao(string $consumoId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $consumo = $this->resolverConsumoAdjudicacaoDaObraAtual($consumoId);
+      (new \App\Actions\Suprimentos\AtualizarProvenienciaAdjudicacaoPedidoCompra())->removerConsumo($consumo);
+    } catch (\App\Exceptions\PedidoCompraImutavelException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->pedidoAberto, $this->distribuicaoPedidoItemAberta, $this->pedidoItensExigemProveniencia);
+    $this->dispatch('show-toast', message: 'Atribuição de origem removida.');
+  }
+
+  // =========================================================================
+  // Etapa 2 — Dossiê Documental da RC (anexos)
+  // =========================================================================
+
+  #[Computed]
+  public function anexosDaRcAberta(): \Illuminate\Support\Collection
+  {
+    if (! $this->rcDetalheId) {
+      return collect();
+    }
+
+    return \App\Models\RequisicaoCompraAnexo::where('requisicao_compra_id', $this->rcDetalheId)
+      ->whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->with(['fornecedor', 'enviadoPor'])
+      ->latest()
+      ->get();
+  }
+
+  // =========================================================================
+  // Etapa 2 — Adjudicação Quantitativa
+  // =========================================================================
+
+  #[Computed]
+  public function adjudicacoesDaRcAberta(): \Illuminate\Support\Collection
+  {
+    if (! $this->rcDetalheId) {
+      return collect();
+    }
+
+    return \App\Models\RequisicaoCompraAdjudicacao::where('requisicao_compra_id', $this->rcDetalheId)
+      ->whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->with(['fornecedor', 'decididoPor', 'canceladoPor', 'itens'])
+      ->orderByDesc('created_at')
+      ->get();
+  }
+
+  #[Computed]
+  public function adjudicacaoDetalheAberta(): ?\App\Models\RequisicaoCompraAdjudicacao
+  {
+    if (! $this->rcAdjudicacaoDetalheId) {
+      return null;
+    }
+
+    return \App\Models\RequisicaoCompraAdjudicacao::whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->where('id', $this->rcAdjudicacaoDetalheId)
+      ->with(['fornecedor', 'itens.requisicaoCompraItem.alocacao.requisicaoItem.itemTakeOff.unidadeMedida', 'itens.parcela.necessidade.atividade.frenteTrabalho'])
+      ->first();
+  }
+
+  /**
+   * Etapa 2, Seção 23 do pedido — "não redigitar informação": sugere
+   * automaticamente os alvos adjudicáveis (item OU parcela, nunca os
+   * dois pro mesmo item — mesma granularidade coerente da Action) com
+   * saldo > 0, já rotulados com Atividade/Frente quando aplicável.
+   * Nunca N+1: 1 query pros itens da RC + 1 pra soma agregada de
+   * adjudicação ativa por alvo.
+   */
+  #[Computed]
+  public function alvosAdjudicaveisDaRc(): \Illuminate\Support\Collection
+  {
+    if (! $this->rcDetalheId) {
+      return collect();
+    }
+
+    $rcItens = \App\Models\RequisicaoCompraItem::where('requisicao_compra_id', $this->rcDetalheId)
+      ->whereHas('requisicaoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->with(['alocacao.requisicaoItem.itemTakeOff.unidadeMedida', 'parcelas.necessidade.atividade.frenteTrabalho'])
+      ->get();
+
+    $alvos = collect();
+
+    foreach ($rcItens as $rcItem) {
+      $descricaoItem = $rcItem->alocacao?->requisicaoItem?->itemTakeOff?->descricao ?? '—';
+
+      if ($rcItem->parcelas->isNotEmpty()) {
+        foreach ($rcItem->parcelas as $parcela) {
+          $saldo = $parcela->saldoAdjudicavel();
+          if ($saldo > 0.0005) {
+            $alvos->push((object) [
+              'valor' => "parcela:{$parcela->id}",
+              'rotulo' => "{$descricaoItem} — {$parcela->necessidade?->atividade?->nome} — saldo " . number_format($saldo, 3, ',', '.'),
+            ]);
+          }
+        }
+      } else {
+        $saldo = $rcItem->saldoAdjudicavelSemParcela();
+        if ($saldo > 0.0005) {
+          $alvos->push((object) [
+            'valor' => "rcitem:{$rcItem->id}",
+            'rotulo' => "{$descricaoItem} (sem detalhamento de Atividade) — saldo " . number_format($saldo, 3, ',', '.'),
+          ]);
+        }
+      }
+    }
+
+    return $alvos;
   }
 
   #[Computed]
@@ -1578,6 +1901,231 @@ new class extends Component {
   }
 
   // =========================================================================
+  // Etapa 2 — Dossiê Documental da RC (anexos)
+  // =========================================================================
+
+  private function resetFormularioAnexoRcNovo(): void
+  {
+    $this->rcAnexoNovo = null;
+    $this->rcAnexoTipoNovo = '';
+    $this->rcAnexoFornecedorIdNovo = null;
+    $this->rcAnexoDescricaoNovo = '';
+    $this->rcAnexoValorNovo = '';
+    $this->rcAnexoPrazoNovo = '';
+    $this->rcAnexoValidadeNovo = '';
+    $this->rcAnexoSubstituiIdNovo = null;
+  }
+
+  public function anexarDocumentoRc(): void
+  {
+    $this->garantirPermissao('editar');
+
+    $this->validate(
+      [
+        'rcAnexoNovo' => 'required|file|mimes:' . \App\Models\RequisicaoCompraAnexo::MIMES_ACEITOS . '|max:' . \App\Models\RequisicaoCompraAnexo::TAMANHO_MAXIMO_KB,
+        'rcAnexoTipoNovo' => 'required|string',
+      ],
+      [],
+      ['rcAnexoNovo' => 'arquivo', 'rcAnexoTipoNovo' => 'tipo de documento']
+    );
+
+    try {
+      $rc = $this->resolverRcDaObraAtual($this->rcDetalheId);
+      $fornecedor = $this->rcAnexoFornecedorIdNovo ? $this->resolverFornecedorDaObraAtual($this->rcAnexoFornecedorIdNovo) : null;
+      $anexoAnterior = $this->rcAnexoSubstituiIdNovo ? $this->resolverAnexoRcDaObraAtual($this->rcAnexoSubstituiIdNovo) : null;
+
+      (new \App\Actions\Suprimentos\AnexarDocumentoRequisicaoCompra())->execute(
+        $rc,
+        [
+          'tipo_documento' => $this->rcAnexoTipoNovo,
+          'descricao' => $this->rcAnexoDescricaoNovo ?: null,
+          'valor_total_referencia' => $this->rcAnexoValorNovo !== '' ? (float) str_replace(',', '.', $this->rcAnexoValorNovo) : null,
+          'prazo_referencia' => $this->rcAnexoPrazoNovo ?: null,
+          'validade_ate' => $this->rcAnexoValidadeNovo ?: null,
+          'substitui_anexo_id' => $anexoAnterior?->id,
+        ],
+        $this->rcAnexoNovo,
+        $fornecedor,
+        Auth::user(),
+      );
+    } catch (\InvalidArgumentException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->resetFormularioAnexoRcNovo();
+    unset($this->anexosDaRcAberta);
+    $this->dispatch('show-toast', message: 'Documento anexado.');
+  }
+
+  public function removerAnexoRc(string $anexoId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $anexo = $this->resolverAnexoRcDaObraAtual($anexoId);
+      (new \App\Actions\Suprimentos\RemoverAnexoRequisicaoCompra())->execute($anexo);
+    } catch (\App\Exceptions\RequisicaoCompraAnexoInvalidoException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->anexosDaRcAberta);
+    $this->dispatch('show-toast', message: 'Anexo removido.');
+  }
+
+  // =========================================================================
+  // Etapa 2 — Adjudicação Quantitativa
+  // =========================================================================
+
+  private function resetFormularioAdjudicacaoRcNovo(): void
+  {
+    $this->rcAdjudicacaoFornecedorIdNovo = null;
+    $this->rcAdjudicacaoJustificativaNovo = '';
+    $this->rcAdjudicacaoObservacaoNovo = '';
+    $this->rcAdjudicacaoAnexoIdNovo = null;
+    $this->rcAdjudicacaoItemAlvoNovo = null;
+    $this->rcAdjudicacaoItemQuantidadeNovo = '';
+  }
+
+  public function abrirAdjudicacaoDetalhe(string $adjudicacaoId): void
+  {
+    $adjudicacao = $this->resolverAdjudicacaoDaObraAtual($adjudicacaoId);
+
+    $this->rcAdjudicacaoDetalheId = $adjudicacao->id;
+    $this->rcAdjudicacaoItemAlvoNovo = null;
+    $this->rcAdjudicacaoItemQuantidadeNovo = '';
+    unset($this->adjudicacaoDetalheAberta, $this->alvosAdjudicaveisDaRc);
+  }
+
+  public function fecharAdjudicacaoDetalhe(): void
+  {
+    $this->rcAdjudicacaoDetalheId = null;
+    $this->rcAdjudicacaoItemAlvoNovo = null;
+    $this->rcAdjudicacaoItemQuantidadeNovo = '';
+  }
+
+  public function criarAdjudicacaoRc(): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->rcAdjudicacaoFornecedorIdNovo || trim($this->rcAdjudicacaoJustificativaNovo) === '') {
+      $this->dispatch('show-toast', message: 'Selecione um fornecedor e informe a justificativa.', type: 'error');
+      return;
+    }
+
+    try {
+      $rc = $this->resolverRcDaObraAtual($this->rcDetalheId);
+      $fornecedor = $this->resolverFornecedorDaObraAtual($this->rcAdjudicacaoFornecedorIdNovo);
+      $anexo = $this->rcAdjudicacaoAnexoIdNovo ? $this->resolverAnexoRcDaObraAtual($this->rcAdjudicacaoAnexoIdNovo) : null;
+
+      $adjudicacao = (new \App\Actions\Suprimentos\CriarAdjudicacaoRequisicaoCompra())->execute(
+        $rc,
+        $fornecedor,
+        $this->rcAdjudicacaoJustificativaNovo,
+        $this->rcAdjudicacaoObservacaoNovo ?: null,
+        $anexo,
+        Auth::user(),
+      );
+    } catch (\App\Exceptions\RequisicaoCompraAdjudicacaoInvalidaException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->resetFormularioAdjudicacaoRcNovo();
+    $this->rcAdjudicacaoDetalheId = $adjudicacao->id;
+    unset($this->adjudicacoesDaRcAberta, $this->adjudicacaoDetalheAberta, $this->alvosAdjudicaveisDaRc);
+    $this->dispatch('show-toast', message: 'Adjudicação registrada.');
+  }
+
+  public function adicionarItemAdjudicacao(): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->rcAdjudicacaoItemAlvoNovo || $this->rcAdjudicacaoItemQuantidadeNovo === '') {
+      $this->dispatch('show-toast', message: 'Selecione um item/Atividade e informe a quantidade.', type: 'error');
+      return;
+    }
+
+    [$tipo, $alvoId] = explode(':', $this->rcAdjudicacaoItemAlvoNovo, 2);
+
+    try {
+      $adjudicacao = $this->resolverAdjudicacaoDaObraAtual($this->rcAdjudicacaoDetalheId);
+
+      if ($tipo === 'parcela') {
+        $parcela = $this->resolverParcelaRcDaObraAtual($alvoId);
+        $rcItem = $this->resolverItemRcDaObraAtual($parcela->requisicao_compra_item_id);
+      } else {
+        $rcItem = $this->resolverItemRcDaObraAtual($alvoId);
+        $parcela = null;
+      }
+
+      (new \App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem(
+        $adjudicacao,
+        $rcItem,
+        $parcela,
+        (float) str_replace(',', '.', $this->rcAdjudicacaoItemQuantidadeNovo),
+      );
+    } catch (\App\Exceptions\RequisicaoCompraAdjudicacaoInvalidaException|\App\Exceptions\SaldoAdjudicacaoInsuficienteException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->rcAdjudicacaoItemAlvoNovo = null;
+    $this->rcAdjudicacaoItemQuantidadeNovo = '';
+    unset($this->adjudicacaoDetalheAberta, $this->alvosAdjudicaveisDaRc, $this->adjudicacoesDaRcAberta);
+    $this->dispatch('show-toast', message: 'Item adicionado à adjudicação.');
+  }
+
+  public function removerItemAdjudicacao(string $itemId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $item = $this->resolverAdjudicacaoItemDaObraAtual($itemId);
+      (new \App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra())->removerItem($item);
+    } catch (\App\Exceptions\AdjudicacaoConsumidaPorPedidoException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->adjudicacaoDetalheAberta, $this->alvosAdjudicaveisDaRc, $this->adjudicacoesDaRcAberta);
+    $this->dispatch('show-toast', message: 'Item removido da adjudicação.');
+  }
+
+  public function cancelarAdjudicacaoRc(string $adjudicacaoId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $adjudicacao = $this->resolverAdjudicacaoDaObraAtual($adjudicacaoId);
+      (new \App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra())->cancelar($adjudicacao, Auth::user(), null);
+    } catch (\App\Exceptions\RequisicaoCompraAdjudicacaoInvalidaException|\App\Exceptions\AdjudicacaoConsumidaPorPedidoException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->adjudicacoesDaRcAberta, $this->adjudicacaoDetalheAberta);
+    $this->dispatch('show-toast', message: 'Adjudicação cancelada.');
+  }
+
+  /**
+   * Etapa 2, Seção 24 — "Criar Pedido a partir da adjudicação": nunca
+   * inventa preço/prazo/condição comercial — só pré-preenche o
+   * fornecedor no formulário de criação de Pedido já existente (Ciclo
+   * 19.5), que o usuário completa e confirma normalmente.
+   */
+  public function prepararPedidoAPartirDaAdjudicacao(string $adjudicacaoId): void
+  {
+    $adjudicacao = $this->resolverAdjudicacaoDaObraAtual($adjudicacaoId);
+
+    $this->rcAdjudicacaoDetalheId = null;
+    $this->pedidoDetalheId = null;
+    $this->resetFormularioPedidoNovo();
+    $this->pedidoFornecedorIdNovo = $adjudicacao->fornecedor_id;
+  }
+
+  // =========================================================================
   // Ciclo 19, Etapa 19.5 — Pedidos/Ordens de Compra
   // =========================================================================
 
@@ -1667,14 +2215,14 @@ new class extends Component {
         $rcItem,
         (float) str_replace(',', '.', $this->pedidoItemQuantidadeNovo),
       );
-    } catch (\App\Exceptions\SaldoRequisicaoCompraInsuficienteException|\App\Exceptions\PedidoCompraImutavelException|\InvalidArgumentException $e) {
+    } catch (\App\Exceptions\SaldoRequisicaoCompraInsuficienteException|\App\Exceptions\SaldoAdjudicacaoFornecedorInsuficienteException|\App\Exceptions\PedidoCompraImutavelException|\InvalidArgumentException $e) {
       $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
       return;
     }
 
     $this->pedidoItemRcItemIdNovo = null;
     $this->pedidoItemQuantidadeNovo = '';
-    unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido);
+    unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido, $this->pedidoItensExigemProveniencia);
     $this->dispatch('show-toast', message: 'Item adicionado ao Pedido.');
   }
 
@@ -1690,7 +2238,7 @@ new class extends Component {
       return;
     }
 
-    unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido);
+    unset($this->pedidoAberto, $this->rcItensComSaldoParaPedido, $this->pedidoItensExigemProveniencia);
     $this->dispatch('show-toast', message: 'Item removido.');
   }
 
@@ -1732,14 +2280,14 @@ new class extends Component {
         (float) str_replace(',', '.', $this->pedidoParcelaQuantidadeNovo),
         Auth::user(),
       );
-    } catch (\App\Exceptions\ParcelaNecessidadeInvalidaException|\App\Exceptions\SaldoParcelaPedidoInsuficienteException|\App\Exceptions\PedidoCompraImutavelException $e) {
+    } catch (\App\Exceptions\ParcelaNecessidadeInvalidaException|\App\Exceptions\SaldoParcelaPedidoInsuficienteException|\App\Exceptions\SaldoAdjudicacaoFornecedorInsuficienteException|\App\Exceptions\PedidoCompraImutavelException $e) {
       $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
       return;
     }
 
     $this->pedidoParcelaNecessidadeIdNovo = null;
     $this->pedidoParcelaQuantidadeNovo = '';
-    unset($this->distribuicaoPedidoItemAberta, $this->pedidoAberto);
+    unset($this->distribuicaoPedidoItemAberta, $this->pedidoAberto, $this->pedidoItensExigemProveniencia);
     $this->dispatch('show-toast', message: 'Destinação planejada por Atividade adicionada.');
   }
 
@@ -1755,7 +2303,7 @@ new class extends Component {
       return;
     }
 
-    unset($this->distribuicaoPedidoItemAberta, $this->pedidoAberto);
+    unset($this->distribuicaoPedidoItemAberta, $this->pedidoAberto, $this->pedidoItensExigemProveniencia);
     $this->dispatch('show-toast', message: 'Destinação planejada por Atividade removida.');
   }
 
@@ -1766,13 +2314,71 @@ new class extends Component {
     try {
       $pedido = $this->resolverPedidoDaObraAtual($this->pedidoDetalheId);
       (new \App\Actions\Suprimentos\EmitirPedidoCompra())->execute($pedido, Auth::user());
-    } catch (\App\Exceptions\PedidoCompraEmissaoInvalidaException|\App\Exceptions\PedidoCompraImutavelException|\App\Exceptions\SaldoRequisicaoCompraInsuficienteException|\App\Exceptions\FornecedorPedidoInvalidoException $e) {
+    } catch (\App\Exceptions\PedidoCompraEmissaoInvalidaException|\App\Exceptions\PedidoCompraImutavelException|\App\Exceptions\SaldoRequisicaoCompraInsuficienteException|\App\Exceptions\SaldoParcelaPedidoInsuficienteException|\App\Exceptions\SaldoAdjudicacaoFornecedorInsuficienteException|\App\Exceptions\FornecedorPedidoInvalidoException|\App\Exceptions\AtribuicaoAdjudicacaoObrigatoriaException $e) {
       $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
       return;
     }
 
-    unset($this->pedidoAberto, $this->pedidosDaRcAberta);
+    unset($this->pedidoAberto, $this->pedidosDaRcAberta, $this->pedidoItensExigemProveniencia);
     $this->dispatch('show-toast', message: 'Pedido/Ordem de Compra emitido.');
+  }
+
+  // =========================================================================
+  // Etapa 3 — Prazo Comercial do Pedido + Histórico de Promessa
+  // =========================================================================
+
+  /** Histórico completo, mais recente primeiro (App\Models\PedidoCompra::previsoesEntrega()). */
+  #[Computed]
+  public function pedidoPrevisoesHistorico(): \Illuminate\Support\Collection
+  {
+    $pedido = $this->pedidoAberto;
+    if (! $pedido) {
+      return collect();
+    }
+
+    return $pedido->previsoesEntrega()->with('registradoPor')->get();
+  }
+
+  public function abrirFormPrevisaoPedido(): void
+  {
+    $this->pedidoPrevisaoFormAberto = true;
+    $this->pedidoPrevisaoDataNova = '';
+    $this->pedidoPrevisaoMotivoNovo = '';
+    $this->pedidoPrevisaoObservacaoNova = '';
+  }
+
+  public function fecharFormPrevisaoPedido(): void
+  {
+    $this->pedidoPrevisaoFormAberto = false;
+  }
+
+  public function atualizarPrevisaoPedido(): void
+  {
+    $this->garantirPermissao('editar');
+
+    if (! $this->pedidoPrevisaoDataNova) {
+      $this->dispatch('show-toast', message: 'Informe a nova data prevista de entrega.', type: 'error');
+      return;
+    }
+
+    try {
+      $pedido = $this->resolverPedidoDaObraAtual($this->pedidoDetalheId);
+
+      (new \App\Actions\Suprimentos\AtualizarPrevisaoEntregaPedidoCompra())->execute(
+        $pedido,
+        \Carbon\Carbon::parse($this->pedidoPrevisaoDataNova),
+        Auth::user(),
+        $this->pedidoPrevisaoMotivoNovo ?: null,
+        $this->pedidoPrevisaoObservacaoNova ?: null,
+      );
+    } catch (\App\Exceptions\PrevisaoEntregaInvalidaException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->pedidoPrevisaoFormAberto = false;
+    unset($this->pedidoAberto, $this->pedidoPrevisoesHistorico, $this->pedidosDaRcAberta);
+    $this->dispatch('show-toast', message: 'Previsão de entrega atualizada — revisão registrada no histórico.');
   }
 
   /**
@@ -1859,6 +2465,112 @@ new class extends Component {
     $this->resetFormularioRecebimentoNovo();
     unset($this->pedidoAberto, $this->pedidosDaRcAberta);
     $this->dispatch('show-toast', message: 'Recebimento registrado.');
+  }
+
+  // =========================================================================
+  // Fechamento Adversarial Etapa 3 — Distribuição de Recebimento por
+  // Necessidade/Parcela (Seção 21). Sempre uma etapa OPCIONAL e
+  // POSTERIOR ao registro do recebimento em si (Seção 9: "receber
+  // primeiro é fato; classificar destino lógico pode ser feito depois")
+  // — nunca bloqueia/exige nada no momento de registrarRecebimento().
+  // =========================================================================
+
+  /**
+   * Painel de distribuição do recebimento aberto — necessidades
+   * elegíveis (parcelas do item deste recebimento), quanto já foi
+   * atribuído a cada uma, e os totais recebido/distribuído/saldo sem
+   * atribuição (Seção 21/22 — nunca esconde o recebimento global).
+   */
+  #[Computed]
+  public function distribuicaoRecebimentoAberto(): ?array
+  {
+    if (! $this->distribuicaoRecebimentoAbertoId) {
+      return null;
+    }
+
+    $recebimento = \App\Models\RecebimentoPedido::with('pedidoCompraItem')->find($this->distribuicaoRecebimentoAbertoId);
+    if (! $recebimento) {
+      return null;
+    }
+
+    $parcelas = \App\Models\PedidoCompraItemParcela::where('pedido_compra_item_id', $recebimento->pedidoCompraItem->id)
+      ->with('necessidade')
+      ->get();
+
+    $linhas = $parcelas->map(function (\App\Models\PedidoCompraItemParcela $parcela) {
+      $jaAtribuido = \App\Support\Suprimentos\PoliticaDistribuicaoRecebimento::totalAtribuidoAParcela($parcela);
+
+      return [
+        'parcela' => $parcela,
+        'necessidade' => $parcela->necessidade,
+        'ja_atribuido' => $jaAtribuido,
+        'saldo' => round((float) $parcela->quantidade - $jaAtribuido, 3),
+      ];
+    });
+
+    $totalDistribuido = \App\Support\Suprimentos\PoliticaDistribuicaoRecebimento::totalDistribuido($recebimento);
+
+    return [
+      'recebimento' => $recebimento,
+      'linhas' => $linhas,
+      'total_recebido' => (float) $recebimento->quantidade_recebida,
+      'total_distribuido' => $totalDistribuido,
+      'saldo_sem_atribuicao' => round((float) $recebimento->quantidade_recebida - $totalDistribuido, 3),
+    ];
+  }
+
+  public function abrirDistribuicaoRecebimento(string $recebimentoId): void
+  {
+    $this->distribuicaoRecebimentoAbertoId = $recebimentoId;
+    $this->distribuicaoQuantidadesNovas = [];
+  }
+
+  public function fecharDistribuicaoRecebimento(): void
+  {
+    $this->distribuicaoRecebimentoAbertoId = null;
+    $this->distribuicaoQuantidadesNovas = [];
+    unset($this->distribuicaoRecebimentoAberto);
+  }
+
+  public function confirmarDistribuicaoRecebimento(string $parcelaId): void
+  {
+    $this->garantirPermissao('editar');
+
+    $quantidade = (float) str_replace(',', '.', (string) ($this->distribuicaoQuantidadesNovas[$parcelaId] ?? ''));
+    if ($quantidade <= 0) {
+      $this->dispatch('show-toast', message: 'Informe uma quantidade maior que zero para distribuir.', type: 'error');
+      return;
+    }
+
+    try {
+      $recebimento = $this->resolverRecebimentoDaObraAtual($this->distribuicaoRecebimentoAbertoId);
+      $parcela = $this->resolverParcelaPedidoDaObraAtual($parcelaId);
+
+      (new \App\Actions\Suprimentos\DistribuirRecebimentoPedidoPorParcela())->execute($recebimento, $parcela, $quantidade, Auth::user());
+    } catch (\App\Exceptions\RecebimentoConciliacaoInvalidaException|\App\Exceptions\RecebimentoConciliacaoFechadaException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    $this->distribuicaoQuantidadesNovas[$parcelaId] = '';
+    unset($this->distribuicaoRecebimentoAberto, $this->pedidoAberto);
+    $this->dispatch('show-toast', message: 'Distribuição registrada.');
+  }
+
+  public function removerDistribuicaoRecebimento(string $distribuicaoId): void
+  {
+    $this->garantirPermissao('editar');
+
+    try {
+      $distribuicao = $this->resolverDistribuicaoRecebimentoDaObraAtual($distribuicaoId);
+      (new \App\Actions\Suprimentos\DistribuirRecebimentoPedidoPorParcela())->remover($distribuicao);
+    } catch (\App\Exceptions\RecebimentoConciliacaoFechadaException $e) {
+      $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
+      return;
+    }
+
+    unset($this->distribuicaoRecebimentoAberto, $this->pedidoAberto);
+    $this->dispatch('show-toast', message: 'Distribuição removida.');
   }
 
   public function resetModalItem(): void
@@ -2671,6 +3383,276 @@ new class extends Component {
                         </table>
                     </div>
 
+                    {{-- Etapa 2 — Documentos do Processo (dossiê documental da RC) --}}
+                    <hr class="my-4">
+                    <h6 class="mb-2 fw-bold text-uppercase" style="font-size:.78rem; letter-spacing:.03em">Documentos do Processo</h6>
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Tipo</th>
+                                    <th>Fornecedor</th>
+                                    <th>Arquivo</th>
+                                    <th>Descrição</th>
+                                    <th>Data</th>
+                                    <th>Usuário</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @forelse ($this->anexosDaRcAberta as $anexo)
+                                <tr wire:key="rc-anexo-{{ $anexo->id }}">
+                                    <td><span class="badge bg-label-secondary">{{ $anexo->tipo_documento->label() }}</span></td>
+                                    <td>{{ $anexo->fornecedor?->nome ?? '—' }}</td>
+                                    <td>
+                                        <a href="{{ route('requisicao-compra-anexos.download', $anexo) }}" title="Baixar">
+                                            <i class="bx bx-download me-1"></i>{{ $anexo->nome_original }}
+                                        </a>
+                                    </td>
+                                    <td class="small text-muted">{{ $anexo->descricao ?? '—' }}</td>
+                                    <td class="small text-muted">{{ $anexo->created_at->format('d/m/Y H:i') }}</td>
+                                    <td class="small text-muted">{{ $anexo->enviadoPor ? $anexo->enviadoPor->first_name . ' ' . $anexo->enviadoPor->last_name : 'Usuário removido' }}</td>
+                                    <td class="text-end">
+                                        @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                        <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" title="Excluir"
+                                                onclick="confirmarAcao(this, { mensagem: 'Remover este documento?', metodo: 'removerAnexoRc', args: ['{{ $anexo->id }}'], icone: 'bx-trash' })">
+                                            <i class="bx bx-trash"></i>
+                                        </button>
+                                        @endif
+                                    </td>
+                                </tr>
+                                @empty
+                                <tr><td colspan="7" class="text-center text-muted py-3">Nenhum documento anexado ainda.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                    <div class="row g-2 align-items-end mb-4">
+                        <div class="col-md-2">
+                            <label class="form-label small">Tipo</label>
+                            <select class="form-select form-select-sm" wire:model="rcAnexoTipoNovo">
+                                <option value="">Selecione</option>
+                                @foreach(\App\Enums\TipoDocumentoRequisicaoCompra::cases() as $tipo)
+                                <option value="{{ $tipo->value }}">{{ $tipo->label() }}</option>
+                                @endforeach
+                            </select>
+                            @error('rcAnexoTipoNovo')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Fornecedor (opcional)</label>
+                            <select class="form-select form-select-sm" wire:model="rcAnexoFornecedorIdNovo">
+                                <option value="">—</option>
+                                @foreach($this->fornecedores as $fornecedor)
+                                <option value="{{ $fornecedor->id }}">{{ $fornecedor->nome }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Arquivo</label>
+                            <input type="file" wire:model="rcAnexoNovo" class="form-control form-control-sm @error('rcAnexoNovo') is-invalid @enderror">
+                            @error('rcAnexoNovo')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Descrição</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="rcAnexoDescricaoNovo">
+                        </div>
+                        <div class="col-md-2">
+                            <button type="button" class="btn btn-sm btn-primary w-100" wire:click="anexarDocumentoRc"
+                                    wire:loading.attr="disabled" wire:target="rcAnexoNovo,anexarDocumentoRc">
+                                <i class="bx bx-upload me-1"></i>Anexar
+                            </button>
+                        </div>
+                        @if($rcAnexoTipoNovo === 'proposta')
+                        <div class="col-md-3">
+                            <label class="form-label small">Valor de referência</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="rcAnexoValorNovo" placeholder="Opcional">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Prazo de referência</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="rcAnexoPrazoNovo" placeholder="Opcional, ex.: 30 dias">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Válida até</label>
+                            <input type="date" class="form-control form-control-sm" wire:model="rcAnexoValidadeNovo">
+                        </div>
+                        @endif
+                        @if($this->anexosDaRcAberta->isNotEmpty())
+                        <div class="col-md-3">
+                            <label class="form-label small">Substitui documento (opcional)</label>
+                            <select class="form-select form-select-sm" wire:model="rcAnexoSubstituiIdNovo">
+                                <option value="">—</option>
+                                @foreach($this->anexosDaRcAberta as $anexoExistente)
+                                <option value="{{ $anexoExistente->id }}">{{ $anexoExistente->nome_original }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        @endif
+                    </div>
+                    @endif
+
+                    {{-- Etapa 2 — Adjudicação Quantitativa --}}
+                    <hr class="my-4">
+                    <h6 class="mb-2 fw-bold text-uppercase" style="font-size:.78rem; letter-spacing:.03em">Adjudicação</h6>
+
+                    @if(! $rcAdjudicacaoDetalheId)
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Fornecedor</th>
+                                    <th>Status</th>
+                                    <th>Decidido por</th>
+                                    <th>Justificativa</th>
+                                    <th class="text-center">Itens</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @forelse ($this->adjudicacoesDaRcAberta as $adj)
+                                <tr wire:key="rc-adjudicacao-{{ $adj->id }}">
+                                    <td>{{ $adj->fornecedor?->nome }}</td>
+                                    <td><span class="badge {{ $adj->status->value === 'ativa' ? 'bg-label-success' : 'bg-label-secondary' }}">{{ $adj->status->label() }}</span></td>
+                                    <td class="small text-muted">
+                                        {{ $adj->decididoPor ? $adj->decididoPor->first_name . ' ' . $adj->decididoPor->last_name : 'Usuário removido' }}
+                                        <br>{{ $adj->decidido_em?->format('d/m/Y H:i') }}
+                                    </td>
+                                    <td class="small text-muted">{{ \Illuminate\Support\Str::limit($adj->justificativa, 60) }}</td>
+                                    <td class="text-center">{{ $adj->itens->count() }}</td>
+                                    <td class="text-end">
+                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-1" title="Ver detalhe" wire:click="abrirAdjudicacaoDetalhe('{{ $adj->id }}')">
+                                            <i class="bx bx-show"></i>
+                                        </button>
+                                        @if($adj->status->value === 'ativa' && Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'criar'))
+                                        <button type="button" class="btn btn-xs btn-outline-primary py-0 px-1" title="Criar Pedido a partir desta adjudicação" wire:click="prepararPedidoAPartirDaAdjudicacao('{{ $adj->id }}')">
+                                            <i class="bx bx-cart-add"></i>
+                                        </button>
+                                        @endif
+                                        @if($adj->status->value === 'ativa' && Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                        <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" title="Cancelar adjudicação"
+                                                onclick="confirmarAcao(this, { mensagem: 'Cancelar esta adjudicação? A decisão fica preservada no histórico, mas deixa de valer.', metodo: 'cancelarAdjudicacaoRc', args: ['{{ $adj->id }}'], icone: 'bx-x-circle' })">
+                                            <i class="bx bx-x-circle"></i>
+                                        </button>
+                                        @endif
+                                    </td>
+                                </tr>
+                                @empty
+                                <tr><td colspan="6" class="text-center text-muted py-3">Nenhuma adjudicação registrada — "Adjudicação não registrada".</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                    <h6 class="fw-bold mb-2" style="font-size:.75rem">Nova Adjudicação</h6>
+                    <div class="row g-2 align-items-end mb-4">
+                        <div class="col-md-3">
+                            <label class="form-label small">Fornecedor</label>
+                            <select class="form-select form-select-sm" wire:model="rcAdjudicacaoFornecedorIdNovo">
+                                <option value="">Selecione</option>
+                                @foreach($this->fornecedores as $fornecedor)
+                                <option value="{{ $fornecedor->id }}">{{ $fornecedor->nome }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">Justificativa</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="rcAdjudicacaoJustificativaNovo" placeholder="Ex.: menor preço, fornecedor homologado, contrato vigente...">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Documento de suporte (opcional)</label>
+                            <select class="form-select form-select-sm" wire:model="rcAdjudicacaoAnexoIdNovo">
+                                <option value="">—</option>
+                                @foreach($this->anexosDaRcAberta as $anexoOpcao)
+                                <option value="{{ $anexoOpcao->id }}">{{ $anexoOpcao->nome_original }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <button type="button" class="btn btn-sm btn-primary w-100" wire:click="criarAdjudicacaoRc">
+                                <i class="bx bx-plus me-1"></i>Registrar
+                            </button>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">Observação (opcional)</label>
+                            <input type="text" class="form-control form-control-sm" wire:model="rcAdjudicacaoObservacaoNovo">
+                        </div>
+                    </div>
+                    @endif
+                    @else
+                    {{-- Detalhe de UMA adjudicação — composição quantitativa por item/Atividade --}}
+                    @php $adjDetalhe = $this->adjudicacaoDetalheAberta; @endphp
+                    @if($adjDetalhe)
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center py-2">
+                            <strong class="small">
+                                Adjudicação — {{ $adjDetalhe->fornecedor?->nome }}
+                                <span class="badge {{ $adjDetalhe->status->value === 'ativa' ? 'bg-label-success' : 'bg-label-secondary' }} ms-1">{{ $adjDetalhe->status->label() }}</span>
+                            </strong>
+                            <button type="button" class="btn-close btn-sm" wire:click="fecharAdjudicacaoDetalhe"></button>
+                        </div>
+                        <div class="card-body">
+                            <p class="small text-muted mb-3">
+                                <strong>Justificativa:</strong> {{ $adjDetalhe->justificativa }}
+                                @if($adjDetalhe->observacao)<br><strong>Observação:</strong> {{ $adjDetalhe->observacao }}@endif
+                            </p>
+
+                            <table class="table table-sm align-middle mb-3">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Item</th>
+                                        <th>Atividade</th>
+                                        <th class="text-end">Nesta adjudicação</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse ($adjDetalhe->itens as $itemAdj)
+                                    @php $itoAdj = $itemAdj->requisicaoCompraItem?->alocacao?->requisicaoItem?->itemTakeOff; @endphp
+                                    <tr wire:key="rc-adj-item-{{ $itemAdj->id }}">
+                                        <td>{{ $itoAdj?->descricao ?? '—' }}</td>
+                                        <td>{{ $itemAdj->parcela?->necessidade?->atividade?->nome ?? 'Sem detalhamento de Atividade' }}</td>
+                                        <td class="text-end">{{ number_format((float) $itemAdj->quantidade, 3, ',', '.') }} {{ $itoAdj?->unidadeMedida?->codigo }}</td>
+                                        <td class="text-end">
+                                            @if($adjDetalhe->status->value === 'ativa' && Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                            <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerItemAdjudicacao('{{ $itemAdj->id }}')">
+                                                <i class="bx bx-trash"></i>
+                                            </button>
+                                            @endif
+                                        </td>
+                                    </tr>
+                                    @empty
+                                    <tr><td colspan="4" class="text-center text-muted py-2">Nenhum item adjudicado ainda.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+
+                            @if($adjDetalhe->status->value === 'ativa' && Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-7">
+                                    <label class="form-label small">Item/Atividade (saldo disponível)</label>
+                                    <select class="form-select form-select-sm" wire:model="rcAdjudicacaoItemAlvoNovo">
+                                        <option value="">Selecione</option>
+                                        @foreach($this->alvosAdjudicaveisDaRc as $alvo)
+                                        <option value="{{ $alvo->valor }}">{{ $alvo->rotulo }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Quantidade</label>
+                                    <input type="text" class="form-control form-control-sm" wire:model="rcAdjudicacaoItemQuantidadeNovo">
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="button" class="btn btn-sm btn-primary w-100" wire:click="adicionarItemAdjudicacao">Adicionar</button>
+                                </div>
+                            </div>
+                            @endif
+                        </div>
+                    </div>
+                    @endif
+                    @endif
+
                     {{-- Ciclo 19, Etapa 19.5 — Pedidos/Ordens de Compra desta RC --}}
                     <hr class="my-4">
                     @if(! $pedidoDetalheId)
@@ -2795,6 +3777,75 @@ new class extends Component {
                     </div>
                     @endif
 
+                    {{-- Etapa 3 — Prazo Comercial do Pedido + Histórico de Promessa (Seção 28). --}}
+                    <div class="card mb-3">
+                        <div class="card-body py-2 px-3">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div class="small">
+                                    <strong>Previsão atual de entrega:</strong>
+                                    {{ $pedido->data_prevista_entrega?->format('d/m/Y') ?? 'Não informada' }}
+                                </div>
+                                @if(! $this->pedidoPrevisaoFormAberto)
+                                <button type="button" class="btn btn-sm btn-outline-primary" wire:click="abrirFormPrevisaoPedido">
+                                    <i class="bx bx-calendar-edit me-1"></i>Atualizar previsão
+                                </button>
+                                @endif
+                            </div>
+
+                            @if($this->pedidoPrevisaoFormAberto)
+                            <div class="border-top mt-2 pt-2">
+                                <div class="row g-2">
+                                    <div class="col-md-3">
+                                        <label class="form-label small mb-1">Nova data prevista</label>
+                                        <input type="date" class="form-control form-control-sm" wire:model="pedidoPrevisaoDataNova">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small mb-1">Motivo</label>
+                                        <input type="text" class="form-control form-control-sm" wire:model="pedidoPrevisaoMotivoNovo" placeholder="Ex.: reprogramação do fornecedor">
+                                    </div>
+                                    <div class="col-md-5">
+                                        <label class="form-label small mb-1">Observação</label>
+                                        <input type="text" class="form-control form-control-sm" wire:model="pedidoPrevisaoObservacaoNova">
+                                    </div>
+                                </div>
+                                <div class="mt-2 d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-primary" wire:click="atualizarPrevisaoPedido">
+                                        <i class="bx bx-check me-1"></i>Confirmar
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" wire:click="fecharFormPrevisaoPedido">
+                                        Cancelar
+                                    </button>
+                                </div>
+                            </div>
+                            @endif
+
+                            @if($this->pedidoPrevisoesHistorico->isNotEmpty())
+                            <div class="table-responsive mt-2">
+                                <table class="table table-sm small mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Data registrada</th>
+                                            <th>Previsão</th>
+                                            <th>Motivo</th>
+                                            <th>Usuário</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach($this->pedidoPrevisoesHistorico as $evento)
+                                        <tr wire:key="previsao-{{ $evento->id }}">
+                                            <td>{{ $evento->registrado_em->format('d/m/Y H:i') }}</td>
+                                            <td>{{ $evento->data_prevista->format('d/m/Y') }}</td>
+                                            <td>{{ $evento->motivo ?? '—' }}</td>
+                                            <td>{{ $evento->registradoPor?->name ?? 'Usuário removido' }}</td>
+                                        </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                            @endif
+                        </div>
+                    </div>
+
                     <div class="table-responsive mb-3">
                         <table class="table table-sm align-middle">
                             <thead class="table-light">
@@ -2875,6 +3926,7 @@ new class extends Component {
 
                                             {{-- Ciclo 19, Etapa 19.6, seção 33 — histórico completo, nunca só o estado final. --}}
                                             @if($pedidoItem->recebimentos->isNotEmpty())
+                                            @php $itemTemParcelas = $pedidoItem->parcelas->isNotEmpty(); @endphp
                                             <table class="table table-sm mb-0 mt-2">
                                                 <thead>
                                                     <tr>
@@ -2882,6 +3934,9 @@ new class extends Component {
                                                         <th class="text-end">Quantidade</th>
                                                         <th>Registrado por</th>
                                                         <th>Observação</th>
+                                                        @if($itemTemParcelas)
+                                                        <th></th>
+                                                        @endif
                                                     </tr>
                                                 </thead>
                                                 <tbody>
@@ -2891,7 +3946,67 @@ new class extends Component {
                                                         <td class="text-end small">{{ number_format((float) $evento->quantidade_recebida, 3, ',', '.') }}</td>
                                                         <td class="small">{{ $evento->registradoPor ? "{$evento->registradoPor->first_name} {$evento->registradoPor->last_name}" : 'Usuário removido' }}</td>
                                                         <td class="small text-muted">{{ $evento->observacao ?? '—' }}</td>
+                                                        @if($itemTemParcelas)
+                                                        <td class="text-end">
+                                                            @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                                            <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-1" wire:click="abrirDistribuicaoRecebimento('{{ $evento->id }}')" title="Distribuir por necessidade">
+                                                                <i class="bx bx-list-check"></i>
+                                                            </button>
+                                                            @endif
+                                                        </td>
+                                                        @endif
                                                     </tr>
+                                                    @if($distribuicaoRecebimentoAbertoId === $evento->id)
+                                                    <tr wire:key="distribuicao-recebimento-{{ $evento->id }}">
+                                                        <td colspan="{{ $itemTemParcelas ? 5 : 4 }}">
+                                                            {{-- Fechamento Adversarial Etapa 3, Seção 21 — distribuição
+                                                                 EXPLÍCITA e OPCIONAL de recebimento por necessidade.
+                                                                 Nunca bloqueia/exige nada: receber é fato; classificar
+                                                                 destino lógico pode ser feito depois. --}}
+                                                            @php $painel = $this->distribuicaoRecebimentoAberto; @endphp
+                                                            @if($painel)
+                                                            <div class="border rounded p-2">
+                                                                <div class="d-flex flex-wrap gap-3 small text-muted mb-2">
+                                                                    <span><strong>Total recebido:</strong> {{ number_format($painel['total_recebido'], 3, ',', '.') }}</span>
+                                                                    <span><strong>Total distribuído:</strong> {{ number_format($painel['total_distribuido'], 3, ',', '.') }}</span>
+                                                                    <span><strong>Saldo sem atribuição:</strong> {{ number_format($painel['saldo_sem_atribuicao'], 3, ',', '.') }}</span>
+                                                                </div>
+                                                                <table class="table table-sm mb-2">
+                                                                    <thead>
+                                                                        <tr>
+                                                                            <th>Necessidade</th>
+                                                                            <th class="text-end">Já atribuído</th>
+                                                                            <th class="text-end">Saldo da parcela</th>
+                                                                            @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                                                            <th class="text-end">Distribuir agora</th>
+                                                                            <th></th>
+                                                                            @endif
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        @foreach($painel['linhas'] as $linha)
+                                                                        <tr wire:key="distribuicao-linha-{{ $linha['parcela']->id }}">
+                                                                            <td class="small">{{ $linha['necessidade']?->material()?->descricao ?? '—' }}</td>
+                                                                            <td class="text-end small">{{ number_format($linha['ja_atribuido'], 3, ',', '.') }}</td>
+                                                                            <td class="text-end small">{{ number_format($linha['saldo'], 3, ',', '.') }}</td>
+                                                                            @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar'))
+                                                                            <td style="max-width:120px">
+                                                                                <input type="text" class="form-control form-control-sm" wire:model="distribuicaoQuantidadesNovas.{{ $linha['parcela']->id }}">
+                                                                            </td>
+                                                                            <td>
+                                                                                <button type="button" class="btn btn-xs btn-primary py-0 px-2" wire:click="confirmarDistribuicaoRecebimento('{{ $linha['parcela']->id }}')">OK</button>
+                                                                            </td>
+                                                                            @endif
+                                                                        </tr>
+                                                                        @endforeach
+                                                                    </tbody>
+                                                                </table>
+                                                                <button type="button" class="btn btn-sm btn-link p-0" wire:click="fecharDistribuicaoRecebimento">Fechar</button>
+                                                            </div>
+                                                            @endif
+                                                        </td>
+                                                    </tr>
+                                                    @endif
                                                     @endforeach
                                                 </tbody>
                                             </table>
@@ -2976,6 +4091,63 @@ new class extends Component {
                                     </div>
                                 </div>
                                 @endif
+                            </div>
+                        </div>
+                        @endif
+
+                        {{-- Etapa 2.CORREÇÃO — atribuição obrigatória de proveniência (Adjudicação de origem) antes de emitir, sempre que o alvo consumido tiver adjudicação Ativa do fornecedor deste Pedido. Nunca inferida — o backend (EmitirPedidoCompra) é quem garante de verdade, esta seção só orienta. --}}
+                        @if(Auth::user()->temPermissaoNaObra($obra->id, 'suprimentos.mapa', 'editar') && count($this->pedidoItensExigemProveniencia) > 0)
+                        <div class="card mb-3 border-warning">
+                            <div class="card-header py-2 bg-label-warning">
+                                <strong class="small"><i class="bx bx-link-alt me-1"></i>Origem da Adjudicação — atribuição obrigatória para emitir</strong>
+                            </div>
+                            <div class="card-body">
+                                <p class="small text-muted mb-3">Este Pedido consome item(ns)/Atividade(s) com adjudicação Ativa registrada — associe explicitamente qual decisão de adjudicação originou cada quantidade (nunca inferido automaticamente por proporcionalidade/ordem).</p>
+                                @foreach($this->pedidoItensExigemProveniencia as $linhaProv)
+                                <div class="border rounded p-2 mb-2" wire:key="proveniencia-{{ $linhaProv['tipo'] }}-{{ $linhaProv['alvo_id'] }}">
+                                    <div class="d-flex justify-content-between small mb-1 flex-wrap">
+                                        <span><strong>{{ $linhaProv['rotulo'] }}</strong></span>
+                                        <span>Alvo: {{ number_format($linhaProv['quantidade_alvo'], 3, ',', '.') }} · Atribuído: {{ number_format($linhaProv['atribuido'], 3, ',', '.') }} · Falta: {{ number_format(max(0, $linhaProv['saldo_a_atribuir']), 3, ',', '.') }}</span>
+                                    </div>
+
+                                    @if($linhaProv['consumos']->isNotEmpty())
+                                    <table class="table table-sm mb-2">
+                                        <tbody>
+                                            @foreach($linhaProv['consumos'] as $consumoProv)
+                                            <tr wire:key="consumo-prov-{{ $consumoProv->id }}">
+                                                <td class="small">{{ $consumoProv->adjudicacaoItem?->adjudicacao?->justificativa ?? 'Adjudicação' }} — {{ $consumoProv->adjudicacaoItem?->adjudicacao?->fornecedor?->nome }}</td>
+                                                <td class="small text-end">{{ number_format((float) $consumoProv->quantidade, 3, ',', '.') }}</td>
+                                                <td class="text-end">
+                                                    <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1" wire:click="removerProvenienciaAdjudicacao('{{ $consumoProv->id }}')">
+                                                        <i class="bx bx-trash"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                            @endforeach
+                                        </tbody>
+                                    </table>
+                                    @endif
+
+                                    @if($linhaProv['saldo_a_atribuir'] > 0.0005)
+                                    <div class="row g-2 align-items-end">
+                                        <div class="col-md-6">
+                                            <select class="form-select form-select-sm" wire:model="pedidoProvenienciaAdjudicacaoItemIdNovo">
+                                                <option value="">Selecione a adjudicação de origem</option>
+                                                @foreach($linhaProv['disponiveis'] as $adjOpcaoProv)
+                                                <option value="{{ $adjOpcaoProv->id }}">{{ $adjOpcaoProv->adjudicacao?->justificativa }} — {{ $adjOpcaoProv->adjudicacao?->fornecedor?->nome }} (saldo {{ number_format($adjOpcaoProv->saldoNaoConsumidoViaBridge(), 3, ',', '.') }})</option>
+                                                @endforeach
+                                            </select>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <input type="text" class="form-control form-control-sm" wire:model="pedidoProvenienciaQuantidadeNovo" placeholder="Quantidade">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <button type="button" class="btn btn-sm btn-warning w-100" wire:click="atribuirProvenienciaAdjudicacao('{{ $linhaProv['tipo'] }}', '{{ $linhaProv['alvo_id'] }}')">Atribuir</button>
+                                        </div>
+                                    </div>
+                                    @endif
+                                </div>
+                                @endforeach
                             </div>
                         </div>
                         @endif

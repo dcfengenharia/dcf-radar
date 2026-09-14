@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\StatusAdjudicacaoRequisicaoCompra;
 use App\Enums\StatusPedidoCompra;
 use App\Models\Concerns\BelongsToTenant;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
@@ -86,5 +87,83 @@ class RequisicaoCompraItem extends Model
     public function saldoOficialParaPedido(?string $excluirItemId = null): float
     {
         return round((float) $this->quantidade - $this->quantidadeConsumidaOficialPorPedido($excluirItemId), 3);
+    }
+
+    /** Etapa 2 (Adjudicação) — todas as linhas de adjudicação que apontam pra este item (com ou sem parcela). */
+    public function adjudicacaoItens(): HasMany
+    {
+        return $this->hasMany(RequisicaoCompraAdjudicacaoItem::class, 'requisicao_compra_item_id');
+    }
+
+    /**
+     * Etapa 2 — soma das adjudicações ATIVAS "sem detalhamento de
+     * Atividade" (`requisicao_compra_item_parcela_id` nulo) sobre este
+     * item. Só relevante quando este item NUNCA foi detalhado por
+     * Atividade (Etapa 1) — a granularidade coerente é garantida em
+     * `App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra::
+     * garantirGranularidadeCoerente()`, nunca aqui.
+     */
+    public function quantidadeAdjudicadaAtivaSemParcela(?string $excluirAdjudicacaoItemId = null): float
+    {
+        $query = RequisicaoCompraAdjudicacaoItem::where('requisicao_compra_item_id', $this->id)
+            ->whereNull('requisicao_compra_item_parcela_id')
+            ->whereHas('adjudicacao', fn ($q) => $q->where('status', StatusAdjudicacaoRequisicaoCompra::Ativa->value));
+
+        if ($excluirAdjudicacaoItemId) {
+            $query->where('id', '!=', $excluirAdjudicacaoItemId);
+        }
+
+        return (float) $query->sum('quantidade');
+    }
+
+    public function saldoAdjudicavelSemParcela(?string $excluirAdjudicacaoItemId = null): float
+    {
+        return round((float) $this->quantidade - $this->quantidadeAdjudicadaAtivaSemParcela($excluirAdjudicacaoItemId), 3);
+    }
+
+    /**
+     * Etapa 2 (Pedido × Adjudicação, Seção 12) — quanto foi adjudicado
+     * ATIVAMENTE a UM fornecedor específico, sem detalhamento de
+     * Atividade.
+     */
+    public function quantidadeAdjudicadaAoFornecedorSemParcela(string $fornecedorId, ?string $excluirAdjudicacaoItemId = null): float
+    {
+        $query = RequisicaoCompraAdjudicacaoItem::where('requisicao_compra_item_id', $this->id)
+            ->whereNull('requisicao_compra_item_parcela_id')
+            ->whereHas('adjudicacao', fn ($q) => $q->where('status', StatusAdjudicacaoRequisicaoCompra::Ativa->value)->where('fornecedor_id', $fornecedorId));
+
+        if ($excluirAdjudicacaoItemId) {
+            $query->where('id', '!=', $excluirAdjudicacaoItemId);
+        }
+
+        return (float) $query->sum('quantidade');
+    }
+
+    /**
+     * Etapa 2 — quanto da quota adjudicada a este fornecedor (sem
+     * parcela) já foi consumido oficialmente por Pedido `Emitido` DESTE
+     * MESMO fornecedor sobre este item. Só faz sentido quando o item não
+     * tem parcela — `PedidoCompraItemParcela` só existe quando o item
+     * TEM parcela (`garantirParcelaExisteNaRc()`), mutuamente exclusivo.
+     */
+    public function quantidadeConsumidaOficialPorPedidoDoFornecedor(string $fornecedorId, ?string $excluirItemId = null): float
+    {
+        $query = PedidoCompraItem::where('requisicao_compra_item_id', $this->id)
+            ->whereHas('pedidoCompra', fn ($q) => $q->where('status', StatusPedidoCompra::Emitido->value)->where('fornecedor_id', $fornecedorId));
+
+        if ($excluirItemId) {
+            $query->where('id', '!=', $excluirItemId);
+        }
+
+        return (float) $query->sum('quantidade_pedida');
+    }
+
+    /** Etapa 2 (Pedido × Adjudicação) — o 3º teto: saldo que este fornecedor ainda tem pra pedir deste item (sem parcela). */
+    public function saldoAdjudicadoParaFornecedor(string $fornecedorId, ?string $excluirItemId = null): float
+    {
+        return round(
+            $this->quantidadeAdjudicadaAoFornecedorSemParcela($fornecedorId) - $this->quantidadeConsumidaOficialPorPedidoDoFornecedor($fornecedorId, $excluirItemId),
+            3
+        );
     }
 }

@@ -138,10 +138,15 @@ class SincronizarRestricaoSuprimento
     private static function abrirOuAtualizar(ItemSuprimento $item, Atividade $atividade, ?Restricao $restricao): void
     {
         $necessidade = $item->necessidade();
+        $descricao = static::descricaoDeCausa($item, $atividade);
 
         if ($restricao && in_array($restricao->status->value, self::STATUS_ABERTOS, true)) {
-            if (! $restricao->prazo_limite?->isSameDay($necessidade)) {
-                $restricao->update(['prazo_limite' => $necessidade]);
+            // Motor Definitivo de Risco V1 (Seção 24/28) — a MESMA
+            // Restrição evolui a causa (nunca cria uma segunda) sempre que
+            // a descrição quantitativa muda, junto do prazo, quando algo
+            // realmente mudou.
+            if (! $restricao->prazo_limite?->isSameDay($necessidade) || $restricao->descricao !== $descricao) {
+                $restricao->update(['prazo_limite' => $necessidade, 'descricao' => $descricao]);
             }
 
             return;
@@ -154,6 +159,7 @@ class SincronizarRestricaoSuprimento
                 'status' => StatusRestricao::Aberta->value,
                 'prazo_limite' => $necessidade,
                 'resolvida_em' => null,
+                'descricao' => $descricao,
             ]);
 
             return;
@@ -162,13 +168,29 @@ class SincronizarRestricaoSuprimento
         Restricao::create([
             'atividade_id' => $atividade->id,
             'categoria_id' => static::categoriaMateriais($item->tenant_id)->id,
-            'descricao' => "Suprimentos: item \"{$item->nome}\" em risco de não chegar a tempo.",
+            'descricao' => $descricao,
             'bloqueante' => true,
             'prazo_limite' => $necessidade,
             'status' => StatusRestricao::Aberta->value,
             'aberta_em' => now(),
             'origem_suprimento_item_id' => $item->id,
         ]);
+    }
+
+    /**
+     * Motor Definitivo de Risco de Suprimentos V1 (Seção 24) — descrição
+     * quantitativa e precisa quando existe correspondência inequívoca com
+     * `AtividadeNecessidadeMaterial` (nunca reimplementa a correspondência,
+     * delega 100% pra `DescricaoRestricaoSuprimento`, que já retorna o
+     * texto genérico histórico como fallback quando não há correspondência).
+     */
+    private static function descricaoDeCausa(ItemSuprimento $item, Atividade $atividade): string
+    {
+        return \App\Support\Suprimentos\DescricaoRestricaoSuprimento::paraPacoteEAtividade(
+            $atividade,
+            $item,
+            "Suprimentos: item \"{$item->nome}\" em risco de não chegar a tempo."
+        );
     }
 
     /**

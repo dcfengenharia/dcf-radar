@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\StatusAdjudicacaoRequisicaoCompra;
 use App\Enums\StatusRecebimentoItem;
 use App\Models\Concerns\BelongsToTenant;
 use Carbon\Carbon;
@@ -59,6 +60,25 @@ class PedidoCompraItem extends Model
     public function parcelas(): HasMany
     {
         return $this->hasMany(PedidoCompraItemParcela::class, 'pedido_compra_item_id');
+    }
+
+    /** Etapa 2.CORREÇÃO — proveniência: quais adjudicações (sem detalhamento) foram atribuídas a este item. */
+    public function consumosAdjudicacao(): HasMany
+    {
+        return $this->hasMany(PedidoCompraItemAdjudicacao::class, 'pedido_compra_item_id');
+    }
+
+    /**
+     * Soma já atribuída explicitamente a alguma `RequisicaoCompraAdjudicacaoItem`,
+     * SEM detalhamento de Atividade (parcela nula na ponte) — usada só
+     * pra checar completude de atribuição na emissão (Etapa 2.CORREÇÃO).
+     */
+    public function quantidadeAtribuidaAdjudicacaoSemParcela(): float
+    {
+        return (float) PedidoCompraItemAdjudicacao::where('pedido_compra_item_id', $this->id)
+            ->whereNull('pedido_compra_item_parcela_id')
+            ->whereHas('adjudicacaoItem.adjudicacao', fn ($q) => $q->where('status', StatusAdjudicacaoRequisicaoCompra::Ativa->value))
+            ->sum('quantidade');
     }
 
     /**

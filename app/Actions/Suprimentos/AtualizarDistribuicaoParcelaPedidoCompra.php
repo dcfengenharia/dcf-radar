@@ -5,6 +5,7 @@ namespace App\Actions\Suprimentos;
 use App\Enums\StatusPedidoCompra;
 use App\Exceptions\ParcelaNecessidadeInvalidaException;
 use App\Exceptions\PedidoCompraImutavelException;
+use App\Exceptions\SaldoAdjudicacaoFornecedorInsuficienteException;
 use App\Exceptions\SaldoParcelaPedidoInsuficienteException;
 use App\Models\AtividadeNecessidadeMaterial;
 use App\Models\PedidoCompra;
@@ -60,6 +61,7 @@ class AtualizarDistribuicaoParcelaPedidoCompra
             $this->garantirQuantidadePositiva($quantidade);
             $this->validarSaldoItem($item, $quantidade, excluirParcelaId: null);
             $this->validarSaldoRc($rcParcela, $quantidade, excluirParcelaId: null);
+            $this->validarSaldoAdjudicacao($rcParcela, $pedido->fornecedor_id, $quantidade, excluirParcelaId: null);
 
             try {
                 return PedidoCompraItemParcela::create([
@@ -96,6 +98,7 @@ class AtualizarDistribuicaoParcelaPedidoCompra
             $this->garantirQuantidadePositiva($novaQuantidade);
             $this->validarSaldoItem($item, $novaQuantidade, excluirParcelaId: $parcela->id);
             $this->validarSaldoRc($rcParcela, $novaQuantidade, excluirParcelaId: $parcela->id);
+            $this->validarSaldoAdjudicacao($rcParcela, $pedido->fornecedor_id, $novaQuantidade, excluirParcelaId: $parcela->id);
 
             $parcela->update(['quantidade' => $novaQuantidade]);
         });
@@ -170,6 +173,31 @@ class AtualizarDistribuicaoParcelaPedidoCompra
             throw new SaldoParcelaPedidoInsuficienteException(
                 "Quantidade solicitada ({$quantidadeDesejada}) excede o saldo ainda disponível ({$saldo}) desta parcela na Requisição de Compra de origem — outro Pedido já emitido consumiu parte dela.",
                 $saldo,
+                $quantidadeDesejada
+            );
+        }
+    }
+
+    /**
+     * Etapa 2 (Adjudicação) — o 3º teto no nível da parcela (Seção 12 do
+     * pedido, exemplo obrigatório: RC parcela=300, Fornecedor X
+     * adjudicado=200, Fornecedor Y adjudicado=100 — Pedido do Fornecedor
+     * X não pode consumir 250 mesmo com a RC tendo 300 disponíveis).
+     * Compatibilidade (Seção 13): pulado por completo quando esta
+     * parcela nunca teve NENHUMA adjudicação Ativa registrada.
+     */
+    private function validarSaldoAdjudicacao(RequisicaoCompraItemParcela $rcParcela, string $fornecedorId, float $quantidadeDesejada, ?string $excluirParcelaId): void
+    {
+        if ($rcParcela->quantidadeAdjudicadaAtiva() <= 0.0005) {
+            return;
+        }
+
+        $saldoFornecedor = $rcParcela->saldoAdjudicadoParaFornecedor($fornecedorId, $excluirParcelaId);
+
+        if ($quantidadeDesejada > $saldoFornecedor + 0.0005) {
+            throw new SaldoAdjudicacaoFornecedorInsuficienteException(
+                "Quantidade solicitada ({$quantidadeDesejada}) excede a quota adjudicada a este fornecedor ({$saldoFornecedor}) para esta Atividade — esta parcela foi adjudicada a fornecedor(es) específico(s).",
+                $saldoFornecedor,
                 $quantidadeDesejada
             );
         }

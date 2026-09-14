@@ -173,6 +173,12 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
     Route::get('/documentos-engenharia/revisoes/{revisao}/download', [\App\Http\Controllers\DocumentoEngenhariaRevisaoController::class, 'download'])
         ->name('documentos-engenharia.revisoes.download');
 
+    // ANEXOS DO DOSSIÊ DA REQUISIÇÃO DE COMPRA (Etapa 2) — mesmo
+    // raciocínio dos anexos acima: fora do grupo obra.context, ID do
+    // anexo já basta pra resolver tenant/obra.
+    Route::get('/requisicao-compra-anexos/{anexo}/download', [\App\Http\Controllers\RequisicaoCompraAnexoController::class, 'download'])
+        ->name('requisicao-compra-anexos.download');
+
     // cadastros
     Route::prefix('cadastros')->group(function () {
 
