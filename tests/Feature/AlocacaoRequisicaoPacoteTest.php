@@ -309,6 +309,12 @@ class AlocacaoRequisicaoPacoteTest extends TestCase
         $alocacaoOutroTenant = \App\Support\TenantContext::actingAs($outroTenant, function () use ($outroTenant) {
             $user = User::factory()->create(['tenant_id' => $outroTenant->id]);
             $obra = Work::factory()->create(['tenant_id' => $outroTenant->id]);
+            // Fase 2E — EmitirRequisicaoPlanejamento agora exige
+            // planejamento.requisicoes|editar do próprio ator, dentro da
+            // Action (defesa em profundidade); este usuário de fixture,
+            // usado só pra montar o cenário do outro tenant, precisa da
+            // mesma autoridade que qualquer emissor real teria.
+            $this->vincularObra($obra, $user, Papel::GerentePlanejamento->value);
             $doc = DocumentoEngenharia::create(['obra_id' => $obra->id, 'codigo' => 'X', 'descricao' => 'X']);
             $rev = $doc->revisoes()->create(['revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'E']);
             $lista = ListaEngenharia::create(['documento_engenharia_revisao_id' => $rev->id, 'tipo' => 'material', 'codigo' => 'LM-X']);

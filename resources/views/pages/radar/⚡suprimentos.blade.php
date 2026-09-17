@@ -153,6 +153,13 @@ new class extends Component {
   public function mount(Work $obra): void
   {
     $this->obra = $obra;
+
+    // Fase 2F.CORREÇÃO.2 — Achado E23: 'ver' é capability real,
+    // configurável por Perfil; precisa ser reafirmada no backend ao
+    // abrir a página diretamente, não só no menu
+    // (CatalogoFuncionalidades::usuarioPodeVer()). Mesmo padrão já
+    // usado pelos 3 Cockpits (gestao.cockpit/suprimentos/engenharia).
+    abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'suprimentos.mapa', 'ver'), 403);
   }
 
   private function garantirPermissao(string $acao): void
@@ -1322,12 +1329,18 @@ new class extends Component {
       return null;
     }
 
-    return ItemSuprimento::with('atividades')->find($this->atividadesModalItemId);
+    // Fase 2A (Hardening) — Achado 2: `$atividadesModalItemId` é
+    // propriedade pública Livewire, defesa em profundidade na leitura
+    // (mesmo padrão de `atividadeDetalhe()` no Lookahead) — nunca resolve
+    // um Pacote de outra obra do tenant.
+    return ItemSuprimento::with('atividades')->where('obra_id', $this->obra->id)->find($this->atividadesModalItemId);
   }
 
   public function abrirAtividadesVinculadas(string $itemId): void
   {
-    $this->atividadesModalItemId = $itemId;
+    // Fase 2A (Hardening) — Achado 2: revalida na escrita também, nunca
+    // confia só na guarda de leitura acima.
+    $this->atividadesModalItemId = $this->resolverPacoteDaObraAtual($itemId)->id;
   }
 
   public function fecharAtividadesVinculadas(): void
@@ -1346,7 +1359,12 @@ new class extends Component {
       return null;
     }
 
-    return ItemSuprimento::with(['etapas.datas.autor', 'fluxo', 'fornecedor', 'atividades', 'documentosEngenharia.statusDocumento', 'comentarios.autor'])->find($this->itemDetalheId);
+    // Fase 2A (Hardening) — Achado 2: `$itemDetalheId` é propriedade
+    // pública Livewire — defesa em profundidade na leitura, nunca resolve
+    // um Pacote de outra obra do tenant.
+    return ItemSuprimento::with(['etapas.datas.autor', 'fluxo', 'fornecedor', 'atividades', 'documentosEngenharia.statusDocumento', 'comentarios.autor'])
+      ->where('obra_id', $this->obra->id)
+      ->find($this->itemDetalheId);
   }
 
   /**
@@ -1369,7 +1387,9 @@ new class extends Component {
 
   public function abrirDetalhe(string $itemId): void
   {
-    $this->itemDetalheId = $itemId;
+    // Fase 2A (Hardening) — Achado 2: revalida na escrita, nunca confia
+    // só na guarda de leitura de itemDetalhe().
+    $this->itemDetalheId = $this->resolverPacoteDaObraAtual($itemId)->id;
     $this->comentarioNovo = '';
     unset($this->itemDetalhe);
 
@@ -1388,11 +1408,16 @@ new class extends Component {
 
   public function adicionarComentario(): void
   {
-    $this->garantirPermissao('editar');
+    // Fase 2B, Seção 12/14 — 'comentar' virou capacidade própria (antes
+    // exigia 'editar' — backfill garante que todo Perfil que hoje tem
+    // 'editar' também ganhou 'comentar').
+    $this->garantirPermissao('comentar');
 
     $this->validate(['comentarioNovo' => 'required|string|min:2'], [], ['comentarioNovo' => 'comentário']);
 
-    $item = ItemSuprimento::findOrFail($this->itemDetalheId);
+    // Fase 2A (Hardening) — Achado 2: usa o resolver obra-seguro já
+    // existente no arquivo, nunca `findOrFail` cru.
+    $item = $this->resolverPacoteDaObraAtual($this->itemDetalheId);
 
     $this->transacaoSegura(
       fn() => $item->comentarios()->create(['autor_id' => Auth::id(), 'comentario' => $this->comentarioNovo])
@@ -1410,7 +1435,9 @@ new class extends Component {
   {
     $this->garantirPermissao('editar');
 
-    $item = ItemSuprimento::with('etapas.datas')->findOrFail($this->itemDetalheId);
+    // Fase 2A (Hardening) — Achado 2 (mesma classe de bug, resolução sem
+    // escopo de obra).
+    $item = ItemSuprimento::with('etapas.datas')->where('obra_id', $this->obra->id)->findOrFail($this->itemDetalheId);
 
     $this->transacaoSegura(function () use ($item) {
       foreach ($item->etapas as $etapa) {
@@ -1517,7 +1544,9 @@ new class extends Component {
   {
     $this->garantirPermissao('editar');
 
-    $item = ItemSuprimento::with(['atividades', 'documentosEngenharia'])->findOrFail($itemId);
+    // Fase 2A (Hardening) — Achado 2: unifica com o resolver obra-seguro
+    // já usado em outros pontos deste arquivo (nunca `findOrFail` cru).
+    $item = ItemSuprimento::with(['atividades', 'documentosEngenharia'])->where('obra_id', $this->obra->id)->findOrFail($itemId);
 
     $this->resetModalItem();
     $this->editandoItemId = $item->id;
@@ -1552,7 +1581,9 @@ new class extends Component {
 
     $this->transacaoSegura(function () {
       if ($this->editandoItemId) {
-        $item = ItemSuprimento::findOrFail($this->editandoItemId);
+        // Fase 2A (Hardening) — Achado 2: resolver obra-seguro, nunca
+        // `findOrFail` cru sobre uma propriedade pública Livewire.
+        $item = $this->resolverPacoteDaObraAtual($this->editandoItemId);
         $removidas = $item->atividades->pluck('id')->diff($this->atividadesIdsNovo);
 
         $item->update([
@@ -2065,6 +2096,7 @@ new class extends Component {
         $rcItem,
         $parcela,
         (float) str_replace(',', '.', $this->rcAdjudicacaoItemQuantidadeNovo),
+        Auth::user(),
       );
     } catch (\App\Exceptions\RequisicaoCompraAdjudicacaoInvalidaException|\App\Exceptions\SaldoAdjudicacaoInsuficienteException $e) {
       $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
@@ -2083,7 +2115,7 @@ new class extends Component {
 
     try {
       $item = $this->resolverAdjudicacaoItemDaObraAtual($itemId);
-      (new \App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra())->removerItem($item);
+      (new \App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra())->removerItem($item, Auth::user());
     } catch (\App\Exceptions\AdjudicacaoConsumidaPorPedidoException $e) {
       $this->dispatch('show-toast', message: $e->getMessage(), type: 'error');
       return;

@@ -528,8 +528,15 @@ class WorkManagementTest extends TestCase
         $this->assertNotContains($otherWork->id, $myWorksIds);
     }
 
-    public function test_todas_obras_tab_shows_all_tenant_works(): void
+    public function test_todas_obras_tab_mostra_apenas_obras_vinculadas_ao_usuario(): void
     {
+        // Fase 2A (Hardening) — Achado "Minhas Obras": antes desta fase, a
+        // aba "Todas as Obras" mostrava literalmente TODAS as obras do
+        // tenant, mesmo sem nenhum vínculo do usuário (gap documentado
+        // explicitamente pelo pedido). Este teste testava exatamente esse
+        // comportamento antigo e indesejado — corrigido pra provar o
+        // comportamento novo: só obra com vínculo aparece, mesmo na aba
+        // "Todas".
         $user      = $this->createUserWithTenant();
         $otherUser = User::factory()->create(['tenant_id' => $user->tenant_id]);
         $client    = $this->createClient($user);
@@ -538,13 +545,14 @@ class WorkManagementTest extends TestCase
         $work2 = Work::factory()->create(['tenant_id' => $user->tenant_id, 'client_id' => $client->id, 'name' => 'Obra Beta']);
 
         $this->vincularObra($work1, $user, Papel::GerentePlanejamento->value);
+        // $work2 nunca é vinculada a $user — nem sequer aparece mais.
 
         $component = Livewire::actingAs($user)->test('pages::gestao.minhas-obras');
         $allWorks = $component->instance()->allWorks;
 
         $allIds = $allWorks->pluck('id')->toArray();
         $this->assertContains($work1->id, $allIds);
-        $this->assertContains($work2->id, $allIds);
+        $this->assertNotContains($work2->id, $allIds);
     }
 
     public function test_avanco_mostra_zero_por_cento_quando_obra_nao_tem_report(): void
@@ -642,12 +650,25 @@ class WorkManagementTest extends TestCase
 
     public function test_obra_sem_equipe_mostra_zero_membros(): void
     {
-        $user = $this->createUserWithTenant();
-        $client = $this->createClient($user);
-        Work::factory()->create(['tenant_id' => $user->tenant_id, 'client_id' => $client->id]);
+        // Fase 2A (Hardening) — Achado "Minhas Obras": um usuário comum do
+        // tenant só vê obra com vínculo (`obra_user`); mas vincular o
+        // próprio usuário faria a contagem de membros virar 1, não 0 —
+        // "obra visível com zero membros" só é genuinamente possível pela
+        // ÚNICA exceção real preservada nesta fase (dono da plataforma com
+        // impersonation ativa do tenant, mesmo mecanismo já auditado em
+        // WorkPolicy/AcessoPrivilegiadoObraTest) — sem criar nenhum vínculo
+        // extra que inflaria a contagem.
+        $tenantDoAdmin = Tenant::factory()->create();
+        $admin = User::factory()->create(['tenant_id' => $tenantDoAdmin->id, 'is_platform_admin' => true]);
 
-        $this->actingAs($user)
-            ->get('/app/gestao/minhas-obras')
+        $tenantCliente = Tenant::factory()->create();
+        $client = Client::factory()->create(['tenant_id' => $tenantCliente->id]);
+        Work::factory()->create(['tenant_id' => $tenantCliente->id, 'client_id' => $client->id]);
+
+        $this->actingAs($admin);
+        \App\Support\ImpersonationContext::start($tenantCliente, 'QA — obra sem equipe');
+
+        $this->get('/app/gestao/minhas-obras')
             ->assertOk()
             ->assertSee('0 membros');
     }
@@ -656,11 +677,13 @@ class WorkManagementTest extends TestCase
     {
         $user = $this->createUserWithTenant();
         $client = $this->createClient($user);
-        Work::factory()->create([
+        $work = Work::factory()->create([
             'tenant_id' => $user->tenant_id,
             'client_id' => $client->id,
             'end_date_baseline' => now()->addDays(28),
         ]);
+        // Fase 2A (Hardening) — sem vínculo a obra nem aparece na listagem.
+        $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
 
         $this->actingAs($user)
             ->get('/app/gestao/minhas-obras')
@@ -672,11 +695,13 @@ class WorkManagementTest extends TestCase
     {
         $user = $this->createUserWithTenant();
         $client = $this->createClient($user);
-        Work::factory()->create([
+        $work = Work::factory()->create([
             'tenant_id' => $user->tenant_id,
             'client_id' => $client->id,
             'end_date_baseline' => now()->subDays(10),
         ]);
+        // Fase 2A (Hardening) — sem vínculo a obra nem aparece na listagem.
+        $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
 
         $this->actingAs($user)
             ->get('/app/gestao/minhas-obras')
@@ -688,11 +713,15 @@ class WorkManagementTest extends TestCase
     {
         $user = $this->createUserWithTenant();
         $client = $this->createClient($user);
-        Work::factory()->create([
+        $work = Work::factory()->create([
             'tenant_id' => $user->tenant_id,
             'client_id' => $client->id,
             'end_date_baseline' => null,
         ]);
+        // Fase 2A (Hardening) — sem vínculo a obra nem aparece na listagem
+        // (sem isso, o assertDontSee abaixo passaria trivialmente por a
+        // obra inteira estar ausente, não por ausência real do badge).
+        $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
 
         $this->actingAs($user)
             ->get('/app/gestao/minhas-obras')

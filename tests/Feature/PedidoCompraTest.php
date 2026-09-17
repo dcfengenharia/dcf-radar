@@ -564,6 +564,12 @@ class PedidoCompraTest extends TestCase
             $tenant = \App\Models\Tenant::first();
             $user = User::factory()->create(['tenant_id' => $tenant->id]);
             $obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+            // Fase 2E — Emitir{RequisicaoPlanejamento,RequisicaoCompra}
+            // agora exigem autoridade própria do ator dentro da Action
+            // (defesa em profundidade); este usuário de fixture, usado só
+            // pra montar o cenário do outro tenant, precisa da mesma
+            // autoridade que qualquer emissor real teria.
+            $this->vincularObra($obra, $user, Papel::GerentePlanejamento->value);
             $doc = DocumentoEngenharia::create(['obra_id' => $obra->id, 'codigo' => 'X', 'descricao' => 'X']);
             $rev = $doc->revisoes()->create(['revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'E']);
             $lista = ListaEngenharia::create(['documento_engenharia_revisao_id' => $rev->id, 'tipo' => 'material', 'codigo' => 'LM-X']);

@@ -264,7 +264,7 @@ class EstadoAtendimentoNecessidadeMaterialTest extends TestCase
 
         $fornecedor = $this->fornecedor();
         $adjudicacao = (new CriarAdjudicacaoRequisicaoCompra())->execute($rc, $fornecedor, 'Decisão', null, null, $this->user);
-        (new AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjudicacao, $item, $parcela, 100);
+        (new AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjudicacao, $item, $parcela, 100, $this->user);
 
         $linha = $this->linha($atividade, $necessidade);
 

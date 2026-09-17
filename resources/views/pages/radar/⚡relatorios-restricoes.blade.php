@@ -69,6 +69,15 @@ new class extends Component {
 
   public function mount(Work $obra): void
   {
+    // Fase 2A (Hardening) — Achado 7: esta página não tinha NENHUMA
+    // checagem de autorização (só a membresia genérica de `obra.context`)
+    // — qualquer membro da obra via export/visualizava PPC e matriz de
+    // risco mesmo sem `restricoes.relatorios` no Perfil. `ver` é a única
+    // capacidade que o catálogo já tem pra este slug (nenhuma nova
+    // criada) — gateando aqui cobre visualização, export e as duas
+    // análises (PPC/matriz), já que tudo deriva do mesmo estado montado.
+    abort_unless(auth()->user()->temPermissaoNaObra($obra->id, 'restricoes.relatorios', 'ver'), 403);
+
     $this->obra = $obra;
     $this->filtroDataInicio = now()->subMonths(6)->startOfMonth()->format('Y-m-d');
     $this->filtroDataFim = now()->addMonths(6)->endOfMonth()->format('Y-m-d');

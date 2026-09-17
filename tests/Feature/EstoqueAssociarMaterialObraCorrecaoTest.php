@@ -223,7 +223,7 @@ class EstoqueAssociarMaterialObraCorrecaoTest extends TestCase
         // No contexto da obraA, tenta abrir o modal passando o
         // recebimentoId que na verdade pertence à obraB -- payload manipulado.
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obraA])
-            ->set('abaAtiva', 'recebimentos');
+            ->call('selecionarAba', 'recebimentos');
 
         $this->expectException(ModelNotFoundException::class);
         $component->call('abrirModalAssociarMaterial', $recebimentoDaObraB->id);
@@ -235,7 +235,7 @@ class EstoqueAssociarMaterialObraCorrecaoTest extends TestCase
         $recebimentoDaObraB = $this->criarRecebimentoPendente($itemDaObraB, 100, $this->obraB);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obraA])
-            ->set('abaAtiva', 'recebimentos');
+            ->call('selecionarAba', 'recebimentos');
 
         try {
             $component->call('abrirModalAssociarMaterial', $recebimentoDaObraB->id);
@@ -315,7 +315,7 @@ class EstoqueAssociarMaterialObraCorrecaoTest extends TestCase
         $recebimento = $this->criarRecebimentoPendente($item, 100, $this->obraA);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obraA])
-            ->set('abaAtiva', 'recebimentos')
+            ->call('selecionarAba', 'recebimentos')
             ->call('abrirModalAssociarMaterial', $recebimento->id)
             ->set('materialSelecionadoId', $material->id)
             ->call('confirmarAssociarMaterial')

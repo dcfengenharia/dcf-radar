@@ -33,7 +33,7 @@ new class extends Component {
 
   private function worksBaseQuery(): \Illuminate\Database\Eloquent\Builder
   {
-    return Work::with(['client', 'users' => fn ($q) => $q->select('users.id', 'users.first_name', 'users.last_name', 'users.profile_photo_path')])
+    $query = Work::with(['client', 'users' => fn ($q) => $q->select('users.id', 'users.first_name', 'users.last_name', 'users.profile_photo_path')])
       ->withCount('users')
       ->addSelect([
       'works.*',
@@ -48,6 +48,26 @@ new class extends Component {
         ->orderByDesc('report_curva_datapoints.periodo_inicio')
         ->limit(1),
     ]);
+
+    // Fase 2A (Hardening) — Achado (Minhas Obras): antes desta correção,
+    // a query nunca filtrava por `obra_user` — qualquer membro do tenant
+    // via TODAS as obras do tenant listadas aqui, mesmo sem nenhum
+    // vínculo (`entrar` já era corretamente bloqueado por
+    // `temAcessoAObra()`/`RequireObraContext`, só a LISTAGEM vazava).
+    // Exceção real preservada, reaproveitando o MESMO mecanismo já
+    // auditado em `WorkPolicy` (nunca um bypass novo): dono da plataforma
+    // com impersonation ATIVA para ESTE tenant continua vendo todas as
+    // obras (é assim que "Entrar como" navega o tenant inteiro hoje).
+    $user = Auth::user();
+    $impersonandoEsteTenant = $user->is_platform_admin
+      && $this->tenant
+      && \App\Support\ImpersonationContext::impersonandoTenant($this->tenant->id);
+
+    if (! $impersonandoEsteTenant) {
+      $query->whereHas('users', fn ($q) => $q->where('users.id', $user->id));
+    }
+
+    return $query;
   }
 
   private function applySearchFilter(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder

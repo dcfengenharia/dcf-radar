@@ -82,6 +82,21 @@ class SincronizarCadeiaSuprimentoCommandTest extends TestCase
     private function pedidoItemEmitido(ItemSuprimento $pacote, float $quantidade = 100, ?Work $obra = null, string $dataPrevista = '2026-12-01'): PedidoCompraItem
     {
         $obraAlvo = $obra ?? $this->obra;
+
+        // Fase 2E — Emitir{RequisicaoPlanejamento,RequisicaoCompra,
+        // PedidoCompra} agora exigem autoridade própria do ator dentro da
+        // Action (defesa em profundidade); este helper de FIXTURE (nunca
+        // teste de autorização) precisa garantir que `$this->user` — o
+        // ator realmente usado nas chamadas abaixo — tem autoridade na
+        // obra alvo, mesmo quando ela é diferente de `$this->obra`.
+        // Checagem via DB crua (nunca `temAcessoAObra()`, que pode ter
+        // resultado cacheado por instância) evita duplicar a linha em
+        // `obra_user` quando este helper é chamado 2+ vezes pra MESMA
+        // obra alvo (ex.: loop de performance).
+        if ($obraAlvo->isNot($this->obra) && ! DB::table('obra_user')->where('work_id', $obraAlvo->id)->where('user_id', $this->user->id)->exists()) {
+            $this->vincularObra($obraAlvo, $this->user, Papel::GerentePlanejamento->value);
+        }
+
         $doc = DocumentoEngenharia::create(['obra_id' => $obraAlvo->id, 'codigo' => 'D' . uniqid(), 'descricao' => 'D']);
         $rev = $doc->revisoes()->create(['revisao' => 'R1', 'data_emissao' => now(), 'descricao' => 'E']);
         $lista = ListaEngenharia::create(['documento_engenharia_revisao_id' => $rev->id, 'tipo' => 'material', 'codigo' => 'LM' . uniqid()]);

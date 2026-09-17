@@ -82,9 +82,17 @@ class GrdDominioTest extends TestCase
         return $r->fresh();
     }
 
+    /**
+     * Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+     * (engenharia.pacotes); ator dedicado com autoridade real, derivado
+     * da obra do próprio Documento (nunca $this->user às cegas — cobre
+     * também cenários same-tenant cross-obra, onde $this->user só é
+     * Admin em $this->obra).
+     */
     private function liberar(DocumentoEngenhariaRevisao $r, ?User $usuario = null): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $usuario ?? $this->user);
+        $obraDoDoc = Work::findOrFail(DocumentoEngenharia::findOrFail($r->documento_engenharia_id)->obra_id);
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $usuario ?? $this->usuarioComAutoridadeAdmin($obraDoDoc));
     }
 
     private function destinatario(array $overrides = [], ?Work $obra = null): Destinatario
@@ -126,7 +134,10 @@ class GrdDominioTest extends TestCase
     /** Documento com R1 liberada, distribuída (GRD Emitida) e depois R2 (liberada) — deixa R1 obsoleta e o destinatário candidato a R2. */
     private function cenarioObsoleto(Work $obra, ?User $usuario = null): array
     {
-        $usuario ??= $this->user;
+        // Fase 2E.CORREÇÃO — default precisa ser Admin NA OBRA RECEBIDA
+        // (nunca $this->user às cegas — este helper é chamado também com
+        // $obraB/$obra de loop, onde $this->user não tem vínculo nenhum).
+        $usuario ??= $this->usuarioComAutoridadeAdmin($obra);
         $doc = $this->doc([], $obra);
         $r1 = $this->rev($doc, 'R1');
         $this->liberar($r1->fresh(), $usuario);
@@ -716,6 +727,7 @@ class GrdDominioTest extends TestCase
         TenantContext::actingAs($outroTenant, function () use ($outroTenant) {
             $obraOutro = Work::factory()->create(['tenant_id' => $outroTenant->id]);
             $userOutro = User::factory()->create(['tenant_id' => $outroTenant->id]);
+            $this->vincularObra($obraOutro, $userOutro, Papel::Admin->value);
             $docO = DocumentoEngenharia::create(['tenant_id' => $outroTenant->id, 'obra_id' => $obraOutro->id, 'codigo' => 'DOC-O', 'descricao' => 'x']);
             $r1o = $docO->revisoes()->create(['tenant_id' => $outroTenant->id, 'revisao' => 'R1', 'descricao' => 'x']);
             (new AlterarLiberacaoRevisaoDocumento())->liberar($r1o->fresh(), $userOutro);

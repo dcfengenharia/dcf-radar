@@ -2,6 +2,7 @@
 
 use App\Models\Work;
 use App\Support\Gestao\CockpitObraQuery;
+use App\Support\Gestao\RedacaoOperacionalCockpit;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
@@ -50,6 +51,23 @@ new class extends Component {
     public function resumo(): \App\DTOs\Gestao\Cockpit\CockpitObra
     {
         return CockpitObraQuery::resumo($this->obra, $this->horizontePrincipalDias);
+    }
+
+    /**
+     * Fase 2B, Seção 20-23 — "acesso ao Cockpit NÃO concede acesso
+     * operacional implícito". Usado pelo Blade pra decidir se mostra o
+     * detalhe/deep-link de uma situação (fornecedor, RC, Pedido,
+     * documento) ou só o agregado/descrição já visível a qualquer perfil
+     * com `gestao.cockpit|ver`.
+     */
+    public function podeVerDetalheDominio(string $dominio): bool
+    {
+        return RedacaoOperacionalCockpit::podeVerDetalheDoDominio(Auth::user(), $this->obra->id, $dominio);
+    }
+
+    public function podeVerDetalhePorFuncionalidade(string $funcionalidade): bool
+    {
+        return RedacaoOperacionalCockpit::podeVerDetalhePorFuncionalidade(Auth::user(), $this->obra->id, $funcionalidade);
     }
 };
 
@@ -130,8 +148,10 @@ new class extends Component {
                             @if($s->quantidade !== null) · Faltam {{ rtrim(rtrim(number_format($s->quantidade, 3, ',', '.'), '0'), ',') }} @endif
                         </div>
                     </div>
-                    @if(!empty($s->deepLink['rota'] ?? null))
+                    @if(!empty($s->deepLink['rota'] ?? null) && $this->podeVerDetalheDominio($s->tipo->dominio()))
                         <a href="{{ route($s->deepLink['rota'], $s->deepLink['parametros'] ?? []) }}" class="btn btn-sm btn-outline-primary">Ver</a>
+                    @elseif(!empty($s->deepLink['rota'] ?? null))
+                        <span class="badge bg-label-secondary" title="Requer acesso operacional ao domínio desta situação"><i class="bx bx-lock-alt"></i></span>
                     @endif
                 </div>
             @empty
@@ -155,8 +175,10 @@ new class extends Component {
                         <div class="fw-semibold">{{ $s->descricao }}</div>
                         <div class="small text-muted">{{ $s->tipo->label() }}</div>
                     </div>
-                    @if(!empty($s->deepLink['rota'] ?? null))
+                    @if(!empty($s->deepLink['rota'] ?? null) && $this->podeVerDetalheDominio($s->tipo->dominio()))
                         <a href="{{ route($s->deepLink['rota'], $s->deepLink['parametros'] ?? []) }}" class="btn btn-sm btn-outline-secondary">Ver</a>
+                    @elseif(!empty($s->deepLink['rota'] ?? null))
+                        <span class="badge bg-label-secondary" title="Requer acesso operacional ao domínio desta situação"><i class="bx bx-lock-alt"></i></span>
                     @endif
                 </div>
             @empty
@@ -225,6 +247,7 @@ new class extends Component {
                     </tr>
                 </thead>
                 <tbody>
+                    @php($podeVerCodigoMaterial = $this->podeVerDetalhePorFuncionalidade('suprimentos.mapa'))
                     @forelse ($this->resumo->matrizAtividades as $linha)
                         <tr wire:key="matriz-{{ $linha->atividadeId }}">
                             <td>{{ $linha->codigo }}</td>
@@ -239,11 +262,15 @@ new class extends Component {
                                 </span>
                             </td>
                             <td class="small">
-                                @forelse ($linha->materiaisCriticos as $m)
-                                    <div>{{ $m['codigo'] ?? '—' }} — faltam {{ rtrim(rtrim(number_format($m['faltante'], 3, ',', '.'), '0'), ',') }}</div>
-                                @empty
-                                    —
-                                @endforelse
+                                @if(!$podeVerCodigoMaterial && count($linha->materiaisCriticos) > 0)
+                                    <span class="text-muted"><i class="bx bx-lock-alt me-1"></i>{{ count($linha->materiaisCriticos) }} material(is) crítico(s)</span>
+                                @else
+                                    @forelse ($linha->materiaisCriticos as $m)
+                                        <div>{{ $m['codigo'] ?? '—' }} — faltam {{ rtrim(rtrim(number_format($m['faltante'], 3, ',', '.'), '0'), ',') }}</div>
+                                    @empty
+                                        —
+                                    @endforelse
+                                @endif
                             </td>
                         </tr>
                     @empty
@@ -265,10 +292,11 @@ new class extends Component {
             <table class="table table-sm mb-0">
                 <thead><tr><th>Situação</th><th>Pacote</th><th>Folga (dias)</th><th></th></tr></thead>
                 <tbody>
+                    @php($podeVerSuprimentos = $this->podeVerDetalhePorFuncionalidade('suprimentos.mapa'))
                     @forelse ($this->resumo->suprimentosCronograma as $linha)
                         <tr wire:key="supcron-{{ $linha['situacao']->chaveLogica }}">
                             <td>{{ $linha['situacao']->descricao }}</td>
-                            <td>{{ $linha['pacote_nome'] ?? '—' }}</td>
+                            <td>{{ $podeVerSuprimentos ? ($linha['pacote_nome'] ?? '—') : '—' }}</td>
                             <td>
                                 @if($linha['folga_dias'] === null) — @elseif($linha['folga_dias'] < 0)
                                     <span class="text-danger">{{ $linha['folga_dias'] }}</span>
@@ -277,7 +305,7 @@ new class extends Component {
                                 @endif
                             </td>
                             <td>
-                                @if(!empty($linha['situacao']->deepLink['rota'] ?? null))
+                                @if(!empty($linha['situacao']->deepLink['rota'] ?? null) && $podeVerSuprimentos)
                                     <a href="{{ route($linha['situacao']->deepLink['rota'], $linha['situacao']->deepLink['parametros'] ?? []) }}" class="btn btn-sm btn-outline-primary">Ver</a>
                                 @endif
                             </td>
@@ -298,11 +326,15 @@ new class extends Component {
             <div class="card h-100">
                 <div class="card-header"><h6 class="mb-0">Engenharia</h6></div>
                 <div class="card-body">
-                    @forelse ($this->resumo->engenharia as $s)
-                        <div wire:key="eng-{{ $s->chaveLogica }}" class="small py-1 {{ !$loop->last ? 'border-bottom' : '' }}">{{ $s->descricao }}</div>
-                    @empty
-                        <p class="text-muted small mb-0">Nenhum documento bloqueando atividades neste horizonte.</p>
-                    @endforelse
+                    @if($this->podeVerDetalheDominio('engenharia'))
+                        @forelse ($this->resumo->engenharia as $s)
+                            <div wire:key="eng-{{ $s->chaveLogica }}" class="small py-1 {{ !$loop->last ? 'border-bottom' : '' }}">{{ $s->descricao }}</div>
+                        @empty
+                            <p class="text-muted small mb-0">Nenhum documento bloqueando atividades neste horizonte.</p>
+                        @endforelse
+                    @else
+                        <p class="text-muted small mb-0"><i class="bx bx-lock-alt me-1"></i>{{ $this->resumo->engenharia->count() }} situação(ões) — detalhe requer acesso à Lista de Documentos.</p>
+                    @endif
                 </div>
             </div>
         </div>
@@ -338,10 +370,11 @@ new class extends Component {
                     <table class="table table-sm mb-0">
                         <thead><tr><th>Ordem</th><th>Fornecedor</th><th>Em terceiro</th><th>Pendente</th></tr></thead>
                         <tbody>
+                            @php($podeVerIndustrializacao = $this->podeVerDetalheDominio('industrializacao'))
                             @forelse ($this->resumo->industrializacao as $linha)
                                 <tr wire:key="ind-{{ $linha['ordem_industrializacao_id'] }}">
                                     <td>Nº{{ $linha['numero'] ?? '—' }}</td>
-                                    <td>{{ $linha['fornecedor_nome'] ?? '—' }}</td>
+                                    <td>{{ $podeVerIndustrializacao ? ($linha['fornecedor_nome'] ?? '—') : '—' }}</td>
                                     <td>{{ $linha['em_poder_terceiro'] }}</td>
                                     <td>{{ $linha['pendente'] }}</td>
                                 </tr>
@@ -364,6 +397,7 @@ new class extends Component {
                 <div class="card-header">
                     <h6 class="mb-0">Pipeline de Suprimentos <small class="text-muted fw-normal">— {{ $this->resumo->pipelineTotalMateriais }} material(is), top {{ $this->resumo->pipelineMateriais->count() }} por déficit</small></h6>
                 </div>
+                @if($this->podeVerDetalhePorFuncionalidade('suprimentos.mapa'))
                 <div class="table-responsive">
                     <table class="table table-sm mb-0">
                         <thead><tr><th>Material</th><th>Necess.</th><th>Recebido</th><th>Físico</th><th>Reservado</th><th>Déficit</th></tr></thead>
@@ -383,11 +417,15 @@ new class extends Component {
                         </tbody>
                     </table>
                 </div>
+                @else
+                    <div class="card-body text-muted small"><i class="bx bx-lock-alt me-1"></i>Detalhe por material requer acesso ao Mapa de Suprimentos.</div>
+                @endif
             </div>
         </div>
         <div class="col-md-5">
             <div class="card h-100">
                 <div class="card-header"><h6 class="mb-0">Fornecedores</h6></div>
+                @if($this->podeVerDetalhePorFuncionalidade('suprimentos.mapa'))
                 <div class="table-responsive">
                     <table class="table table-sm mb-0">
                         <thead><tr><th>Fornecedor</th><th>Abertos</th><th>Atrasados</th></tr></thead>
@@ -404,6 +442,9 @@ new class extends Component {
                         </tbody>
                     </table>
                 </div>
+                @else
+                    <div class="card-body text-muted small"><i class="bx bx-lock-alt me-1"></i>Detalhe por fornecedor requer acesso ao Mapa de Suprimentos.</div>
+                @endif
             </div>
         </div>
     </div>

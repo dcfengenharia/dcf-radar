@@ -31,9 +31,15 @@ $configData = Helper::appClasses();
 
     @continue(isset($menu->gate) && !\Illuminate\Support\Facades\Gate::allows($menu->gate))
 
-    @continue(isset($menu->funcionalidade) && !\App\Support\CatalogoFuncionalidades::usuarioPodeVer($menu->funcionalidade))
+    @continue(!\App\Support\CatalogoFuncionalidades::itemVisivelPorFuncionalidade($menu))
 
     @continue(isset($menu->submenu) && !\App\Support\CatalogoFuncionalidades::algumSubitemVisivel($menu->submenu))
+
+    {{-- Fase 2A (Hardening) — um menuHeader (ex.: "6. SUPRIMENTOS") nunca
+         tem gate/funcionalidade/submenu próprios, então nenhum dos 3
+         @continue acima o esconde — sem esta checagem, o cabeçalho
+         sempre renderiza, mesmo com zero itens visíveis abaixo dele. --}}
+    @continue(isset($menu->menuHeader) && !\App\Support\CatalogoFuncionalidades::headerTemItemVisivel($menuData[0]->menu, $loop->index))
 
     {{-- adding active and open class if child is active --}}
 

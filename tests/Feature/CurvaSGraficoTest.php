@@ -29,6 +29,14 @@ class CurvaSGraficoTest extends TestCase
         $this->user = User::factory()->create(['tenant_id' => $tenant->id]);
         $this->actingAs($this->user);
         $this->obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+        // Fase 2F.CORREÇÃO.3 — estas páginas agora reafirmam 'ver'
+        // no backend (Achado E23); este ator sempre foi pensado como
+        // um usuário LEGÍTIMO da página (o teste em si nunca foi sobre
+        // permissão), nunca precisou de vinculação explicita antes
+        // porque nenhum gate real existia. GerentePlanejamento cobre
+        // 've r' (livre por padrão) e qualquer ação de escrita já
+        // exercida por estes testes.
+        $this->vincularObra($this->obra, $this->user, \App\Enums\Papel::GerentePlanejamento->value);
 
         $importer   = app(ImportadorCronograma::class);
         $plano      = $importer->analisar(__DIR__ . '/../Fixtures/cronograma_sample.xml', $this->obra);
@@ -73,6 +81,13 @@ class CurvaSGraficoTest extends TestCase
         $user   = User::factory()->create(['tenant_id' => $tenant->id]);
         $this->actingAs($user);
         $obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+
+        // Fase 2F.CORREÇÃO.3 — 'obras.curvas' reafirma 'ver' no
+        // backend (Achado E23); este ator é local a este teste (nunca
+        // usa o $this->obra/$this->user já corrigidos no setUp()) e
+        // nunca teve vinculação — precisa dela agora pelo mesmo motivo
+        // já documentado no setUp() da classe.
+        $this->vincularObra($obra, $user, \App\Enums\Papel::GerentePlanejamento->value);
 
         $importer = app(ImportadorCronograma::class);
         $plano    = $importer->analisar(__DIR__ . '/../Fixtures/cronograma_sample.xml', $obra);

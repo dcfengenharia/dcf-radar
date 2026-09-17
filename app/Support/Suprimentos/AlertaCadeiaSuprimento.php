@@ -143,8 +143,9 @@ class AlertaCadeiaSuprimento
      * mesmo padrão de `AlertaDistribuicaoGrd::usuariosComPermissaoNaObra()`),
      * unidos e deduplicados por `id` — mesmo usuário em 2+ grupos recebe
      * só 1 Notification por evento lógico:
-     * - Gestão: perfil da obra com `slug_padrao === Papel::Admin->value`
-     *   (`User::perfilNaObra()`, API semântica já existente — nunca
+     * - Gestão: algum perfil da obra com `slug_padrao === Papel::Admin->value`
+     *   (`User::temPerfilNaObra()`, Fase 2B — considera TODOS os perfis do
+     *   usuário nesta obra, nunca só "o" perfil singular; nunca
      *   `podeGerenciarTenant()`, que é escopo de TENANT, não da obra).
      * - Planejamento: `planejamento.requisicoes|ver`.
      * - Suprimentos: `suprimentos.mapa|ver`.
@@ -157,7 +158,11 @@ class AlertaCadeiaSuprimento
             ->where('users.ativo', true)
             ->get()
             ->filter(function (User $user) use ($obra) {
-                return $user->perfilNaObra($obra)?->slug_padrao === Papel::Admin->value
+                // Fase 2B — trocado de perfilNaObra()?->slug_padrao (só "o"
+                // perfil singular) pra temPerfilNaObra() (considera TODOS
+                // os perfis do usuário nesta obra) — usuário com Admin +
+                // outro perfil continua contando como Admin.
+                return $user->temPerfilNaObra($obra, Papel::Admin->value)
                     || $user->temPermissaoNaObra($obra, 'planejamento.requisicoes', 'ver')
                     || $user->temPermissaoNaObra($obra, 'suprimentos.mapa', 'ver');
             })

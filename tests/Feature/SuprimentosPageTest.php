@@ -371,7 +371,13 @@ class SuprimentosPageTest extends TestCase
 
         $outroUser = User::factory()->create(['tenant_id' => $this->tenant->id]);
         $perfil = $this->vincularObra($this->obra, $outroUser, Papel::ClienteLeitura->value);
-        PerfilPermissao::where('perfil_id', $perfil->id)->where('funcionalidade', 'suprimentos.mapa')->delete();
+        // Fase 2F.CORREÇÃO.2 — NÃO apagar 'ver' aqui: ClienteLeitura já
+        // tem só 'ver' em suprimentos.mapa por padrão (seedPadrao() —
+        // criar/editar/comentar/excluir exigem um Papel acima do nível
+        // de ClienteLeitura). Apagar a funcionalidade inteira também
+        // removia 'ver', que agora é reafirmado no mount() — o ator
+        // deixaria de conseguir nem abrir a página, testando a
+        // propriedade errada (SEM ACESSO em vez de CONSULTA-sem-escrita).
         $this->actingAs($outroUser);
 
         Livewire::test('pages::radar.suprimentos', ['obra' => $this->obra])
@@ -748,5 +754,45 @@ class SuprimentosPageTest extends TestCase
         $this->componente()
             ->call('abrirDetalhe', $pacote->id)
             ->assertSee('Sem demanda formal do Planejamento alocada');
+    }
+
+    /**
+     * FASE 2F.CORREÇÃO — Seção 9: "sem ver/sem permissão -> comentário
+     * nunca vira canal lateral" para Suprimentos. Mesmo padrão de
+     * test_perfil_sem_permissao_nao_consegue_criar_editar_excluir acima,
+     * mas cobrindo especificamente adicionarComentario() — que aquele
+     * teste não exercita.
+     */
+    public function test_perfil_sem_permissao_nao_consegue_comentar_como_canal_lateral(): void
+    {
+        $atividade = $this->criarAtividade();
+        $fluxo = $this->criarFluxo();
+
+        $item = ItemSuprimento::create([
+            'tenant_id' => $this->tenant->id,
+            'obra_id' => $this->obra->id,
+            'fluxo_suprimento_id' => $fluxo->id,
+            'nome' => 'Item Sem Permissao De Comentar',
+        ]);
+        TenantContext::actingAs($this->tenant, fn () => $item->atividades()->attach($atividade->id));
+
+        $outroUser = User::factory()->create(['tenant_id' => $this->tenant->id]);
+        $perfil = $this->vincularObra($this->obra, $outroUser, Papel::ClienteLeitura->value);
+        // Fase 2F.CORREÇÃO.2 — NÃO apagar 'ver' aqui: ClienteLeitura já
+        // tem só 'ver' em suprimentos.mapa por padrão (seedPadrao() —
+        // criar/editar/comentar/excluir exigem um Papel acima do nível
+        // de ClienteLeitura). Apagar a funcionalidade inteira também
+        // removia 'ver', que agora é reafirmado no mount() — o ator
+        // deixaria de conseguir nem abrir a página, testando a
+        // propriedade errada (SEM ACESSO em vez de CONSULTA-sem-escrita).
+        $this->actingAs($outroUser);
+
+        Livewire::test('pages::radar.suprimentos', ['obra' => $this->obra])
+            ->call('abrirDetalhe', $item->id)
+            ->set('comentarioNovo', 'Tentativa sem permissão')
+            ->call('adicionarComentario')
+            ->assertForbidden();
+
+        $this->assertSame(0, $item->comentarios()->count());
     }
 }

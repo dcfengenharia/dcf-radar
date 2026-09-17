@@ -183,7 +183,10 @@ class CockpitEngenhariaPageTest extends TestCase
         ]);
         $doc = DocumentoEngenharia::create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id, 'codigo' => 'DOC-2', 'descricao' => 'x']);
         $rev = $doc->revisoes()->create(['tenant_id' => $this->tenant->id, 'revisao' => 'R1', 'descricao' => 'x']);
-        (new AlterarLiberacaoRevisaoDocumento())->liberar($rev->fresh(), $user);
+        // Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+        // (engenharia.pacotes); $user (GerentePlanejamento) é o ator do
+        // Cockpit em si, nunca o alvo desta liberação de fixture.
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($rev->fresh(), $this->usuarioComAutoridadeAdmin($this->obra));
         $at->documentosEngenharia()->attach($doc->id, ['tenant_id' => $this->tenant->id]);
 
         $this->componente()

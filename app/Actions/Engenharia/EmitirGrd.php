@@ -18,6 +18,26 @@ use Illuminate\Support\Facades\DB;
  * pra serializar concorrência; o UNIQUE(obra_id, numero) é a defesa
  * FINAL, não o mecanismo principal). Tudo dentro de UMA transação: se
  * qualquer validação falhar, nada é escrito.
+ *
+ * Fase 2E.CORREÇÃO — reavaliada explicitamente como candidata a defesa
+ * em profundidade e classificada **B (operacional humana), permanece
+ * caller-checked**: emitir uma GRD é a distribuição/embalagem
+ * ADMINISTRATIVA de documentos que já passaram pelo verdadeiro portão de
+ * decisão (`AlterarLiberacaoRevisaoDocumento::liberar()`, agora hardened
+ * — `garantirRevisaoVigente()`/o guard `estaLiberadaParaConstrucao()`
+ * logo abaixo já impedem emitir GRD com revisão não liberada). Nunca
+ * cria exposição financeira/contratual nova, diferente de
+ * `EmitirRequisicaoPlanejamento`/`EmitirRequisicaoCompra`/
+ * `EmitirPedidoCompra` (cada uma comprometendo formalmente a cadeia de
+ * suprimentos — quantidade, fornecedor, prazo) — por isso o catálogo
+ * nunca criou uma capacidade própria de "emitir GRD" (confirmado por
+ * grep no catálogo), ao contrário de `liberar_para_construcao`,
+ * deliberadamente separada de `editar` desde a Fase 2B. Reaproveita a
+ * MESMA `engenharia.pacotes|editar` que já cobre criar/editar
+ * Documento/Revisão/Item/Destinatário/Distribuição desta GRD — nunca
+ * uma segunda regra. Caller (`⚡grds.blade.php::confirmarEmissao()`)
+ * continua sendo a única camada de autorização — decisão documentada,
+ * não uma omissão.
  */
 class EmitirGrd
 {

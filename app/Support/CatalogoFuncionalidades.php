@@ -256,18 +256,124 @@ class CatalogoFuncionalidades
     }
 
     /**
+     * Ajuste final pré-produção — menu composto (ex.: Estoque, que reúne
+     * 5 superfícies internas com slug próprio cada uma:
+     * estoque.movimentacao/reserva/conciliacao/industrializacao/
+     * inventario). Ponto único que resolve a visibilidade de UM item de
+     * menu quanto à(s) funcionalidade(s) que ele declara, aceitando os
+     * DOIS formatos:
+     *
+     * - `"funcionalidade": "slug"` (string, formato legado) — continua
+     *   funcionando IDÊNTICO a antes, sem exigir migração de nenhum item
+     *   já existente do JSON.
+     * - `"funcionalidades": ["slugA", "slugB", ...]` (array, formato
+     *   novo) — semântica sempre OR: item visível se o usuário tem `ver`
+     *   em QUALQUER uma das funcionalidades listadas (nunca AND — o
+     *   usuário não precisa ter acesso a TODAS as abas internas da
+     *   página pra enxergar a entrada de menu; quem decide o que fica
+     *   visível DEPOIS de entrar continua sendo o próprio componente da
+     *   página, nunca duplicado aqui).
+     *
+     * Item sem `funcionalidade` nem `funcionalidades` é sempre visível
+     * (nenhum gate) — mesmo comportamento de sempre.
+     *
+     * @param  object  $item  nó decodificado do verticalMenu.json (menu ou submenu)
+     */
+    public static function itemVisivelPorFuncionalidade(object $item): bool
+    {
+        if (isset($item->funcionalidades) && is_array($item->funcionalidades)) {
+            foreach ($item->funcionalidades as $slug) {
+                if (self::usuarioPodeVer($slug)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (isset($item->funcionalidade)) {
+            return self::usuarioPodeVer($item->funcionalidade);
+        }
+
+        return true;
+    }
+
+    /**
      * Pra itens de menu com submenu (ex.: "Cadastros"): se TODOS os
      * filhos com `funcionalidade` ficarem escondidos, o item pai
      * também some — não faz sentido mostrar um dropdown vazio.
+     *
+     * Fase 2A (Hardening) — Achado do menu (Seção 21): agora RECURSIVA —
+     * um filho que por sua vez tem seu próprio `submenu` (grupo aninhado
+     * em 2º nível) só conta como visível se ALGUM dos SEUS descendentes
+     * também for. Confirmado antes desta mudança que nenhum item real de
+     * `verticalMenu.json` hoje tem um `submenu` dentro de outro `submenu`
+     * (só "Painel do Proprietário", que é de 1º nível e já é gateado no
+     * próprio nó pai) — recursão aqui não altera a visibilidade de nada
+     * já autorizado hoje, só fecha o gap pra quando um grupo aninhado
+     * futuro for adicionado sem `funcionalidade`/`gate` próprios.
      *
      * @param array<int, object> $submenu
      */
     public static function algumSubitemVisivel(array $submenu): bool
     {
         foreach ($submenu as $item) {
-            if (! isset($item->funcionalidade) || self::usuarioPodeVer($item->funcionalidade)) {
+            if (isset($item->submenu)) {
+                if (self::algumSubitemVisivel($item->submenu)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (self::itemVisivelPorFuncionalidade($item)) {
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    /**
+     * Fase 2A (Hardening) — Achado do menu: um `menuHeader` (ex.: "6.
+     * SUPRIMENTOS") nunca tinha `gate`/`funcionalidade`/`submenu` próprios
+     * — nenhum dos 3 `@continue` de `verticalMenu.blade.php` o escondia,
+     * então ele sempre renderizava, mesmo com ZERO itens visíveis abaixo
+     * (usuário sem `suprimentos.mapa|ver` via o cabeçalho "SUPRIMENTOS"
+     * vazio). Esta função responde "existe algum item de nível 1 visível
+     * ENTRE este header e o próximo (ou o fim do menu)?" — as 3 mesmas
+     * condições já aplicadas linha a linha no `@foreach` de
+     * `verticalMenu.blade.php` (mesma convenção do projeto de não
+     * extrair helper pequeno via trait: duplicação pequena é aceita, o
+     * risco de tocar as 3 linhas já testadas do loop principal é maior
+     * que o de duplicar 3 condições aqui).
+     *
+     * @param  array<int, object>  $menuCompleto  a mesma lista completa e
+     *     ACHATADA usada no `@foreach` (`$menuData[0]->menu`)
+     * @param  int  $indiceHeader  índice deste `menuHeader` na lista acima
+     */
+    public static function headerTemItemVisivel(array $menuCompleto, int $indiceHeader): bool
+    {
+        for ($i = $indiceHeader + 1; $i < count($menuCompleto); $i++) {
+            $item = $menuCompleto[$i];
+
+            if (isset($item->menuHeader)) {
+                break; // chegou no próximo cabeçalho — nunca olha além dele
+            }
+
+            if (isset($item->gate) && ! \Illuminate\Support\Facades\Gate::allows($item->gate)) {
+                continue;
+            }
+
+            if (! self::itemVisivelPorFuncionalidade($item)) {
+                continue;
+            }
+
+            if (isset($item->submenu) && ! self::algumSubitemVisivel($item->submenu)) {
+                continue;
+            }
+
+            return true;
         }
 
         return false;

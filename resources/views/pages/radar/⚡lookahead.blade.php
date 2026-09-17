@@ -132,6 +132,13 @@ new class extends Component {
   public function mount(Work $obra): void
   {
     $this->obra = $obra;
+
+    // Fase 2F.CORREÇÃO.2 — Achado E23: 'ver' é capability real,
+    // configurável por Perfil; precisa ser reafirmada no backend ao
+    // abrir a página diretamente, não só no menu
+    // (CatalogoFuncionalidades::usuarioPodeVer()). Mesmo padrão já
+    // usado pelos 3 Cockpits (gestao.cockpit/suprimentos/engenharia).
+    abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.lookahead', 'ver'), 403);
   }
 
   // =========================================================================
@@ -1811,11 +1818,21 @@ new class extends Component {
       : 'Sem ' . $data->format('d/m/Y');
   }
 
+  /**
+   * Fase 2A (Hardening) — Achado 1: mesma correção aplicada nas 3
+   * ocorrências espelhadas deste método (`⚡restricoes.blade.php`/
+   * `⚡plano-semanal.blade.php`). Resolve a atividade só dentro da obra
+   * atual (nunca por ID cru), depois autoriza via `AtividadePolicy::
+   * update()` (`restricoes.lookahead|editar`) — nenhuma capacidade nova.
+   */
   public function marcarItemNaDetalhe(string $atividadeId, string $itemId, bool $valor): void
   {
-    $this->transacaoSegura(function () use ($atividadeId, $itemId, $valor) {
+    $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+    $this->authorize('update', $atividade);
+
+    $this->transacaoSegura(function () use ($atividade, $itemId, $valor) {
       AtividadeItemProntidao::updateOrCreate(
-        ['atividade_id' => $atividadeId, 'item_prontidao_id' => $itemId],
+        ['atividade_id' => $atividade->id, 'item_prontidao_id' => $itemId],
         ['concluido' => $valor, 'concluido_por' => $valor ? Auth::id() : null, 'concluido_em' => $valor ? now() : null]
       );
     });

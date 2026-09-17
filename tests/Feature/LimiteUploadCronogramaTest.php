@@ -33,7 +33,15 @@ class LimiteUploadCronogramaTest extends TestCase
         $user = User::factory()->create(['tenant_id' => $tenant->id]);
         $this->actingAs($user);
 
-        return Work::factory()->create(['tenant_id' => $tenant->id]);
+        $obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+        // Fase 2F.CORREÇÃO.3 — 'obras.importar_cronograma' reafirma
+        // 'ver' no backend (Achado E23); este ator sempre foi pensado
+        // como um usuário LEGÍTIMO da página (o teste é sobre limite de
+        // upload por plano, nunca sobre permissão), nunca precisou de
+        // vinculação explícita antes porque nenhum gate real existia.
+        $this->vincularObra($obra, $user, \App\Enums\Papel::GerentePlanejamento->value);
+
+        return $obra;
     }
 
     public function test_tenant_sem_assinatura_usa_o_teto_da_plataforma_como_fallback(): void

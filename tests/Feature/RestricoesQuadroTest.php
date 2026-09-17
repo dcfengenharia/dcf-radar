@@ -78,14 +78,23 @@ class RestricoesQuadroTest extends TestCase
         ]);
     }
 
+    /**
+     * Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+     * (engenharia.pacotes); $this->user (Engenheiro) é o ator real das
+     * asserções de prontidão/restrição deste arquivo, nunca o alvo de
+     * uma verificação de autoridade de liberação — ator dedicado com
+     * autoridade real, derivado da obra do próprio Documento.
+     */
     private function liberar(DocumentoEngenhariaRevisao $revisao): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->liberar($revisao, $this->user);
+        $obra = Work::findOrFail(DocumentoEngenharia::findOrFail($revisao->documento_engenharia_id)->obra_id);
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($revisao, $this->usuarioComAutoridadeAdmin($obra));
     }
 
     private function revogar(DocumentoEngenhariaRevisao $revisao): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->revogar($revisao, $this->user);
+        $obra = Work::findOrFail(DocumentoEngenharia::findOrFail($revisao->documento_engenharia_id)->obra_id);
+        (new AlterarLiberacaoRevisaoDocumento())->revogar($revisao, $this->usuarioComAutoridadeAdmin($obra));
     }
 
     // ===================== 18.4.CORREÇÃO.HARDENING: popup delega a estaPronta() =====================

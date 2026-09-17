@@ -17,6 +17,7 @@ use App\Models\ItemSuprimento;
 use App\Models\LicaoAprendida;
 use App\Models\LicaoAprendidaReaplicacao;
 use App\Models\LicaoAprendidaReaplicacaoAvaliacao;
+use App\Models\HistoricoAcesso;
 use App\Models\LicaoAprendidaReaplicacaoContexto;
 use App\Models\ListaEngenharia;
 use App\Models\LocalEstoque;
@@ -58,6 +59,7 @@ use App\Observers\GrdObserver;
 use App\Observers\ItemSuprimentoObserver;
 use App\Observers\ItemTakeOffObserver;
 use App\Observers\LicaoAprendidaObserver;
+use App\Observers\HistoricoAcessoObserver;
 use App\Observers\LicaoAprendidaReaplicacaoAvaliacaoObserver;
 use App\Observers\LicaoAprendidaReaplicacaoContextoObserver;
 use App\Observers\LicaoAprendidaReaplicacaoObserver;
@@ -133,6 +135,7 @@ class AppServiceProvider extends ServiceProvider
         LicaoAprendidaReaplicacao::observe(LicaoAprendidaReaplicacaoObserver::class);
         LicaoAprendidaReaplicacaoContexto::observe(LicaoAprendidaReaplicacaoContextoObserver::class);
         LicaoAprendidaReaplicacaoAvaliacao::observe(LicaoAprendidaReaplicacaoAvaliacaoObserver::class);
+        HistoricoAcesso::observe(HistoricoAcessoObserver::class);
 
         // Marca a sessão pra <x-onboarding-popup /> mostrar o popup de boas-vindas
         // no próximo carregamento de página, se ainda houver cadastro obrigatório

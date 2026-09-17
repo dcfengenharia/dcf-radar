@@ -33,6 +33,7 @@ use App\Policies\RestricaoPolicy;
 use App\Policies\WorkPolicy;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Support\ImpersonationContext;
 use App\Support\TenantContext;
 use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvider;
 use Illuminate\Support\Facades\Gate;
@@ -78,12 +79,25 @@ class AuthServiceProvider extends ServiceProvider
 
         // Perfis/permissões definem QUEM PODE O QUÊ — só o criador do
         // tenant mexe nisso, nunca um perfil (evita que um perfil se
-        // autoconceda acesso a esta tela).
+        // autoconceda acesso a esta tela). Fase 2C — mesmo bypass já
+        // usado por WorkPolicy::view()/update() (Pré-produção, Etapa 2):
+        // o admin da plataforma só entra aqui durante impersonation
+        // ATIVA e auditada daquele tenant específico ("Entrar como" já
+        // grava `Impersonacao`) — nunca um bypass incondicional de
+        // is_platform_admin. Sem isso, um Admin trancado (último Admin
+        // de um tenant, ver GuardUltimoAdmin) nunca teria como ser
+        // socorrido: a própria Matriz de Acessos/Perfis de Acesso exige
+        // ser o criador do tenant pra sequer abrir a tela.
         Gate::define('gerenciar-perfis-acesso', function (User $user) {
             $tenantId = TenantContext::currentId();
             $tenant = $tenantId ? Tenant::find($tenantId) : null;
 
-            return $tenant !== null && $user->podeGerenciarTenant($tenant);
+            if ($tenant === null) {
+                return false;
+            }
+
+            return $user->podeGerenciarTenant($tenant)
+                || ($user->is_platform_admin && ImpersonationContext::impersonandoTenant($tenant->id));
         });
     }
 }

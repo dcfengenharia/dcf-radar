@@ -109,6 +109,14 @@ class ReaplicacaoLicaoUiTest extends TestCase
     private function vincularSemAcesso(Work $obra, User $user): void
     {
         $perfil = Perfil::create(['tenant_id' => $this->tenant->id, 'nome' => 'Sem Acesso '.uniqid()]);
+        // Fase 2F.CORREÇÃO.2 — 'ver' agora é reafirmado no backend em
+        // restricoes.lookahead (mount()); este Perfil precisa de 'ver'
+        // pra continuar provando a negação da AÇÃO específica testada
+        // (criar/avaliar reaplicação), nunca a negação de simplesmente
+        // abrir o Lookahead. Sem efeito nos outros 2 usos deste helper
+        // (pages::gestao.licoes-aprendidas / obrasParaReaplicar, nunca
+        // gated).
+        \App\Models\PerfilPermissao::create(['tenant_id' => $this->tenant->id, 'perfil_id' => $perfil->id, 'funcionalidade' => 'restricoes.lookahead', 'acao' => 'ver']);
         $obra->users()->attach($user->id, ['perfil_id' => $perfil->id]);
     }
 

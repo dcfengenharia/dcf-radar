@@ -244,7 +244,7 @@ class EstoquePreviewLocalTest extends TestCase
         $this->registrarTransferencia->execute($material, $localA, $localB, 300, Carbon::today(), $this->user, $unidade);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $localA->id)
@@ -263,7 +263,7 @@ class EstoquePreviewLocalTest extends TestCase
         $this->registrarTransferencia->execute($material, $localA, $localB, 300, Carbon::today(), $this->user, $unidade);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $localB->id)
@@ -285,12 +285,12 @@ class EstoquePreviewLocalTest extends TestCase
         $this->entradaPronta($material, $localB, 60);
 
         $previewA = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localA->id)
             ->instance()->saldoFisicoPreviewSaida;
 
         $previewB = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localB->id)
             ->instance()->saldoFisicoPreviewSaida;
 
@@ -313,13 +313,13 @@ class EstoquePreviewLocalTest extends TestCase
 
         // A = 0
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localA->id);
         $this->assertCount(0, $component->instance()->unidadesDisponiveisParaSaida);
 
         // B = 1
         $componentB = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localB->id)
             ->set('saidaUnidadeId', $unidade->id);
         $this->assertEquals(1, $componentB->instance()->saldoFisicoPreviewSaida);
@@ -337,7 +337,7 @@ class EstoquePreviewLocalTest extends TestCase
         $this->entradaPronta($material, $localA, 100);
 
         $antes = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localB->id)
             ->instance()->saldoFisicoPreviewSaida;
         $this->assertEquals(0, $antes);
@@ -345,7 +345,7 @@ class EstoquePreviewLocalTest extends TestCase
         $this->registrarTransferencia->execute($material, $localA, $localB, 40, Carbon::today(), $this->user);
 
         $depois = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localB->id)
             ->instance()->saldoFisicoPreviewSaida;
         $this->assertEquals(40, $depois);
@@ -401,13 +401,13 @@ class EstoquePreviewLocalTest extends TestCase
         $this->registrarTransferencia->execute($material, $localA, $localB, 300, Carbon::today(), $this->user, $unidade);
 
         $componentB = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localB->id)
             ->set('saidaUnidadeId', $unidade->id);
         $this->assertEquals(300, $componentB->instance()->saldoNaoReservadoPreviewSaida);
 
         $componentA = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localA->id)
             ->set('saidaUnidadeId', $unidade->id);
         // Físico em A = 700, reservado em A = 200 -> não reservado = 500
@@ -424,13 +424,13 @@ class EstoquePreviewLocalTest extends TestCase
         $this->registrarTransferencia->execute($material, $localA, $localB, 300, Carbon::today(), $this->user, $unidade);
 
         $componentB = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'planejamento')->call('abrirModalReserva')
+            ->call('selecionarAba', 'planejamento')->call('abrirModalReserva')
             ->set('reservaMaterialId', $material->id)->set('reservaLocalId', $localB->id)
             ->set('reservaUnidadeId', $unidade->id);
         $this->assertEquals(300, $componentB->instance()->saldoDisponivelPreviewReserva);
 
         $componentA = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'planejamento')->call('abrirModalReserva')
+            ->call('selecionarAba', 'planejamento')->call('abrirModalReserva')
             ->set('reservaMaterialId', $material->id)->set('reservaLocalId', $localA->id)
             ->set('reservaUnidadeId', $unidade->id);
         $this->assertEquals(700, $componentA->instance()->saldoDisponivelPreviewReserva);
@@ -451,7 +451,7 @@ class EstoquePreviewLocalTest extends TestCase
         $localOutraObra = $this->criarLocal([], $outraObra);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $localOutraObra->id);
 
@@ -494,7 +494,7 @@ class EstoquePreviewLocalTest extends TestCase
 
         // Só ler os previews várias vezes — nunca deve mutar nada.
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)->set('saidaLocalId', $localA->id)
             ->set('saidaUnidadeId', $unidade->id)
             ->instance()->saldoFisicoPreviewSaida;

@@ -24,6 +24,14 @@ new class extends Component {
     public function mount(Work $obra): void
     {
         $this->obra = $obra;
+    
+    // Fase 2F.CORREÇÃO.3 — propagação do Achado E23: 'ver' é
+    // capability real, configurável por Perfil; precisa ser
+    // reafirmada no backend ao abrir a página diretamente, não
+    // só no menu (CatalogoFuncionalidades::usuarioPodeVer()).
+    // Mesmo padrão já usado pelos 3 Cockpits e por
+    // restricoes.quadro/lookahead/suprimentos.mapa (2F.CORREÇÃO.2).
+    abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.minhas_programacoes', 'ver'), 403);
     }
 
     /**
@@ -53,9 +61,16 @@ new class extends Component {
 
     public function fecharProgramacao(string $id): void
     {
+        // Fase 2A (Hardening) — Achado 4: a permissão era checada contra a
+        // obra ATUAL da sessão, mas a `ProgramacaoSemanal` era resolvida
+        // sem nenhum escopo de obra — um usuário com `editar` na Obra A
+        // conseguia congelar a semana comprometida de OUTRA obra do
+        // tenant. Corrigido resolvendo primeiro dentro da obra atual
+        // (`findOrFail` falha com 404 pra ID de outra obra) — a permissão
+        // continua sendo a mesma já usada aqui, nenhuma nova inventada.
         abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.minhas_programacoes', 'editar'), 403);
 
-        $programacao = ProgramacaoSemanal::findOrFail($id);
+        $programacao = ProgramacaoSemanal::where('obra_id', $this->obra->id)->findOrFail($id);
 
         $this->transacaoSegura(fn () => (new FecharProgramacaoSemanal)->execute($programacao));
 
@@ -69,9 +84,11 @@ new class extends Component {
 
     public function criarRevisao(string $id): void
     {
+        // Fase 2A (Hardening) — Achado 4: mesma correção de fecharProgramacao()
+        // acima.
         abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.minhas_programacoes', 'editar'), 403);
 
-        $original = ProgramacaoSemanal::findOrFail($id);
+        $original = ProgramacaoSemanal::where('obra_id', $this->obra->id)->findOrFail($id);
 
         $this->transacaoSegura(fn () => (new CriarRevisaoProgramacaoSemanal)->execute($original));
 
@@ -113,6 +130,16 @@ new class extends Component {
 
     public function abrirDetalhe(string $id): void
     {
+        // Fase 2A (Hardening) — Achado 4 (leitura): `$programacaoDetalheId`
+        // alimenta `itensDaProgramacaoDetalhe()`, que consulta direto por
+        // `programacao_semanal_id` sem escopo de obra — sem esta validação,
+        // um ID de outra obra do tenant expunha itens/HH realizado/
+        // responsável dessa outra obra no modal. `programacaoDetalhe()`
+        // (computed que lê o cabeçalho) já era seguro por derivar de
+        // `$this->programacoes`, já filtrada por obra — só o ID cru usado
+        // aqui pros ITENS não era revalidado.
+        ProgramacaoSemanal::where('obra_id', $this->obra->id)->findOrFail($id);
+
         $this->programacaoDetalheId = $id;
         $this->erroRealizado = [];
         $this->hhRealizadoForm = $this->itensDaProgramacaoDetalhe

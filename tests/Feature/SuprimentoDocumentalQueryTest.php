@@ -54,7 +54,11 @@ class SuprimentoDocumentalQueryTest extends TestCase
         $doc = DocumentoEngenharia::create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id, 'codigo' => 'DOC-' . uniqid(), 'descricao' => 'x']);
         $rev = $doc->revisoes()->create(['tenant_id' => $this->tenant->id, 'revisao' => 'R1', 'descricao' => 'x'])->fresh();
         if ($liberar) {
-            (new AlterarLiberacaoRevisaoDocumento())->liberar($rev, $this->user);
+            // Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+            // (engenharia.pacotes); $this->user (GerentePlanejamento) é
+            // usado só pra montar o cenário de Suprimentos, nunca o
+            // alvo desta asserção — ator dedicado com autoridade real.
+            (new AlterarLiberacaoRevisaoDocumento())->liberar($rev, $this->usuarioComAutoridadeAdmin($this->obra));
         }
         $pacote = ItemSuprimento::create(['obra_id' => $this->obra->id, 'nome' => 'Pacote ' . uniqid()]);
         $pacote->documentosEngenharia()->attach($doc->id, ['tenant_id' => $this->tenant->id]);

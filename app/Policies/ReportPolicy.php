@@ -60,9 +60,14 @@ class ReportPolicy
      * nesse momento que "os demais usuários" (fora do planejamento)
      * ganham acesso pra análise, conforme o fluxo pedido pelo usuário.
      * O próprio planejamento também pode comentar depois de emitir.
+     *
+     * Fase 2B, Seção 12/14 — 'comentar' virou capacidade própria (antes
+     * usava 'ver', que já era livre por padrão a todo Perfil — o
+     * backfill preserva exatamente esse alcance, "comentar" continua
+     * tão aberto quanto "ver" já era).
      */
     public function comentar(User $user, Report $report): bool
     {
-        return $report->estaEmitido() && $user->temPermissaoNaObra($report->obra_id, 'report.relatorios', 'ver');
+        return $report->estaEmitido() && $user->temPermissaoNaObra($report->obra_id, 'report.relatorios', 'comentar');
     }
 }

@@ -180,6 +180,21 @@ class LicoesContextuaisTest extends TestCase
     private function vincularSemAcessoALicoes(Work $obra, User $user): void
     {
         $perfil = \App\Models\Perfil::create(['tenant_id' => $this->tenant->id, 'nome' => 'Sem Acesso a Lições '.uniqid()]);
+        // Fase 2F.CORREÇÃO.2 — 'ver' agora é reafirmado no backend em
+        // restricoes.lookahead (mount()); este Perfil precisa de 'ver'
+        // ali pra continuar provando a propriedade certa (biblioteca de
+        // Lições invisível), nunca a negação de simplesmente abrir o
+        // Lookahead.
+        \App\Models\PerfilPermissao::create(['tenant_id' => $this->tenant->id, 'perfil_id' => $perfil->id, 'funcionalidade' => 'restricoes.lookahead', 'acao' => 'ver']);
+        // FASE 2F.CORREÇÃO (Achado E23) — ⚡estoque.blade.php passou a
+        // reafirmar 'ver' em pelo menos 1 dos 5 slugs de Estoque no
+        // backend (mount()); test_f3 precisa deste ator conseguir
+        // ABRIR a página (aba Materiais, 'estoque.movimentacao') pra
+        // continuar provando a propriedade certa —
+        // licoesContextuaisPorMaterial() vazio por FALTA de
+        // 'gestao.licoes-aprendidas|ver' especificamente, nunca por
+        // falta de acesso à própria página de Estoque.
+        \App\Models\PerfilPermissao::create(['tenant_id' => $this->tenant->id, 'perfil_id' => $perfil->id, 'funcionalidade' => 'estoque.movimentacao', 'acao' => 'ver']);
         $obra->users()->attach($user->id, ['perfil_id' => $perfil->id]);
     }
 

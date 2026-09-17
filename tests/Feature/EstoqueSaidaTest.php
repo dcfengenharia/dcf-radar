@@ -710,7 +710,7 @@ class EstoqueSaidaTest extends TestCase
 
         $this->expectException(\Illuminate\Database\Eloquent\ModelNotFoundException::class);
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $localOutraObra->id)
@@ -848,7 +848,7 @@ class EstoqueSaidaTest extends TestCase
         $this->entradaPronta($material, $local, 500);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $local->id)
@@ -888,7 +888,7 @@ class EstoqueSaidaTest extends TestCase
         $this->entradaPronta($material, $local, 500);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $local->id);
@@ -904,7 +904,7 @@ class EstoqueSaidaTest extends TestCase
         $this->reservaAction->execute($pacote, $material, $local, 200, null, null, $this->user);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id);
 
@@ -919,7 +919,7 @@ class EstoqueSaidaTest extends TestCase
         $frente = $this->criarFrente();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $local->id)
@@ -941,7 +941,7 @@ class EstoqueSaidaTest extends TestCase
         $this->entradaPronta($material, $local, 500);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $local->id)
@@ -960,7 +960,7 @@ class EstoqueSaidaTest extends TestCase
         $this->entradaPronta($material, $local, 100);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $local->id)
@@ -1051,13 +1051,13 @@ class EstoqueSaidaTest extends TestCase
 
         DB::flushQueryLog();
         $c1 = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')->set('saidaMaterialId', $material1->id);
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')->set('saidaMaterialId', $material1->id);
         $r1 = $c1->instance()->reservasAtivasParaSaida;
         $q1 = count(DB::getQueryLog());
 
         DB::flushQueryLog();
         $c2 = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')->call('abrirModalSaida')->set('saidaMaterialId', $material2->id);
+            ->call('selecionarAba', 'saidas')->call('abrirModalSaida')->set('saidaMaterialId', $material2->id);
         $r2 = $c2->instance()->reservasAtivasParaSaida;
         $q2 = count(DB::getQueryLog());
 

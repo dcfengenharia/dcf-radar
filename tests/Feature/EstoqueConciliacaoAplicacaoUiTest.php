@@ -189,7 +189,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $saida = $this->saidaSimples($material, $local, 500);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'conciliacao')
+            ->call('selecionarAba', 'conciliacao')
             ->assertSee($material->codigo)
             ->assertSee('500');
     }
@@ -203,7 +203,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $frente = $this->criarFrente();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'conciliacao')
+            ->call('selecionarAba', 'conciliacao')
             ->call('abrirModalConciliacao', $saida->id)
             ->set('aplicacaoFrenteId', $frente->id)
             ->set('aplicacaoQuantidade', 200)
@@ -223,7 +223,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $frente = $this->criarFrente();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'conciliacao')
+            ->call('selecionarAba', 'conciliacao')
             ->call('abrirModalConciliacao', $saida->id)
             ->set('aplicacaoFrenteId', $frente->id)
             ->set('aplicacaoQuantidade', 500)
@@ -232,7 +232,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
             ->assertHasNoErrors()
             ->assertSee('Nenhuma Saída com pendência');
 
-        $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'conciliacao');
+        $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'conciliacao');
         $this->assertTrue($component->instance()->saidasComPendencia->isEmpty());
     }
 
@@ -261,7 +261,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $this->actingAs($semPermissao);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'conciliacao')
+            ->call('selecionarAba', 'conciliacao')
             ->call('abrirModalConciliacao', $saida->id)
             ->assertStatus(403);
 
@@ -277,7 +277,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $frente = $this->criarFrente();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'conciliacao')
+            ->call('selecionarAba', 'conciliacao')
             ->call('abrirModalConciliacao', $saida->id)
             ->set('aplicacaoFrenteId', $frente->id)
             ->set('aplicacaoQuantidade', 501)
@@ -299,7 +299,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $this->saidaSimples($materialMetro, $local, 200);
         $this->saidaSimples($materialKg, $local, 100);
 
-        $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'conciliacao');
+        $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'conciliacao');
         $linhas = $component->instance()->coberturaDeficitPorObra;
 
         $linhaMetro = $linhas->firstWhere('material_id', $materialMetro->id);
@@ -336,7 +336,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
 
         $queries5 = 0;
         DB::listen(function () use (&$queries5) { $queries5++; });
-        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'conciliacao');
+        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'conciliacao');
 
         for ($i = 0; $i < 95; $i++) {
             $this->saidaSimples($material, $local, 1);
@@ -344,7 +344,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
 
         $queries100 = 0;
         DB::listen(function () use (&$queries100) { $queries100++; });
-        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'conciliacao');
+        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'conciliacao');
 
         $this->assertLessThanOrEqual($queries5 + 15, $queries100, 'Query count não deve escalar linearmente com N de Saídas.');
     }
@@ -367,7 +367,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $queriesPoucas = 0;
         DB::listen(function () use (&$queriesPoucas) { $queriesPoucas++; });
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'conciliacao')
+            ->call('selecionarAba', 'conciliacao')
             ->call('abrirModalConciliacao', $saidaPoucas->id);
 
         $saidaMuitas = $this->saidaSimples($material, $local, 500);
@@ -377,7 +377,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
         $queriesMuitas = 0;
         DB::listen(function () use (&$queriesMuitas) { $queriesMuitas++; });
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'conciliacao')
+            ->call('selecionarAba', 'conciliacao')
             ->call('abrirModalConciliacao', $saidaMuitas->id);
 
         $this->assertLessThanOrEqual(
@@ -398,7 +398,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
 
         $queriesPoucas = 0;
         DB::listen(function () use (&$queriesPoucas) { $queriesPoucas++; });
-        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'conciliacao');
+        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'conciliacao');
 
         for ($i = 0; $i < 19; $i++) {
             $this->reservaAction->execute($pacote, $material, $local, 10, null, null, $this->user);
@@ -406,7 +406,7 @@ class EstoqueConciliacaoAplicacaoUiTest extends TestCase
 
         $queriesMuitas = 0;
         DB::listen(function () use (&$queriesMuitas) { $queriesMuitas++; });
-        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'conciliacao');
+        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'conciliacao');
 
         $this->assertLessThanOrEqual(
             $queriesPoucas + 10,

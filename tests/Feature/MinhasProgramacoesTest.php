@@ -12,6 +12,7 @@ use App\Models\Atividade;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
+use App\Support\TenantContext;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -114,15 +115,32 @@ class MinhasProgramacoesTest extends TestCase
     {
         $outroTenant = Tenant::factory()->create();
         $outroUser = User::factory()->create(['tenant_id' => $outroTenant->id]);
-        $outraObra = Work::factory()->create(['tenant_id' => $outroTenant->id]);
-        $this->vincularObra($outraObra, $outroUser, Papel::Engenheiro->value);
+
+        // Fase 2F.CORREÇÃO.3 — achado real na fixture, exposto (não
+        // causado) pelo Achado E23: $this->user (doutro tenant, do
+        // setUp() da classe) continua autenticado neste ponto, então
+        // Work::factory()->create(['tenant_id' => $outroTenant->id])
+        // tinha seu tenant_id SILENCIOSAMENTE sobrescrito pelo tenant
+        // ATUALMENTE autenticado (BelongsToTenant::creating() sempre
+        // carimba a partir de TenantContext::currentId(), nunca do
+        // valor explícito do array). Mesmo padrão de correção já
+        // aplicado em ProgramacaoSemanalHhRealizadoTest.
+        $outraObra = TenantContext::actingAs(
+            $outroTenant,
+            fn () => Work::factory()->create(['tenant_id' => $outroTenant->id])
+        );
 
         $atividade = Atividade::factory()->create(['tenant_id' => $this->tenant->id, 'obra_id' => $this->obra->id]);
         (new RegistrarComprometimentoSemanal)->execute(
             $this->obra, Carbon::now()->startOfWeek()->toDateString(), collect([$atividade]), OrigemProgramacaoSemanalItem::Manual
         );
 
+        // vincularObra() também grava na nova pivot multiperfil
+        // (ObraUserPerfil, tenant-scoped) — precisa rodar com
+        // $outroUser já autenticado, senão a linha seria carimbada com
+        // o tenant do ator AINDA autenticado ($this->user).
         $this->actingAs($outroUser);
+        $this->vincularObra($outraObra, $outroUser, Papel::Engenheiro->value);
 
         $lista = Livewire::test('pages::radar.programacoes', ['obra' => $outraObra])->instance()->programacoes;
 

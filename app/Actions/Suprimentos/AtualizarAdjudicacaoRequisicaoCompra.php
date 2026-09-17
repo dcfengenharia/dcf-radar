@@ -12,6 +12,7 @@ use App\Models\RequisicaoCompraAdjudicacaoItem;
 use App\Models\RequisicaoCompraItem;
 use App\Models\RequisicaoCompraItemParcela;
 use App\Models\User;
+use App\Support\Perfis\GarantirAutoridadeNaObra;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -48,6 +49,26 @@ use Illuminate\Support\Facades\DB;
  * Corrigido para usar `RequisicaoCompraAdjudicacaoItem::
  * quantidadeConsumidaViaBridge()` — soma PRECISA via a ponte explícita
  * `PedidoCompraItemAdjudicacao`, nunca mais inferida por fornecedor.
+ *
+ * Fase 2E.CORREÇÃO — `adicionarItem()`/`alterarQuantidadeItem()`/
+ * `removerItem()` reavaliadas: compor os itens de uma
+ * `RequisicaoCompraAdjudicacao` (que nasce `Ativa`, nunca `Rascunho` —
+ * `StatusAdjudicacaoRequisicaoCompra` só tem Ativa/Cancelada) É a própria
+ * decisão comercial em curso, não uma preparação de rascunho anterior a
+ * uma decisão formal — a mesma gravidade de `cancelar()`/
+ * `CriarAdjudicacaoRequisicaoCompra`, já hardened. "Não recebiam `User`"
+ * deixou de ser aceito como justificativa (Fase 2E.CORREÇÃO, item 7): as
+ * 3 assinaturas ganharam `User $usuario` (parâmetro novo, sempre por
+ * último — nenhuma reordenação dos parâmetros já existentes) e passaram
+ * a reafirmar, dentro da própria Action, a mesma `suprimentos.mapa|editar`
+ * que o caller já checa — obra sempre derivada do RECURSO
+ * (`$adjudicacao->requisicaoCompra()->value('obra_id')`), nunca da
+ * sessão. Único caller de produção
+ * (`⚡suprimentos.blade.php::adicionarItemAdjudicacao()`/
+ * `removerItemAdjudicacao()`) já resolve `$adjudicacao`/`$item`
+ * obra-scoped antes de chamar — `alterarQuantidadeItem()` não tem
+ * nenhum caller de produção hoje (confirmado por grep), mas ganhou a
+ * mesma defesa por pertencer à mesma família de operação.
  */
 class AtualizarAdjudicacaoRequisicaoCompra
 {
@@ -56,7 +77,16 @@ class AtualizarAdjudicacaoRequisicaoCompra
         RequisicaoCompraItem $rcItem,
         ?RequisicaoCompraItemParcela $parcela,
         float $quantidade,
+        User $usuario,
     ): RequisicaoCompraAdjudicacaoItem {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            (string) $adjudicacao->requisicaoCompra()->value('obra_id'),
+            'suprimentos.mapa',
+            'editar',
+            'Você não tem autoridade para compor esta Adjudicação.'
+        );
+
         return DB::transaction(function () use ($adjudicacao, $rcItem, $parcela, $quantidade) {
             $rcItem = RequisicaoCompraItem::whereKey($rcItem->id)->lockForUpdate()->firstOrFail();
             RequisicaoCompra::whereKey($rcItem->requisicao_compra_id)->lockForUpdate()->firstOrFail();
@@ -86,8 +116,16 @@ class AtualizarAdjudicacaoRequisicaoCompra
         });
     }
 
-    public function alterarQuantidadeItem(RequisicaoCompraAdjudicacaoItem $item, float $novaQuantidade): void
+    public function alterarQuantidadeItem(RequisicaoCompraAdjudicacaoItem $item, float $novaQuantidade, User $usuario): void
     {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            (string) $this->obraDaAdjudicacaoItem($item),
+            'suprimentos.mapa',
+            'editar',
+            'Você não tem autoridade para alterar esta Adjudicação.'
+        );
+
         DB::transaction(function () use ($item, $novaQuantidade) {
             $rcItem = RequisicaoCompraItem::whereKey($item->requisicao_compra_item_id)->lockForUpdate()->firstOrFail();
             RequisicaoCompra::whereKey($rcItem->requisicao_compra_id)->lockForUpdate()->firstOrFail();
@@ -108,8 +146,16 @@ class AtualizarAdjudicacaoRequisicaoCompra
         });
     }
 
-    public function removerItem(RequisicaoCompraAdjudicacaoItem $item): void
+    public function removerItem(RequisicaoCompraAdjudicacaoItem $item, User $usuario): void
     {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            (string) $this->obraDaAdjudicacaoItem($item),
+            'suprimentos.mapa',
+            'editar',
+            'Você não tem autoridade para remover este item da Adjudicação.'
+        );
+
         DB::transaction(function () use ($item) {
             $rcItem = RequisicaoCompraItem::whereKey($item->requisicao_compra_item_id)->lockForUpdate()->firstOrFail();
             RequisicaoCompra::whereKey($rcItem->requisicao_compra_id)->lockForUpdate()->firstOrFail();
@@ -132,9 +178,26 @@ class AtualizarAdjudicacaoRequisicaoCompra
      * NENHUM item tem consumo oficial de Pedido. Nunca trava a RC (ver
      * docblock da classe) — só os alvos (RCItem/Parcela) de cada item,
      * na mesma ordem relativa já usada por `adicionarItem()`.
+     *
+     * Fase 2E — defesa em profundidade: reafirma, DENTRO da Action, a
+     * mesma capacidade `suprimentos.mapa|editar` que o caller
+     * (`⚡suprimentos.blade.php::cancelarAdjudicacaoRc()`) já checa — obra
+     * derivada de `requisicaoCompra()->obra_id` (o recurso, nunca a
+     * sessão). Desde a Fase 2E.CORREÇÃO, `adicionarItem()`/
+     * `alterarQuantidadeItem()`/`removerItem()` desta mesma classe
+     * também recebem `User $usuario` e reafirmam a mesma checagem (ver
+     * docblock da classe).
      */
     public function cancelar(RequisicaoCompraAdjudicacao $adjudicacao, User $usuario, ?string $motivo): void
     {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            (string) $adjudicacao->requisicaoCompra()->value('obra_id'),
+            'suprimentos.mapa',
+            'editar',
+            'Você não tem autoridade para cancelar esta Adjudicação.'
+        );
+
         DB::transaction(function () use ($adjudicacao, $usuario, $motivo) {
             $itensBrutos = RequisicaoCompraAdjudicacaoItem::where('requisicao_compra_adjudicacao_id', $adjudicacao->id)->get();
 
@@ -167,6 +230,14 @@ class AtualizarAdjudicacaoRequisicaoCompra
                 'motivo_cancelamento' => $motivo,
             ])->save();
         });
+    }
+
+    /** Deriva a obra do RECURSO (item → adjudicação → RC), nunca da sessão — 2 queries mínimas, sem eager-load presumido. */
+    private function obraDaAdjudicacaoItem(RequisicaoCompraAdjudicacaoItem $item): ?string
+    {
+        $adjudicacao = RequisicaoCompraAdjudicacao::whereKey($item->requisicao_compra_adjudicacao_id)->firstOrFail();
+
+        return $adjudicacao->requisicaoCompra()->value('obra_id');
     }
 
     private function garantirAdjudicacaoAtiva(RequisicaoCompraAdjudicacao $adjudicacao): void

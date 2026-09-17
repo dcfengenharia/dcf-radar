@@ -776,7 +776,7 @@ class EstoqueDestinacaoReservaTest extends TestCase
         $frente = $this->criarFrente();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'planejamento')
+            ->call('selecionarAba', 'planejamento')
             ->call('abrirModalDestinacao', null, $pacote->id, $material->id)
             ->set('destinacaoFrenteId', $frente->id)
             ->set('destinacaoQuantidade', 300)
@@ -796,7 +796,7 @@ class EstoqueDestinacaoReservaTest extends TestCase
         $this->entradaPronta($material, $local, 500);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'planejamento')
+            ->call('selecionarAba', 'planejamento')
             ->call('abrirModalReserva', null, $pacote->id, $material->id)
             ->set('reservaLocalId', $local->id)
             ->set('reservaQuantidade', 200)
@@ -816,7 +816,7 @@ class EstoqueDestinacaoReservaTest extends TestCase
         $this->actingAs($usuarioLeitura);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'planejamento')
+            ->call('selecionarAba', 'planejamento')
             ->call('abrirModalDestinacao', null, $pacote->id, $material->id)
             ->assertStatus(403);
 
@@ -850,7 +850,7 @@ class EstoqueDestinacaoReservaTest extends TestCase
         $frenteDaObraB = $this->criarFrente();
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $outraObra])
-            ->set('abaAtiva', 'planejamento')
+            ->call('selecionarAba', 'planejamento')
             ->call('abrirModalDestinacao', null, $pacoteDaObraB->id, $materialDaObraB->id)
             ->set('destinacaoFrenteId', $frenteDaObraB->id)
             ->set('destinacaoQuantidade', 100);
@@ -882,7 +882,7 @@ class EstoqueDestinacaoReservaTest extends TestCase
         $this->reservaAction->execute($pacote, $material, $local, 150, null, null, $this->user);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'planejamento')
+            ->call('selecionarAba', 'planejamento')
             ->assertSee('Reservas de Estoque')
             ->assertSee('UI-SALDO')
             ->assertSee('Local Saldo UI');
@@ -900,7 +900,7 @@ class EstoqueDestinacaoReservaTest extends TestCase
 
         DB::enableQueryLog();
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'planejamento');
+            ->call('selecionarAba', 'planejamento');
         $queries = count(DB::getQueryLog());
         DB::disableQueryLog();
 

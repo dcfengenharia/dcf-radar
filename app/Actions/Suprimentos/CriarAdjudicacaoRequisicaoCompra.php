@@ -9,6 +9,7 @@ use App\Models\RequisicaoCompra;
 use App\Models\RequisicaoCompraAdjudicacao;
 use App\Models\RequisicaoCompraAnexo;
 use App\Models\User;
+use App\Support\Perfis\GarantirAutoridadeNaObra;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -28,6 +29,13 @@ use Illuminate\Support\Facades\DB;
  * carregado, nunca `withTrashed()`** (mesmo padrão de
  * `EmitirPedidoCompra`, 19.5.CORREÇÃO) — um fornecedor de outra obra ou
  * soft-deletado é rejeitado, nunca silenciosamente aceito.
+ *
+ * **Fase 2E — defesa em profundidade**: reafirma, DENTRO da Action, a
+ * mesma capacidade `suprimentos.mapa|editar` que o caller
+ * (`⚡suprimentos.blade.php::criarAdjudicacaoRc()`) já checa antes de
+ * invocar — obra sempre derivada de `$rc->obra_id` (o recurso, nunca a
+ * sessão). Segunda camada contra chamada direta que bypassa a UI, nunca
+ * substitui o caller.
  */
 class CriarAdjudicacaoRequisicaoCompra
 {
@@ -39,6 +47,14 @@ class CriarAdjudicacaoRequisicaoCompra
         ?RequisicaoCompraAnexo $anexo,
         User $usuario,
     ): RequisicaoCompraAdjudicacao {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            $rc->obra_id,
+            'suprimentos.mapa',
+            'editar',
+            'Você não tem autoridade para adjudicar esta Requisição de Compra.'
+        );
+
         return DB::transaction(function () use ($rc, $fornecedor, $justificativa, $observacao, $anexo, $usuario) {
             $rc = RequisicaoCompra::whereKey($rc->id)->lockForUpdate()->firstOrFail();
 

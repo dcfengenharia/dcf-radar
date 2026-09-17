@@ -75,9 +75,18 @@ class RevisaoLiberacaoTest extends TestCase
         return $revisao->fresh();
     }
 
+    /**
+     * Fase 2E.CORREÇÃO — sem `$usuario` explícito, usa um ator DEDICADO
+     * com autoridade Admin real na obra do Documento (nunca `$this->user`,
+     * cujo Papel varia teste a teste — Encarregado/Admin/nenhum vínculo —
+     * pra não contaminar as próprias asserções de permissão de cada
+     * teste). Testes que precisam verificar autorização de verdade
+     * continuam passando `$usuario` explicitamente.
+     */
     private function liberar(DocumentoEngenhariaRevisao $revisao, ?User $usuario = null): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->liberar($revisao, $usuario ?? $this->user);
+        $documento = DocumentoEngenharia::findOrFail($revisao->documento_engenharia_id);
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($revisao, $usuario ?? $this->usuarioComAutoridadeAdmin($documento->obra));
     }
 
     // ===================== A-K: MODEL/DOMÍNIO =====================
@@ -158,7 +167,7 @@ class RevisaoLiberacaoTest extends TestCase
         // o Documento") continua provada, agora de forma ainda mais
         // forte: nem sequer é possível tentar.
         try {
-            (new AlterarLiberacaoRevisaoDocumento())->revogar($r1, $this->user);
+            (new AlterarLiberacaoRevisaoDocumento())->revogar($r1, $this->usuarioComAutoridadeAdmin($this->obra));
             $this->fail('Esperava RevisaoDocumentoNaoVigenteException.');
         } catch (\App\Exceptions\RevisaoDocumentoNaoVigenteException) {
             // esperado
@@ -697,7 +706,7 @@ class RevisaoLiberacaoTest extends TestCase
 
         $this->expectException(RevisaoDocumentoNaoVigenteException::class);
         try {
-            (new AlterarLiberacaoRevisaoDocumento())->liberar($r1, $this->user);
+            (new AlterarLiberacaoRevisaoDocumento())->liberar($r1, $this->usuarioComAutoridadeAdmin($this->obra));
         } finally {
             $this->assertEquals(0, RevisaoLiberacao::where('revisao_id', $r1->id)->count(), 'Nenhum evento deve ter sido criado em R1.');
         }
@@ -707,10 +716,11 @@ class RevisaoLiberacaoTest extends TestCase
     {
         $documento = $this->criarDocumento();
         $r1 = $this->criarRevisao($documento, 'R1');
+        $admin = $this->usuarioComAutoridadeAdmin($this->obra);
 
         $action = new AlterarLiberacaoRevisaoDocumento();
-        $action->liberar($r1, $this->user);
-        $action->liberar($r1, $this->user);
+        $action->liberar($r1, $admin);
+        $action->liberar($r1, $admin);
 
         $this->assertEquals(1, RevisaoLiberacao::where('revisao_id', $r1->id)->count());
         $this->assertTrue($r1->fresh()->estaLiberadaParaConstrucao());
@@ -720,15 +730,16 @@ class RevisaoLiberacaoTest extends TestCase
     {
         $documento = $this->criarDocumento();
         $r1 = $this->criarRevisao($documento, 'R1');
+        $admin = $this->usuarioComAutoridadeAdmin($this->obra);
 
         $action = new AlterarLiberacaoRevisaoDocumento();
         // Nunca foi liberada -- revogar já é o estado atual (implícito), deve ser no-op.
-        $action->revogar($r1, $this->user);
+        $action->revogar($r1, $admin);
         $this->assertEquals(0, RevisaoLiberacao::where('revisao_id', $r1->id)->count(), 'Revogar quando já está implicitamente não-liberada não cria evento.');
 
-        $action->liberar($r1, $this->user);
-        $action->revogar($r1, $this->user);
-        $action->revogar($r1, $this->user);
+        $action->liberar($r1, $admin);
+        $action->revogar($r1, $admin);
+        $action->revogar($r1, $admin);
 
         $this->assertEquals(2, RevisaoLiberacao::where('revisao_id', $r1->id)->count(), 'liberar + revogar = 2 transições; segundo revogar é no-op.');
         $this->assertFalse($r1->fresh()->estaLiberadaParaConstrucao());
@@ -738,11 +749,12 @@ class RevisaoLiberacaoTest extends TestCase
     {
         $documento = $this->criarDocumento();
         $r1 = $this->criarRevisao($documento, 'R1');
+        $admin = $this->usuarioComAutoridadeAdmin($this->obra);
 
         $action = new AlterarLiberacaoRevisaoDocumento();
-        $action->liberar($r1, $this->user);
-        $action->revogar($r1, $this->user);
-        $action->liberar($r1, $this->user);
+        $action->liberar($r1, $admin);
+        $action->revogar($r1, $admin);
+        $action->liberar($r1, $admin);
 
         $eventos = RevisaoLiberacao::where('revisao_id', $r1->id)->orderBy('created_at')->orderBy('id')->get();
         $this->assertEquals(3, $eventos->count());

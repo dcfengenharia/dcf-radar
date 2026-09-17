@@ -2,7 +2,13 @@
   @if (isset($menu))
     @foreach ($menu as $submenu)
 
-    @continue(isset($submenu->funcionalidade) && !\App\Support\CatalogoFuncionalidades::usuarioPodeVer($submenu->funcionalidade))
+    @continue(!\App\Support\CatalogoFuncionalidades::itemVisivelPorFuncionalidade($submenu))
+
+    {{-- Fase 2A (Hardening) — Achado do menu (Seção 21): um item aninhado
+         que por sua vez tem seu próprio submenu nunca era checado aqui —
+         agora recursivo via algumSubitemVisivel() (sem efeito em nenhum
+         item hoje autorizado, ver docblock do método). --}}
+    @continue(isset($submenu->submenu) && !\App\Support\CatalogoFuncionalidades::algumSubitemVisivel($submenu->submenu))
 
     {{-- active menu method --}}
     @php

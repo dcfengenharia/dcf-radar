@@ -15,6 +15,7 @@ use App\Models\RequisicaoCompraItemParcela;
 use App\Models\User;
 use App\Models\Work;
 use App\Support\DiasUteisCalculator;
+use App\Support\Perfis\GarantirAutoridadeNaObra;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -40,11 +41,26 @@ use Illuminate\Support\Facades\DB;
  * princípio de encadeamento já usado por
  * `App\Services\SuprimentoScheduler`). Nunca reaproveita
  * `ItemSuprimentoEtapa` (mecanismo legado do Pacote, intocado).
+ *
+ * **Fase 2E — defesa em profundidade**: reafirma, DENTRO da Action, a
+ * mesma capacidade `suprimentos.mapa|editar` que o caller
+ * (`⚡suprimentos.blade.php`) já checa antes de invocar — obra sempre
+ * derivada de `$rc->obra_id` (o recurso, nunca a sessão). Segunda
+ * camada contra chamada direta que bypassa a UI, nunca substitui o
+ * caller.
  */
 class EmitirRequisicaoCompra
 {
     public function execute(RequisicaoCompra $rc, User $usuario): RequisicaoCompra
     {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            $rc->obra_id,
+            'suprimentos.mapa',
+            'editar',
+            'Você não tem autoridade para emitir esta Requisição de Compra.'
+        );
+
         return DB::transaction(function () use ($rc, $usuario) {
             Work::whereKey($rc->obra_id)->lockForUpdate()->firstOrFail();
 

@@ -104,7 +104,7 @@ class LimitesPlanoTest extends TestCase
 
         Livewire::test('pages::gestao.obra-detalhe', ['obra' => $obra])
             ->set('emailConvite', 'novo@example.com')
-            ->set('perfilConviteId', $encarregado->id)
+            ->set('perfisConviteIds', [$encarregado->id])
             ->call('enviarConvite')
             ->assertHasErrors(['emailConvite']);
 
@@ -152,14 +152,14 @@ class LimitesPlanoTest extends TestCase
             Livewire::actingAs($gerente)
                 ->test('pages::gestao.obra-detalhe', ['obra' => $obra])
                 ->set('emailConvite', "convidado{$i}@example.com")
-                ->set('perfilConviteId', $encarregado->id)
+                ->set('perfisConviteIds', [$encarregado->id])
                 ->call('enviarConvite');
         }
 
         Livewire::actingAs($gerente)
             ->test('pages::gestao.obra-detalhe', ['obra' => $obra])
             ->set('emailConvite', 'convidado-alem-do-limite@example.com')
-            ->set('perfilConviteId', $encarregado->id)
+            ->set('perfisConviteIds', [$encarregado->id])
             ->call('enviarConvite')
             ->assertHasErrors(['emailConvite']);
 

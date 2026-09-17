@@ -93,7 +93,7 @@ class SuprimentosProvenienciaAdjudicacaoUiTest extends TestCase
 
         $fornecedor = Fornecedor::create(['obra_id' => $this->obra->id, 'nome' => 'Fornecedor ' . uniqid(), 'cnpj' => '00.000.000/0001-00']);
         $adjudicacao = (new CriarAdjudicacaoRequisicaoCompra())->execute($rc, $fornecedor, 'Decisão de compra', null, null, $this->user);
-        $itemAdj = (new AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjudicacao, $rcItem, null, 100);
+        $itemAdj = (new AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjudicacao, $rcItem, null, 100, $this->user);
 
         return [$rc, $rcItem, $fornecedor, $itemAdj, $pacote];
     }

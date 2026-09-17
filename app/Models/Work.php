@@ -101,5 +101,10 @@ class Work extends Model
         }
 
         $this->users()->syncWithoutDetaching([$tenant->criado_por_id => ['perfil_id' => $perfilAdmin->id]]);
+
+        // Fase 2B — mantém a nova pivot multiperfil (obra_user_perfil)
+        // consistente com o espelho legado acima (ver App\Support\
+        // AtribuicaoPerfilObra).
+        \App\Support\AtribuicaoPerfilObra::definirPerfilUnico($this, $tenant->criado_por_id, $perfilAdmin->id);
     }
 }

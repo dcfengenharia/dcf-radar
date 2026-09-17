@@ -220,7 +220,13 @@
       "name": "Estoque",
       "icon": "menu-icon tf-icons bx bx-cube",
       "slug": "radar.estoque",
-      "funcionalidade": "estoque.movimentacao"
+      "funcionalidades": [
+        "estoque.movimentacao",
+        "estoque.reserva",
+        "estoque.conciliacao",
+        "estoque.industrializacao",
+        "estoque.inventario"
+      ]
     },
     {
       "menuHeader": "CONFIGURAÇÕES"
@@ -303,6 +309,20 @@
       "name": "Perfis de Acesso",
       "icon": "menu-icon tf-icons bx bx-lock-alt",
       "slug": "gestao.perfis-acesso",
+      "gate": "gerenciar-perfis-acesso"
+    },
+    {
+      "url": "/app/matriz-acessos",
+      "name": "Matriz de Acessos",
+      "icon": "menu-icon tf-icons bx bx-grid",
+      "slug": "gestao.matriz-acessos",
+      "gate": "gerenciar-perfis-acesso"
+    },
+    {
+      "url": "/app/historico-acessos",
+      "name": "Histórico de Acessos",
+      "icon": "menu-icon tf-icons bx bx-history",
+      "slug": "gestao.historico-acessos",
       "gate": "gerenciar-perfis-acesso"
     },
     {

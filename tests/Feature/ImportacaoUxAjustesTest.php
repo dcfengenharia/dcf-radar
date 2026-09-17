@@ -50,6 +50,15 @@ class ImportacaoUxAjustesTest extends TestCase
         $this->user = User::factory()->create(['tenant_id' => $tenant->id]);
         $this->actingAs($this->user);
         $this->obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+        // Fase 2F.CORREÇÃO.3 — 'obras.importar_cronograma'/
+        // 'report.importar_avanco' reafirmam 'ver' no backend (Achado
+        // E23); este ator sempre foi pensado como um usuário LEGÍTIMO
+        // das duas páginas (o teste em si é sobre UX de upload/
+        // checklist, nunca sobre permissão), nunca precisou de
+        // vinculação explícita antes porque nenhum gate real existia.
+        // GerentePlanejamento cobre 'ver' (livre por padrão) e qualquer
+        // ação de escrita já exercida por estes testes.
+        $this->vincularObra($this->obra, $this->user, \App\Enums\Papel::GerentePlanejamento->value);
     }
 
     private function arquivoFixture(string $name): UploadedFile

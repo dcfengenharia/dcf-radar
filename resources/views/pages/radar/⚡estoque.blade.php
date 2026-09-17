@@ -98,6 +98,7 @@ use App\Support\LicoesAprendidas\LicoesContextuaisQuery;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Locked;
 use Livewire\Component;
 use Livewire\WithFileUploads;
 
@@ -120,7 +121,43 @@ new class extends Component {
 
     public Work $obra;
 
+    /**
+     * FASE 2F.CORREÇÃO (Achado E23) — a página agrega 5 funcionalidades
+     * independentes do catálogo (uma por grupo de abas), cada uma com
+     * seu próprio slug|ver já usado pelas Actions desde o Ciclo 20 —
+     * mas mount() nunca checava NENHUM 'ver', e a aba ativa era trocada
+     * via `$set()` cru, sem nenhum controle server-side. `#[Locked]`
+     * bloqueia qualquer tentativa de setar esta propriedade a partir do
+     * cliente (payload Livewire cru incluso) — a ÚNICA forma de mudar
+     * de aba passa a ser `selecionarAba()`, que revalida 'ver' contra
+     * ABA_SLUG antes de qualquer atribuição. Nunca um gate único e cego
+     * em 'estoque.movimentacao' — cada aba responde pelo seu próprio
+     * slug.
+     */
+    #[Locked]
     public string $abaAtiva = 'materiais';
+
+    /**
+     * Mapa real da página: aba => funcionalidade dona daquela aba.
+     * 'estoque.movimentacao' cobre o grupo "operação de almoxarifado"
+     * (Materiais/Locais/Recebimentos/Saídas/Transferências/
+     * Movimentações — nunca 5 slugs novos pra isso, só reaproveita o
+     * slug já usado por 100% das Actions desse grupo desde o Ciclo
+     * 20.1); as 4 abas restantes já tinham slug próprio e independente
+     * desde 20.2/20.4/20.5/20.7.
+     */
+    private const ABA_SLUG = [
+        'materiais' => 'estoque.movimentacao',
+        'locais' => 'estoque.movimentacao',
+        'recebimentos' => 'estoque.movimentacao',
+        'saidas' => 'estoque.movimentacao',
+        'transferencias' => 'estoque.movimentacao',
+        'movimentacoes' => 'estoque.movimentacao',
+        'planejamento' => 'estoque.reserva',
+        'conciliacao' => 'estoque.conciliacao',
+        'industrializacao' => 'estoque.industrializacao',
+        'inventario' => 'estoque.inventario',
+    ];
 
     // ---- Modal Material ----
     public bool $modalMaterialAberto = false;
@@ -227,6 +264,49 @@ new class extends Component {
         $this->saidaData = now()->toDateString();
         $this->aplicacaoData = now()->toDateString();
         $this->transferenciaData = now()->toDateString();
+
+        // Achado E23 — acesso à página = 'ver' em PELO MENOS UMA das
+        // 5 funcionalidades; nunca um 'estoque.movimentacao|ver' cego,
+        // que bloquearia por exemplo um usuário com só
+        // 'estoque.inventario|ver'. Sem nenhuma autorizada, 403 — nunca
+        // renderiza a página nem o menu real de abas.
+        $primeiraAbaAutorizada = collect(array_keys(self::ABA_SLUG))
+            ->first(fn (string $aba) => $this->abaAutorizada($aba));
+
+        abort_unless($primeiraAbaAutorizada !== null, 403);
+
+        $this->abaAtiva = $primeiraAbaAutorizada;
+    }
+
+    /**
+     * Fonte única de verdade de "o usuário pode VER esta aba" — sempre
+     * resolvida no momento da checagem (nunca cacheada em array
+     * público), reaproveitada por mount(), selecionarAba() e pela
+     * própria Blade (esconder botão + nunca renderizar o conteúdo de
+     * uma aba não autorizada, mesmo que abaAtiva viesse forjado).
+     */
+    public function abaAutorizada(string $aba): bool
+    {
+        $slug = self::ABA_SLUG[$aba] ?? null;
+
+        return $slug !== null
+            && Auth::user()->temPermissaoNaObra($this->obra->id, $slug, 'ver');
+    }
+
+    /**
+     * ÚNICO ponto de mutação de $abaAtiva (a propriedade é `#[Locked]`,
+     * nunca setável via `$set()`/payload cru do cliente). Uma aba não
+     * autorizada — inclusive uma "forjada" chamando este método direto
+     * com um valor fora do que a UI oferece — é sempre um no-op: nunca
+     * troca de aba, nunca expõe o conteúdo correspondente.
+     */
+    public function selecionarAba(string $aba): void
+    {
+        if (! $this->abaAutorizada($aba)) {
+            return;
+        }
+
+        $this->abaAtiva = $aba;
     }
 
     private function garantirPermissao(string $acao): void
@@ -3128,7 +3208,12 @@ new class extends Component {
     public function exportarEtiquetaUnidade(string $unidadeId, string $tamanho = 'pequena')
     {
         abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'estoque.movimentacao', 'ver'), 403);
-        $unidade = \App\Models\UnidadeEstoque::findOrFail($unidadeId);
+        // Fase 2A (Hardening) — Achado 6: `UnidadeEstoque` não tem `obra_id`
+        // próprio (só via `local_estoque_id`) — mesmo padrão obra-seguro já
+        // usado 2 linhas acima em exportarEtiquetaLocal(), aplicado via a
+        // relação com o Local dono da unidade.
+        $unidade = \App\Models\UnidadeEstoque::whereHas('localEstoque', fn ($q) => $q->where('obra_id', $this->obra->id))
+            ->findOrFail($unidadeId);
         $etiquetas = \App\Support\Estoque\MontarDadosEtiquetaEstoque::paraEntidades(collect([$unidade]));
 
         return response()->streamDownload(function () use ($etiquetas, $tamanho) {
@@ -3165,56 +3250,79 @@ new class extends Component {
 }
 ?>
 <div>
+  {{-- Achado E23 — cada aba só é oferecida (botão + conteúdo) a quem
+       tem 'ver' na funcionalidade dona dela; nunca um gate único e
+       cego em 'estoque.movimentacao' pra todas as 10 abas. --}}
   <ul class="nav nav-tabs mb-3" role="tablist">
+    @if ($this->abaAutorizada('materiais'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'materiais') active @endif" wire:click="$set('abaAtiva', 'materiais')">Materiais</button>
+      <button type="button" class="nav-link @if ($abaAtiva === 'materiais') active @endif" wire:click="selecionarAba('materiais')">Materiais</button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('locais'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'locais') active @endif" wire:click="$set('abaAtiva', 'locais')">Locais de Estoque</button>
+      <button type="button" class="nav-link @if ($abaAtiva === 'locais') active @endif" wire:click="selecionarAba('locais')">Locais de Estoque</button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('recebimentos'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'recebimentos') active @endif" wire:click="$set('abaAtiva', 'recebimentos')">
+      <button type="button" class="nav-link @if ($abaAtiva === 'recebimentos') active @endif" wire:click="selecionarAba('recebimentos')">
         Recebimentos Pendentes
         @if ($this->recebimentosPendentes->count() > 0)
           <span class="badge bg-label-warning ms-1">{{ $this->recebimentosPendentes->count() }}</span>
         @endif
       </button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('saidas'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'saidas') active @endif" wire:click="$set('abaAtiva', 'saidas')">Saída / Retirada</button>
+      <button type="button" class="nav-link @if ($abaAtiva === 'saidas') active @endif" wire:click="selecionarAba('saidas')">Saída / Retirada</button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('transferencias'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'transferencias') active @endif" wire:click="$set('abaAtiva', 'transferencias')">Transferir</button>
+      <button type="button" class="nav-link @if ($abaAtiva === 'transferencias') active @endif" wire:click="selecionarAba('transferencias')">Transferir</button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('movimentacoes'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'movimentacoes') active @endif" wire:click="$set('abaAtiva', 'movimentacoes')">Movimentações</button>
+      <button type="button" class="nav-link @if ($abaAtiva === 'movimentacoes') active @endif" wire:click="selecionarAba('movimentacoes')">Movimentações</button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('planejamento'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'planejamento') active @endif" wire:click="$set('abaAtiva', 'planejamento')">Planejamento / Reservas</button>
+      <button type="button" class="nav-link @if ($abaAtiva === 'planejamento') active @endif" wire:click="selecionarAba('planejamento')">Planejamento / Reservas</button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('conciliacao'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'conciliacao') active @endif" wire:click="$set('abaAtiva', 'conciliacao')">
+      <button type="button" class="nav-link @if ($abaAtiva === 'conciliacao') active @endif" wire:click="selecionarAba('conciliacao')">
         Conciliação / Aplicação
         @if ($this->saidasComPendencia->count() > 0)
           <span class="badge bg-label-warning ms-1">{{ $this->saidasComPendencia->count() }}</span>
         @endif
       </button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('industrializacao'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'industrializacao') active @endif" wire:click="$set('abaAtiva', 'industrializacao')">Industrialização em Terceiros</button>
+      <button type="button" class="nav-link @if ($abaAtiva === 'industrializacao') active @endif" wire:click="selecionarAba('industrializacao')">Industrialização em Terceiros</button>
     </li>
+    @endif
+    @if ($this->abaAutorizada('inventario'))
     <li class="nav-item">
-      <button type="button" class="nav-link @if ($abaAtiva === 'inventario') active @endif" wire:click="$set('abaAtiva', 'inventario')">
+      <button type="button" class="nav-link @if ($abaAtiva === 'inventario') active @endif" wire:click="selecionarAba('inventario')">
         Inventário
         @if ($this->inventariosAbertosCount > 0)
           <span class="badge bg-label-info ms-1">{{ $this->inventariosAbertosCount }}</span>
         @endif
       </button>
     </li>
+    @endif
   </ul>
 
   {{-- ===================== MATERIAIS ===================== --}}
-  @if ($abaAtiva === 'materiais')
+  @if ($abaAtiva === 'materiais' && $this->abaAutorizada('materiais'))
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <div>
@@ -3524,7 +3632,7 @@ new class extends Component {
   @endif
 
   {{-- ===================== LOCAIS ===================== --}}
-  @if ($abaAtiva === 'locais')
+  @if ($abaAtiva === 'locais' && $this->abaAutorizada('locais'))
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Locais de Estoque</h5>
@@ -3613,7 +3721,7 @@ new class extends Component {
   @endif
 
   {{-- ===================== RECEBIMENTOS PENDENTES ===================== --}}
-  @if ($abaAtiva === 'recebimentos')
+  @if ($abaAtiva === 'recebimentos' && $this->abaAutorizada('recebimentos'))
     <div class="card">
       <div class="card-header">
         <h5 class="mb-0">Recebimentos Pendentes de Incorporação ao Estoque</h5>
@@ -3774,7 +3882,7 @@ new class extends Component {
 
   {{-- ===================== MOVIMENTAÇÕES ===================== --}}
   {{-- ===================== SAÍDA / RETIRADA (Ciclo 20, Etapa 20.3) ===================== --}}
-  @if ($abaAtiva === 'saidas')
+  @if ($abaAtiva === 'saidas' && $this->abaAutorizada('saidas'))
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <div>
@@ -3954,7 +4062,7 @@ new class extends Component {
     @endif
   @endif
 
-  @if ($abaAtiva === 'transferencias')
+  @if ($abaAtiva === 'transferencias' && $this->abaAutorizada('transferencias'))
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <div>
@@ -4114,7 +4222,7 @@ new class extends Component {
     @endif
   @endif
 
-  @if ($abaAtiva === 'movimentacoes')
+  @if ($abaAtiva === 'movimentacoes' && $this->abaAutorizada('movimentacoes'))
     <div class="card">
       <div class="card-header">
         <h5 class="mb-0">Histórico de Movimentações</h5>
@@ -4173,7 +4281,7 @@ new class extends Component {
   @endif
 
   {{-- ===================== PLANEJAMENTO / RESERVAS (Ciclo 20, Etapa 20.2) ===================== --}}
-  @if ($abaAtiva === 'planejamento')
+  @if ($abaAtiva === 'planejamento' && $this->abaAutorizada('planejamento'))
     <div class="card mb-3">
       <div class="card-header">
         <h5 class="mb-0">Demanda por Pacote e Material</h5>
@@ -4474,7 +4582,7 @@ new class extends Component {
   @endif
 
   {{-- ===================== CONCILIAÇÃO / APLICAÇÃO (20.4) ===================== --}}
-  @if ($abaAtiva === 'conciliacao')
+  @if ($abaAtiva === 'conciliacao' && $this->abaAutorizada('conciliacao'))
     @if ($this->coberturaDeficitPorObra->isNotEmpty())
       <div class="card mb-3">
         <div class="card-header">
@@ -4672,7 +4780,7 @@ new class extends Component {
     @endif
   @endif
   {{-- ===================== INDUSTRIALIZAÇÃO EM TERCEIROS (20.5) ===================== --}}
-  @if ($abaAtiva === 'industrializacao')
+  @if ($abaAtiva === 'industrializacao' && $this->abaAutorizada('industrializacao'))
     @if (! $this->ordemIndustrDetalheId)
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -5174,7 +5282,7 @@ new class extends Component {
   @endif
 
   {{-- ===================== INVENTÁRIO (Ciclo 20, Etapa 20.7) ===================== --}}
-  @if ($abaAtiva === 'inventario')
+  @if ($abaAtiva === 'inventario' && $this->abaAutorizada('inventario'))
     @if (! $this->inventarioDetalhe)
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">

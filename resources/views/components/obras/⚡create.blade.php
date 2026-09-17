@@ -112,6 +112,9 @@ new class extends Component {
     if (Auth::id() !== $work->tenant->criado_por_id) {
       $perfilGerente = Perfil::porSlugPadrao($work->tenant, 'gerente_planejamento');
       $work->users()->syncWithoutDetaching([Auth::id() => ['perfil_id' => $perfilGerente?->id]]);
+      // Fase 2B — mantém a nova pivot multiperfil consistente com o
+      // espelho legado acima.
+      \App\Support\AtribuicaoPerfilObra::definirPerfilUnico($work, Auth::id(), $perfilGerente?->id);
     }
 
     $this->clearForm();

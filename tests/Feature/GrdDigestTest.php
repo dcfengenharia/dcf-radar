@@ -95,9 +95,31 @@ class GrdDigestTest extends TestCase
         ], $o))->fresh();
     }
 
+    /**
+     * Fase 2E.CORREÇÃO — este arquivo testa CONTAGEM EXATA de
+     * destinatários/notificações por obra: criar um ator novo e
+     * dedicado sempre que `$this->user` já teria a autoridade também o
+     * transformaria num destinatário REAL a mais daquela obra
+     * (`engenharia.pacotes|ver` é aberto por padrão a qualquer vínculo),
+     * inflando as contagens (achado real, provado por 3+ testes
+     * quebrando com "sent 2 times, expected 1" antes desta correção).
+     * Por isso SEMPRE prefere reaproveitar `$this->user` quando ele já
+     * tem `liberar_para_construcao` na obra do Documento (cenário comum
+     * na maior parte deste arquivo, que já vincula `$this->user` como
+     * Admin em toda obra relevante) — só cria um ator dedicado quando
+     * `$this->user` genuinamente não tem essa autoridade ali.
+     */
     private function liberar(DocumentoEngenhariaRevisao $r, ?User $usuario = null): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $usuario ?? $this->user);
+        $obraDoDoc = Work::findOrFail(DocumentoEngenharia::findOrFail($r->documento_engenharia_id)->obra_id);
+
+        if ($usuario === null) {
+            $usuario = $this->user->temPermissaoNaObra($obraDoDoc->id, 'engenharia.pacotes', 'liberar_para_construcao')
+                ? $this->user
+                : $this->usuarioComAutoridadeAdmin($obraDoDoc);
+        }
+
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $usuario);
     }
 
     private function destinatario(array $o = [], ?Work $obra = null): Destinatario
@@ -637,7 +659,7 @@ class GrdDigestTest extends TestCase
         $this->vincularObra($obraOk, $userOk, Papel::Admin->value);
         $docOk = $this->doc([], $obraOk);
         $r1ok = $this->rev($docOk, 'R1');
-        $this->liberar($r1ok->fresh());
+        $this->liberar($r1ok->fresh(), $userOk);
         $joaoOk = $this->destinatario([], $obraOk);
         $grdOk = (new CriarGrd())->execute($obraOk, $userOk);
         $acoes = new AtualizarRascunhoGrd();
@@ -692,7 +714,7 @@ class GrdDigestTest extends TestCase
 
             $doc = $this->doc([], $obra);
             $r1 = $this->rev($doc, 'R1');
-            $this->liberar($r1->fresh());
+            $this->liberar($r1->fresh(), $user);
             $dest = $this->destinatario([], $obra);
             $grd = (new CriarGrd())->execute($obra, $user);
             $acoes = new AtualizarRascunhoGrd();

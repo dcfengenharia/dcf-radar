@@ -49,6 +49,18 @@ new class extends Component {
 
   public function salvar(): void
   {
+    // Fase 2A (Hardening) — Achado 8: esta página nunca checava
+    // `cadastros.categorias_restricao` — qualquer membro autenticado do
+    // tenant podia criar/editar categorias. `CategoriaRestricao` é
+    // tenant-wide (sem `obra_id`, escopo TENANT no catálogo), por isso o
+    // check certo é `temPermissaoEmAlgumaObraDoTenant()` (mesmo mecanismo
+    // já usado por outras páginas de Cadastros), nunca `temPermissaoNaObra`
+    // (não há obra aqui pra escopar).
+    abort_unless(
+      auth()->user()->temPermissaoEmAlgumaObraDoTenant('cadastros.categorias_restricao', $this->editandoId ? 'editar' : 'criar'),
+      403
+    );
+
     $this->validate(
       [
         'nome' => 'required|string|max:100',
@@ -82,6 +94,9 @@ new class extends Component {
 
   public function excluir(string $id): void
   {
+    // Fase 2A (Hardening) — Achado 8.
+    abort_unless(auth()->user()->temPermissaoEmAlgumaObraDoTenant('cadastros.categorias_restricao', 'excluir'), 403);
+
     CategoriaRestricao::findOrFail($id)->delete();
     unset($this->categorias);
     $this->invalidarCacheGlobal();

@@ -336,7 +336,7 @@ class EstoqueSaidaCorrecaoTest extends TestCase
         $this->entradaPronta($material, $local, 500);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->set('saidaMaterialId', $material->id)
             ->set('saidaLocalId', $local->id)

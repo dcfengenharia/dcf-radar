@@ -190,6 +190,12 @@ class AlertaCadeiaSuprimentoTest extends TestCase
         // novo (violaria a PK composta de obra_user).
         $perfilAdmin = \App\Models\Perfil::porSlugPadrao($this->tenant, Papel::Admin->value);
         $this->obra->users()->updateExistingPivot($this->user->id, ['perfil_id' => $perfilAdmin->id]);
+        // FASE 2B.CORREÇÃO — a nova pivot (obra_user_perfil), uma vez
+        // populada, é autoridade completa; um `updateExistingPivot` cru
+        // no legado sozinho não muda mais o perfil EFETIVO do usuário
+        // (que continuaria sendo só GerentePlanejamento). Sincroniza a
+        // troca pelo mesmo caminho que qualquer caller real usa.
+        \App\Support\AtribuicaoPerfilObra::definirPerfilUnico($this->obra, $this->user->id, $perfilAdmin->id);
 
         $destinatarios = $this->alerta->destinatarios($this->obra);
 

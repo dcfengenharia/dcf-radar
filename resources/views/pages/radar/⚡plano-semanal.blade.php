@@ -190,6 +190,14 @@ new class extends Component {
     public function mount(Work $obra): void
     {
         $this->obra = $obra;
+    
+    // Fase 2F.CORREÇÃO.3 — propagação do Achado E23: 'ver' é
+    // capability real, configurável por Perfil; precisa ser
+    // reafirmada no backend ao abrir a página diretamente, não
+    // só no menu (CatalogoFuncionalidades::usuarioPodeVer()).
+    // Mesmo padrão já usado pelos 3 Cockpits e por
+    // restricoes.quadro/lookahead/suprimentos.mapa (2F.CORREÇÃO.2).
+    abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.plano_semanal', 'ver'), 403);
 
         if ($this->semanaInicio === '') {
             $this->semanaInicio = Carbon::now()->startOfWeek()->toDateString();
@@ -704,16 +712,24 @@ new class extends Component {
     }
 
     /**
-     * Toggle de item de prontidão — mirror exato de
-     * `⚡lookahead.blade.php::marcarItemNaDetalhe()` (mesma ausência de
-     * `authorize()` explícito: a mesma superfície de segurança já aceita
-     * no Lookahead pra esta ação, nunca uma restrição nova inventada aqui).
+     * Fase 2A (Hardening) — Achado 1: o comentário anterior descrevia a
+     * ausência de `authorize()` como "mesma superfície já aceita no
+     * Lookahead" — mas a auditoria confirmou que essa ausência é um IDOR
+     * cross-obra real, nunca uma decisão de risco aceito. Corrigido com o
+     * mesmo padrão-ouro aplicado nos 3 arquivos (`⚡restricoes.blade.php`/
+     * `⚡plano-semanal.blade.php`/`⚡lookahead.blade.php`): resolver a
+     * atividade só dentro da obra atual, depois autorizar via
+     * `AtividadePolicy::update()` (`restricoes.lookahead|editar`) —
+     * nenhuma capacidade nova inventada.
      */
     public function marcarItemNaDetalhe(string $atividadeId, string $itemId, bool $valor): void
     {
-        $this->transacaoSegura(function () use ($atividadeId, $itemId, $valor) {
+        $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+        $this->authorize('update', $atividade);
+
+        $this->transacaoSegura(function () use ($atividade, $itemId, $valor) {
             AtividadeItemProntidao::updateOrCreate(
-                ['atividade_id' => $atividadeId, 'item_prontidao_id' => $itemId],
+                ['atividade_id' => $atividade->id, 'item_prontidao_id' => $itemId],
                 ['concluido' => $valor, 'concluido_por' => $valor ? Auth::id() : null, 'concluido_em' => $valor ? now() : null]
             );
         });

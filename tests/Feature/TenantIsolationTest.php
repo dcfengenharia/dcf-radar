@@ -239,6 +239,14 @@ class TenantIsolationTest extends TestCase
             'origem' => 'manual',
         ]);
 
+        // Fase 2A (Hardening) — Achado 7 acrescentou um guard de permissão
+        // (`restricoes.relatorios|ver`) em mount(); este teste, anterior a
+        // essa fase, nunca vinculava $userA a $obraA, e sem vínculo nenhum
+        // o mount() agora bloqueia ANTES de chegar no que o teste quer
+        // provar (isolamento de tenant do PPC). Vincular com o perfil de
+        // menor privilégio já basta — 'ver' é liberado a qualquer perfil
+        // com vínculo na obra.
+        $this->vincularObra($obraA, $userA, 'cliente_leitura');
         $this->actingAs($userA);
 
         $ppc = Livewire::test('pages::radar.relatorios-restricoes', ['obra' => $obraA])
@@ -1580,5 +1588,44 @@ class TenantIsolationTest extends TestCase
         $this->actingAs($userA);
 
         $this->assertNull(\App\Models\UltimoAcessoHome::find($acessoB->id));
+    }
+
+    public function test_obra_user_perfil_e_escopada_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $obraB = Work::factory()->create(['tenant_id' => $tenantB->id]);
+        $perfilB = \App\Models\Perfil::porSlugPadrao($tenantB, 'engenheiro');
+        $assocB = \App\Models\ObraUserPerfil::create([
+            'tenant_id' => $tenantB->id, 'work_id' => $obraB->id, 'user_id' => $userB->id,
+            'perfil_id' => $perfilB->id,
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\ObraUserPerfil::find($assocB->id));
+    }
+
+    public function test_historico_acesso_e_escopado_ao_tenant_autenticado(): void
+    {
+        [$tenantA, $userA] = $this->makeTenantWithUser();
+        [$tenantB, $userB] = $this->makeTenantWithUser();
+
+        $perfilB = \App\Models\Perfil::porSlugPadrao($tenantB, 'engenheiro');
+        $eventoB = \App\Models\HistoricoAcesso::create([
+            'tenant_id' => $tenantB->id,
+            'tipo_evento' => \App\Enums\TipoEventoHistoricoAcesso::PerfilCriado,
+            'origem' => \App\Enums\OrigemEventoHistoricoAcesso::PerfilAcesso,
+            'ator_user_id' => $userB->id,
+            'ator_nome_snapshot' => 'Usuário B',
+            'perfil_id' => $perfilB->id,
+            'perfil_nome_snapshot' => $perfilB->nome,
+            'resumo' => 'Usuário B criou o perfil.',
+        ]);
+
+        $this->actingAs($userA);
+
+        $this->assertNull(\App\Models\HistoricoAcesso::find($eventoB->id));
     }
 }

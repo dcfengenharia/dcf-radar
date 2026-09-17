@@ -22,6 +22,7 @@ use App\Models\RequisicaoCompraItem;
 use App\Models\RequisicaoCompraItemParcela;
 use App\Models\User;
 use App\Models\Work;
+use App\Support\Perfis\GarantirAutoridadeNaObra;
 use App\Support\SincronizarRestricaoCadeiaSuprimento;
 use Illuminate\Support\Facades\DB;
 
@@ -86,11 +87,26 @@ use Illuminate\Support\Facades\DB;
  * real daquela linha específica. Corrigido com uma revalidação nova, sob
  * lock, por `RequisicaoCompraAdjudicacaoItem` referenciada pela
  * proveniência deste Pedido, na emissão.
+ *
+ * **Fase 2E — defesa em profundidade**: reafirma, DENTRO da Action, a
+ * mesma capacidade `suprimentos.mapa|editar` que o caller
+ * (`⚡suprimentos.blade.php::emitirPedido()`) já checa antes de invocar —
+ * obra sempre derivada de `$pedido->obra_id` (o recurso, nunca a
+ * sessão). Segunda camada contra chamada direta que bypassa a UI, nunca
+ * substitui o caller.
  */
 class EmitirPedidoCompra
 {
     public function execute(PedidoCompra $pedido, User $usuario): PedidoCompra
     {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            $pedido->obra_id,
+            'suprimentos.mapa',
+            'editar',
+            'Você não tem autoridade para emitir este Pedido/Ordem de Compra.'
+        );
+
         return DB::transaction(function () use ($pedido, $usuario) {
             Work::whereKey($pedido->obra_id)->lockForUpdate()->firstOrFail();
 

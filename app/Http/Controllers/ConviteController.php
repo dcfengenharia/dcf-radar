@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Actions\Fortify\PasswordValidationRules;
 use App\Models\Convite;
+use App\Models\Perfil;
 use App\Models\User;
+use App\Support\Perfis\RegistrarEventoAcesso;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -93,11 +95,46 @@ class ConviteController extends Controller
                 $usuario->forceFill(['email_verified_at' => now()])->save();
             }
 
+            // FASE 2C, Seção 4-8 — Convite multiperfil: os perfis
+            // concedidos são sempre REVALIDADOS aqui (nunca confiados
+            // ao que foi gravado no envio), pra nunca atribuir um
+            // Perfil que foi excluído/mudou de tenant entre o envio e
+            // o aceite (Seção 7 — "falha segura, não atribuir
+            // parcialmente").
+            $perfisConvidados = \App\Support\Perfis\AtribuicaoPerfilConvite::perfisValidosParaAceite($convite);
+
             if (! $obra->users()->where('user_id', $usuario->id)->exists()) {
-                $obra->users()->attach($usuario->id, ['perfil_id' => $convite->perfil_id]);
+                $obra->users()->attach($usuario->id, ['perfil_id' => $perfisConvidados[0] ?? null]);
+                \App\Support\AtribuicaoPerfilObra::substituirPerfis($obra, $usuario->id, $perfisConvidados);
+            } else {
+                // Seção 6 — decisão de produto explícita: se o usuário
+                // JÁ é membro desta obra no instante do aceite (ex.:
+                // foi adicionado direto por outro caminho enquanto o
+                // convite ainda estava pendente), o aceite ADICIONA os
+                // perfis convidados à coleção já existente — NUNCA
+                // substitui. Substituir arriscaria revogar
+                // silenciosamente um perfil que o usuário já tinha
+                // (ex.: Admin) só porque um convite mais restrito foi
+                // aceito depois; adicionar nunca reduz a capacidade de
+                // ninguém, então nenhum guard de "último Admin" é
+                // necessário aqui.
+                foreach ($perfisConvidados as $perfilId) {
+                    \App\Support\AtribuicaoPerfilObra::adicionarPerfil($obra, $usuario->id, $perfilId);
+                }
             }
 
             $convite->update(['status' => 'aceito', 'aceito_em' => now()]);
+
+            // FASE 2D, Seção 17 — evento "convite aceito", único e
+            // SEPARADO do envio (Seção 7: nunca duplica o `H`/`I`/`J`
+            // genérico que `AtribuicaoPerfilObra` produziria — por isso
+            // as duas chamadas acima (substituirPerfis/adicionarPerfil)
+            // deliberadamente NÃO recebem ator/origem). Ator = o
+            // próprio usuário que está aceitando (Seção 25 — é quem de
+            // fato executa a ação neste instante); dentro da MESMA
+            // transação da concessão de perfis (Seção 31).
+            $perfisConcedidosModels = $perfisConvidados === [] ? collect() : Perfil::whereIn('id', $perfisConvidados)->get();
+            RegistrarEventoAcesso::conviteAceito($usuario, $obra, $perfisConcedidosModels, $convite->email, $convite->convidadoPor);
 
             return $usuario;
         });

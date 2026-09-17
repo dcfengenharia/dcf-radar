@@ -209,7 +209,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         $local = $this->criarLocalTerceiro($fornecedor);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirModalOrdemIndustr')
             ->set('ordemIndustrFornecedorId', $fornecedor->id)
             ->set('ordemIndustrLocalTerceiroId', $local->id)
@@ -225,7 +225,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         [$ordem] = $this->ordemEmitidaComProduto($material, $this->criarMaterial());
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->assertSee($ordem->fornecedor->nome)
             ->call('abrirDetalheOrdemIndustr', $ordem->id)
             ->assertSee($ordem->localTerceiro->nome);
@@ -238,7 +238,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         $this->actingAs($semPermissao);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirModalOrdemIndustr')
             ->assertStatus(403);
 
@@ -257,7 +257,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         [$ordemDaObraOriginal] = $this->ordemEmitidaComProduto($material, $this->criarMaterial());
 
         $componente = Livewire::test('pages::radar.estoque', ['obra' => $outraObra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirDetalheOrdemIndustr', $ordemDaObraOriginal->id);
 
         $this->assertNull($componente->instance()->ordemIndustrDetalhe);
@@ -270,7 +270,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         $this->registrarRemessa->execute($ordem, $material, 200, DirecaoRemessaIndustrializacao::Envio, $localProprio, Carbon::today(), $this->user);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirDetalheOrdemIndustr', $ordem->id)
             ->assertSee($material->codigo)
             ->assertSee('200');
@@ -291,7 +291,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         $this->rascunhoOrdem->adicionarProduto($ordem, $produtoMaterial, 10, $this->user, $rev);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirDetalheOrdemIndustr', $ordem->id)
             ->assertSee('DOC-FAB');
     }
@@ -310,7 +310,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         $this->entradaPronta($materiaPrima, $localProprio, 1000);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirModalOrdemIndustr')
             ->set('ordemIndustrFornecedorId', $fornecedor->id)
             ->set('ordemIndustrLocalTerceiroId', $localTerceiro->id)
@@ -378,14 +378,14 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         }
         $queriesPoucas = 0;
         DB::listen(function () use (&$queriesPoucas) { $queriesPoucas++; });
-        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'industrializacao');
+        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'industrializacao');
 
         for ($i = 0; $i < 95; $i++) {
             $this->criarOrdem->execute($this->obra, $fornecedor, $local, $this->user);
         }
         $queriesMuitas = 0;
         DB::listen(function () use (&$queriesMuitas) { $queriesMuitas++; });
-        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->set('abaAtiva', 'industrializacao');
+        Livewire::test('pages::radar.estoque', ['obra' => $this->obra])->call('selecionarAba', 'industrializacao');
 
         $this->assertLessThanOrEqual($queriesPoucas + 15, $queriesMuitas, 'Listagem de Ordens não deve escalar linearmente com N.');
     }
@@ -399,7 +399,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         $queriesPoucas = 0;
         DB::listen(function () use (&$queriesPoucas) { $queriesPoucas++; });
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirDetalheOrdemIndustr', $ordem->id);
 
         for ($i = 0; $i < 19; $i++) {
@@ -408,7 +408,7 @@ class EstoqueIndustrializacaoUiTest extends TestCase
         $queriesMuitas = 0;
         DB::listen(function () use (&$queriesMuitas) { $queriesMuitas++; });
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'industrializacao')
+            ->call('selecionarAba', 'industrializacao')
             ->call('abrirDetalheOrdemIndustr', $ordem->id);
 
         $this->assertLessThanOrEqual($queriesPoucas + 15, $queriesMuitas, 'Detalhe da Ordem não deve escalar linearmente com N de remessas.');

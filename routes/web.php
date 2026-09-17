@@ -150,6 +150,25 @@ Route::middleware(['auth', 'verified', 'assinatura.ativa'])->prefix('app')->grou
         return view('app.gestao.perfis-acesso');
     })->name('gestao.perfis-acesso');
 
+    // MATRIZ DE ACESSOS (Fase 2C, Seção 22) — mesma autoridade da tela
+    // acima (nunca um Gate paralelo, Seção 36/41): "quem acessa qual obra
+    // e com quais perfis", cross-obra dentro do próprio tenant.
+    Route::get('/matriz-acessos', function () {
+        abort_unless(Gate::allows('gerenciar-perfis-acesso'), 403);
+
+        return view('app.gestao.matriz-acessos');
+    })->name('gestao.matriz-acessos');
+
+    // HISTÓRICO DE ACESSOS (Fase 2D, Seção 40/42) — mesma autoridade das
+    // duas telas acima, nunca um Gate/capability novos (auditoria de
+    // acesso observa a mesma fronteira administrativa que já governa
+    // quem PODE mexer em Perfis/Matriz; ver relatório final da Fase 2D).
+    Route::get('/historico-acessos', function () {
+        abort_unless(Gate::allows('gerenciar-perfis-acesso'), 403);
+
+        return view('app.gestao.historico-acessos');
+    })->name('gestao.historico-acessos');
+
     // ANEXOS DE ATIVIDADE (Ciclo 17, A.7.1) — deliberadamente FORA do grupo
     // obra.context: o ID do anexo já é suficiente pra resolver tenant/obra
     // e autorizar (ver App\Http\Controllers\AtividadeAnexoController), um

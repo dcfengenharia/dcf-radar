@@ -882,7 +882,7 @@ class InventarioEstoqueTest extends TestCase
         $localOutraObra = $this->criarLocal([], $outraObra);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->call('abrirModalNovoInventario')
             ->set('invLocalId', $localOutraObra->id)
             ->call('confirmarNovoInventario');
@@ -912,7 +912,7 @@ class InventarioEstoqueTest extends TestCase
         ]);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->call('abrirModalContagem', $itemOutraObra->id)
             ->set('contagemQuantidade', '50')
             ->set('contagemData', now()->toDateString())
@@ -948,7 +948,7 @@ class InventarioEstoqueTest extends TestCase
         $this->entradaPronta($material, $local, 100);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->call('abrirModalNovoInventario')
             ->set('invLocalId', $local->id)
             ->set('invTitulo', 'Inventário via UI')
@@ -987,7 +987,7 @@ class InventarioEstoqueTest extends TestCase
         $this->actingAs($semPermissao);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->call('abrirModalNovoInventario')
             ->assertStatus(403);
 
@@ -1013,7 +1013,7 @@ class InventarioEstoqueTest extends TestCase
         $this->actingAs($encarregado);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->call('abrirModalAjuste', $item->id)
             ->assertStatus(403);
 
@@ -1102,7 +1102,7 @@ class InventarioEstoqueTest extends TestCase
         $localTerceiro = $this->criarLocalTerceiro();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->call('abrirModalNovoInventario')
             ->set('invLocalId', $localTerceiro->id)
             ->call('confirmarNovoInventario')

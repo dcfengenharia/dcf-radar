@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\OrigemEventoHistoricoAcesso;
 use App\Enums\TipoCronogramaImportacao;
 use App\Models\Atividade;
 use App\Models\AtividadeSnapshot;
@@ -14,6 +15,7 @@ use App\Models\User;
 use App\Models\Work;
 use App\Notifications\AdicionadoAObraNotification;
 use App\Notifications\ConviteObraNotification;
+use App\Support\Perfis\RegistrarEventoAcesso;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
@@ -47,9 +49,14 @@ new class extends Component {
     public string  $buscaUsuario       = '';
     public ?string $perfilNovoMembroId = null;
 
-    // ---- Convite por e-mail ----
+    // ---- Equipe: edição multiperfil (Fase 2C) ----
+    public bool    $editandoPerfisMembro   = false;
+    public ?string $membroEditandoPerfisId = null;
+    public array   $perfisSelecionadosEdicao = [];
+
+    // ---- Convite por e-mail (Fase 2C, Seção 4 — multiperfil) ----
     public string  $emailConvite     = '';
-    public ?string $perfilConviteId  = null;
+    public array   $perfisConviteIds = [];
 
     // ---- Gantt do Cronograma ----
     public ?string $linhaBaseId          = null;
@@ -61,7 +68,7 @@ new class extends Component {
 
         $perfilPadrao = Perfil::porSlugPadrao($obra->tenant, 'encarregado');
         $this->perfilNovoMembroId = $perfilPadrao?->id;
-        $this->perfilConviteId = $perfilPadrao?->id;
+        $this->perfisConviteIds = $perfilPadrao ? [$perfilPadrao->id] : [];
     }
 
     #[Computed]
@@ -241,6 +248,18 @@ new class extends Component {
     {
         $this->authorize('update', $this->obra);
 
+        // Fase 2D — a nova pivot é escrita/auditada ANTES de tocar o
+        // espelho legado abaixo, de propósito: o snapshot "antes" do
+        // evento é lido de dentro de `definirPerfilUnico()` (via
+        // `perfisAtuais()`, que cai pro fallback legado quando a pivot
+        // nova está vazia) — se o legado já tivesse sido atualizado
+        // pelo `syncWithoutDetaching()` primeiro, o "antes" leria o
+        // valor NOVO por engano (achado real durante os testes desta
+        // fase: o diff saía sempre vazio, porque "antes" e "depois"
+        // acabavam iguais).
+        \App\Support\AtribuicaoPerfilObra::definirPerfilUnico(
+            $this->obra, $userId, $this->perfilNovoMembroId, Auth::user(), OrigemEventoHistoricoAcesso::EquipeObra
+        );
         $this->obra->users()->syncWithoutDetaching([$userId => ['perfil_id' => $this->perfilNovoMembroId]]);
 
         unset($this->membrosEquipe, $this->usuariosParaAdicionar);
@@ -259,6 +278,15 @@ new class extends Component {
             return;
         }
 
+        // Fase 2D — mesma ordem cuidadosa de `adicionarMembro()`: audita
+        // ANTES de tocar o espelho legado, senão o "antes" do evento
+        // leria o valor NOVO (o legado já sobrescrito) por engano.
+        // Fase 2B — a UI continua single-perfil (Seção 26: sem redesign
+        // nesta fase); trocar aqui SUBSTITUI qualquer atribuição anterior
+        // na nova pivot pela nova escolha, nunca soma.
+        \App\Support\AtribuicaoPerfilObra::definirPerfilUnico(
+            $this->obra, $userId, $perfilId, Auth::user(), OrigemEventoHistoricoAcesso::EquipeObra
+        );
         $this->obra->users()->updateExistingPivot($userId, ['perfil_id' => $perfilId]);
 
         unset($this->membrosEquipe);
@@ -277,10 +305,102 @@ new class extends Component {
             return;
         }
 
-        $this->obra->users()->detach($userId);
+        $membro = User::find($userId);
+
+        // Fase 2D, Seção 16 — "usuário removido da obra" é SEMANTICAMENTE
+        // diferente de "perfis removidos" (o usuário deixa de ser
+        // MEMBRO, não só perde capacidade) — evento próprio, com
+        // snapshot dos perfis que possuía ANTES da remoção. Construído
+        // aqui (nunca dentro de `removerTodas()`, que continua sendo só
+        // o helper de baixo nível "limpe a pivot") pra nunca duplicar
+        // com um evento genérico de `AtribuicaoPerfilObra`.
+        DB::transaction(function () use ($userId, $membro) {
+            $perfisAntes = $membro?->perfisNaObra($this->obra) ?? collect();
+
+            $this->obra->users()->detach($userId);
+            // Fase 2B — remove também qualquer atribuição na nova pivot pra
+            // este par (obra, usuário).
+            \App\Support\AtribuicaoPerfilObra::removerTodas($this->obra, $userId);
+
+            if ($membro !== null) {
+                RegistrarEventoAcesso::usuarioRemovidoDaObra(
+                    Auth::user(), $this->obra, $membro, $perfisAntes, OrigemEventoHistoricoAcesso::EquipeObra
+                );
+            }
+        });
 
         unset($this->membrosEquipe, $this->usuariosParaAdicionar);
         $this->dispatch('show-toast', message: 'Membro removido da equipe.');
+    }
+
+    // =========================================================================
+    // EQUIPE — MULTIPERFIL (FASE 2C, Seção 19-21)
+    // =========================================================================
+
+    /**
+     * Abre o modal de edição de perfis pra um membro — SEPARADO da ação
+     * de remover da equipe (Seção 20: "membership e Perfil são conceitos
+     * separados"; "remover perfis" nunca é a mesma ação que "remover
+     * usuário da obra"). Pré-popula com os perfis EFETIVOS atuais
+     * (`perfisNaObra()`, já resolvidos pelo core aprovado na Fase
+     * 2B.CORREÇÃO — autoridade completa da nova pivot quando populada,
+     * fallback legado só quando vazia).
+     */
+    public function abrirEdicaoPerfis(string $userId): void
+    {
+        $this->authorize('update', $this->obra);
+
+        $membro = $this->obra->users()->where('user_id', $userId)->first();
+        abort_unless($membro !== null, 404);
+
+        $this->membroEditandoPerfisId = $userId;
+        $this->perfisSelecionadosEdicao = $membro->perfisNaObra($this->obra)->pluck('id')->all();
+        $this->editandoPerfisMembro = true;
+    }
+
+    public function fecharEdicaoPerfis(): void
+    {
+        $this->editandoPerfisMembro = false;
+        $this->membroEditandoPerfisId = null;
+        $this->perfisSelecionadosEdicao = [];
+    }
+
+    /**
+     * Salva a coleção de perfis do membro via a API multiperfil aprovada
+     * (`substituirPerfis()`) — nunca escreve a pivot diretamente (Seção
+     * 19: "Não escrever pivot diretamente"). Revalida no servidor que
+     * todo ID selecionado pertence de fato a `$this->perfisDisponiveis`
+     * (já escopado ao tenant desta obra) — nunca confia em IDs vindos do
+     * browser (Seção 41).
+     */
+    public function salvarPerfisMembro(): void
+    {
+        $this->authorize('update', $this->obra);
+
+        $userId = $this->membroEditandoPerfisId;
+        abort_if($userId === null, 400);
+
+        $ehCriadorDoTenant = $userId === $this->obra->tenant->criado_por_id;
+        abort_if($ehCriadorDoTenant && ! Auth::user()->is_platform_admin, 403, 'O(s) perfil(is) de quem criou a empresa só pode(m) ser alterado(s) pelo administrador da plataforma.');
+
+        $idsValidos = $this->perfisDisponiveis->pluck('id')->all();
+        $novosPerfilIds = array_values(array_intersect($this->perfisSelecionadosEdicao, $idsValidos));
+
+        if ($this->removeriaOUltimoAdminComNovosPerfis($userId, $novosPerfilIds)) {
+            $this->dispatch('show-toast', message: 'Esta obra precisa permanecer com pelo menos um administrador. Atribua Admin a outra pessoa antes de remover.');
+            return;
+        }
+
+        \App\Support\AtribuicaoPerfilObra::substituirPerfis(
+            $this->obra, $userId, $novosPerfilIds, Auth::user(), OrigemEventoHistoricoAcesso::EquipeObra
+        );
+
+        unset($this->membrosEquipe);
+        $this->fecharEdicaoPerfis();
+
+        $this->dispatch('show-toast', message: $novosPerfilIds === []
+            ? 'Perfis removidos — o usuário continua membro da equipe, mas sem acesso às funcionalidades protegidas.'
+            : 'Perfis atualizados.');
     }
 
     /**
@@ -289,30 +409,42 @@ new class extends Component {
      * vale pra qualquer usuário, inclusive o administrador da
      * plataforma, que só pode contornar a trava do CRIADOR do tenant,
      * nunca esta. $novoPerfilId null = removendo o membro da equipe.
+     *
+     * Fase 2B, Seção 29 — "era Admin nesta obra" e "tem outro Admin no
+     * tenant" agora usam a ESTRUTURA EFETIVA (união dos perfis do
+     * usuário — `temPerfilNaObra()`/nova pivot — nunca só a leitura
+     * crua do espelho legado `obra_user.perfil_id`). Isso cobre
+     * corretamente um Admin atribuído só pela nova pivot multiperfil
+     * (ex.: um usuário com Admin + Planejamento simultâneos), que a
+     * leitura crua antiga nunca enxergaria. A UI desta fase continua
+     * single-perfil (Seção 26) — `alterarPerfil()`/`removerMembro()`
+     * substituem TODAS as atribuições do usuário nesta obra por, no
+     * máximo, 1 nova — então "perder só um perfil secundário mantendo
+     * Admin" só é expressável hoje por atribuição direta na nova pivot
+     * (fora da UI), não pela tela; o guard já está correto pra quando a
+     * Fase 2C introduzir seleção multi-perfil.
      */
     private function removeriaOUltimoAdmin(string $userId, ?string $novoPerfilId): bool
     {
-        $perfilAdmin = Perfil::porSlugPadrao($this->obra->tenant, 'admin');
-        if (! $perfilAdmin) {
-            return false;
-        }
+        return $this->removeriaOUltimoAdminComNovosPerfis($userId, $novoPerfilId !== null ? [$novoPerfilId] : []);
+    }
 
-        $membroAtual = $this->obra->users()->where('user_id', $userId)->first();
-        $eraAdminNestaObra = $membroAtual && $membroAtual->pivot->perfil_id === $perfilAdmin->id;
-        $continuaAdmin = $novoPerfilId === $perfilAdmin->id;
-
-        if (! $eraAdminNestaObra || $continuaAdmin) {
-            return false;
-        }
-
-        $temOutroAdminNoTenant = DB::table('obra_user')
-            ->join('works', 'works.id', '=', 'obra_user.work_id')
-            ->where('works.tenant_id', $this->obra->tenant_id)
-            ->where('obra_user.perfil_id', $perfilAdmin->id)
-            ->where('obra_user.user_id', '!=', $userId)
-            ->exists();
-
-        return ! $temOutroAdminNoTenant;
+    /**
+     * FASE 2C, Seção 27 — generalização multiperfil do guard acima:
+     * "continua Admin" agora é "Admin está ENTRE os novos perfis
+     * selecionados", nunca mais um único ID. `removeriaOUltimoAdmin()`
+     * (acima) delega pra cá com um array de 0 ou 1 elemento — nenhum dos
+     * 2 callers legados (`alterarPerfil()`/`removerMembro()`) precisou
+     * mudar. A regra em si foi extraída pra
+     * `App\Support\Perfis\GuardUltimoAdmin` (reaproveitada também pela
+     * Matriz de Acessos) — nunca duas implementações da mesma checagem de
+     * segurança.
+     *
+     * @param  array<int, string>  $novosPerfilIds
+     */
+    private function removeriaOUltimoAdminComNovosPerfis(string $userId, array $novosPerfilIds): bool
+    {
+        return \App\Support\Perfis\GuardUltimoAdmin::removeriaOUltimoAdmin($this->obra, $userId, $novosPerfilIds);
     }
 
     // =========================================================================
@@ -343,8 +475,14 @@ new class extends Component {
 
         $this->validate([
             'emailConvite' => 'required|email',
-            'perfilConviteId' => ['required', Rule::exists('perfis', 'id')->where('tenant_id', $this->obra->tenant_id)],
-        ], [], ['emailConvite' => 'e-mail']);
+            'perfisConviteIds' => ['required', 'array', 'min:1'],
+            'perfisConviteIds.*' => Rule::exists('perfis', 'id')->where('tenant_id', $this->obra->tenant_id),
+        ], [], ['emailConvite' => 'e-mail', 'perfisConviteIds' => 'perfis de acesso']);
+
+        // Fase 2C, Seção 4 — sempre um conjunto de 1..N perfis, nunca
+        // mais um único ID; deduplicado por segurança (checkbox
+        // duplicado não é possível na UI, mas nunca custa garantir).
+        $perfisConviteIds = array_values(array_unique($this->perfisConviteIds));
 
         $usuarioExistente = User::where('tenant_id', $this->obra->tenant_id)
             ->where('email', $this->emailConvite)
@@ -356,8 +494,21 @@ new class extends Component {
                 return;
             }
 
-            $this->obra->users()->attach($usuarioExistente->id, ['perfil_id' => $this->perfilConviteId]);
-            $usuarioExistente->notify(new AdicionadoAObraNotification($this->obra, Perfil::findOrFail($this->perfilConviteId)));
+            // Fase 2D — auditado ANTES do attach() legado, mesma ordem
+            // cuidadosa de adicionarMembro()/alterarPerfil() (senão o
+            // "antes" do evento leria o legado já com o valor novo).
+            // Fase 2B/2C — mantém a nova pivot multiperfil consistente.
+            // Fase 2D — origem Convite (mesmo card "Convidar por
+            // e-mail", mesmo que o resultado seja um vínculo imediato
+            // em vez de um Convite pendente).
+            \App\Support\AtribuicaoPerfilObra::substituirPerfis(
+                $this->obra, $usuarioExistente->id, $perfisConviteIds, Auth::user(), OrigemEventoHistoricoAcesso::Convite
+            );
+            $this->obra->users()->attach($usuarioExistente->id, ['perfil_id' => $perfisConviteIds[0]]);
+            $usuarioExistente->notify(new AdicionadoAObraNotification(
+                $this->obra,
+                Perfil::whereIn('id', $perfisConviteIds)->orderBy('nome')->get()
+            ));
 
             $this->resetConvite();
             unset($this->membrosEquipe, $this->usuariosParaAdicionar);
@@ -380,14 +531,31 @@ new class extends Component {
             return;
         }
 
-        $convite = Convite::create([
-            'obra_id' => $this->obra->id,
-            'email' => $this->emailConvite,
-            'perfil_id' => $this->perfilConviteId,
-            'token' => Str::random(64),
-            'convidado_por_id' => Auth::id(),
-            'expira_em' => now()->addDays(7),
-        ]);
+        $perfisSelecionadosModels = Perfil::whereIn('id', $perfisConviteIds)->orderBy('nome')->get();
+
+        // Fase 2D, Seção 17/31 — criação do Convite + gravação dos
+        // perfis + evento de auditoria, tudo na MESMA transação (se o
+        // registro de auditoria falhar, o convite inteiro não é criado
+        // — nunca "convite enviado sem rastro").
+        $convite = DB::transaction(function () use ($perfisConviteIds, $perfisSelecionadosModels) {
+            $convite = Convite::create([
+                'obra_id' => $this->obra->id,
+                'email' => $this->emailConvite,
+                // Primeiro perfil selecionado — mantido só pra
+                // compatibilidade de exibição legada (`$convite->perfil`);
+                // a lista COMPLETA de perfis concedidos vive em
+                // `convite_perfis`, gravada logo abaixo.
+                'perfil_id' => $perfisConviteIds[0],
+                'token' => Str::random(64),
+                'convidado_por_id' => Auth::id(),
+                'expira_em' => now()->addDays(7),
+            ]);
+            \App\Support\Perfis\AtribuicaoPerfilConvite::gravar($convite, $perfisConviteIds);
+
+            RegistrarEventoAcesso::conviteEnviado(Auth::user(), $this->obra, $convite->email, $perfisSelecionadosModels);
+
+            return $convite;
+        });
 
         Notification::route('mail', $convite->email)->notify(new ConviteObraNotification($convite));
 
@@ -399,7 +567,8 @@ new class extends Component {
     private function resetConvite(): void
     {
         $this->emailConvite = '';
-        $this->perfilConviteId = Perfil::porSlugPadrao($this->obra->tenant, 'encarregado')?->id;
+        $perfilPadrao = Perfil::porSlugPadrao($this->obra->tenant, 'encarregado');
+        $this->perfisConviteIds = $perfilPadrao ? [$perfilPadrao->id] : [];
         $this->resetErrorBag();
     }
 
@@ -1024,7 +1193,7 @@ new class extends Component {
                     <tr>
                         <th>Usuário</th>
                         <th>E-mail</th>
-                        <th>Papel</th>
+                        <th>Perfis</th>
                         @can('update', $obra)
                         <th class="text-center">Ações</th>
                         @endcan
@@ -1035,32 +1204,37 @@ new class extends Component {
                     @php
                         $ehCriadorDoTenant = $membro->id === $obra->tenant->criado_por_id;
                         $criadorBloqueadoAqui = $ehCriadorDoTenant && ! Auth::user()->is_platform_admin;
+                        $perfisDoMembro = $membro->perfisNaObra($obra);
                     @endphp
                     <tr wire:key="membro-{{ $membro->id }}">
                         <td>{{ $membro->first_name }} {{ $membro->last_name }}</td>
                         <td class="text-muted small">{{ $membro->email }}</td>
                         <td>
-                            @if ($criadorBloqueadoAqui)
-                            <span class="badge bg-label-primary" title="Dono da empresa — só o administrador da plataforma pode alterar">
-                                <i class="bx bx-lock-alt me-1"></i>{{ $this->perfisDisponiveis->firstWhere('id', $membro->pivot->perfil_id)?->nome }}
+                            @if ($perfisDoMembro->isEmpty())
+                            <span class="badge bg-label-warning" title="Continua membro da equipe, mas sem acesso às funcionalidades protegidas">
+                                <i class="bx bx-error-circle me-1"></i>Sem perfil atribuído
                             </span>
-                            @elseif (\Illuminate\Support\Facades\Gate::allows('update', $obra))
-                            <select class="form-select form-select-sm" style="width:auto"
-                                    wire:change="alterarPerfil('{{ $membro->id }}', $event.target.value)">
-                                @foreach ($this->perfisDisponiveis as $p)
-                                <option value="{{ $p->id }}" @selected($membro->pivot->perfil_id === $p->id)>{{ $p->nome }}</option>
-                                @endforeach
-                            </select>
                             @else
-                            <span class="badge bg-label-secondary">{{ $this->perfisDisponiveis->firstWhere('id', $membro->pivot->perfil_id)?->nome }}</span>
+                            @foreach ($perfisDoMembro as $p)
+                            <span class="badge bg-label-secondary me-1 mb-1">{{ $p->nome }}</span>
+                            @endforeach
+                            @endif
+
+                            @if ($criadorBloqueadoAqui)
+                            <div class="small text-muted mt-1"><i class="bx bx-lock-alt me-1"></i>Só o administrador da plataforma pode alterar</div>
+                            @elseif (\Illuminate\Support\Facades\Gate::allows('update', $obra))
+                            <button type="button" class="btn btn-link btn-sm p-0 d-block mt-1" wire:click="abrirEdicaoPerfis('{{ $membro->id }}')">
+                                <i class="bx bx-edit-alt me-1"></i>Editar perfis
+                            </button>
                             @endif
                         </td>
                         @can('update', $obra)
                         <td class="text-center">
                             @unless ($criadorBloqueadoAqui)
                             <button type="button" class="btn btn-xs btn-outline-danger py-0 px-1"
+                                    title="Remover da equipe (diferente de remover perfis)"
                                     onclick="confirmarAcao(this, {
-                                        mensagem: 'Remover {{ $membro->first_name }} da equipe desta obra?',
+                                        mensagem: 'Remover {{ $membro->first_name }} da EQUIPE desta obra? Isso é diferente de remover os perfis — o usuário deixará de ser membro por completo.',
                                         metodo: 'removerMembro',
                                         args: ['{{ $membro->id }}'],
                                         icone: 'bx-trash',
@@ -1123,23 +1297,38 @@ new class extends Component {
             própria senha e se cadastrar.
         </p>
         <div class="row g-2">
-            <div class="col-md-6">
+            <div class="col-md-8">
                 <input type="email" class="form-control form-control-sm @error('emailConvite') is-invalid @enderror"
                        wire:model="emailConvite" placeholder="email@exemplo.com">
                 @error('emailConvite')<div class="invalid-feedback">{{ $message }}</div>@enderror
             </div>
             <div class="col-md-4">
-                <select class="form-select form-select-sm" wire:model="perfilConviteId">
-                    @foreach ($this->perfisDisponiveis as $p)
-                    <option value="{{ $p->id }}">{{ $p->nome }}</option>
-                    @endforeach
-                </select>
-            </div>
-            <div class="col-md-2">
                 <button class="btn btn-primary btn-sm w-100" wire:click="enviarConvite" wire:loading.attr="disabled">
                     <i class="bx bx-envelope me-1"></i>Convidar
                 </button>
             </div>
+        </div>
+
+        {{-- FASE 2C, Seção 4 — "Perfis de acesso" com seleção múltipla:
+             o convite pode conceder 1..N perfis de uma vez, mesmo idiom
+             de checkboxes já usado no modal "Perfis na obra" (Seção
+             19/24) — nunca um <select> single nem IDs técnicos. --}}
+        <div class="mt-2">
+            <label class="form-label small fw-semibold mb-1">Perfis de acesso</label>
+            <div class="d-flex flex-wrap gap-3">
+                @foreach ($this->perfisDisponiveis as $p)
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" value="{{ $p->id }}"
+                           id="perfil-convite-{{ $p->id }}"
+                           wire:model="perfisConviteIds">
+                    <label class="form-check-label" for="perfil-convite-{{ $p->id }}">
+                        {{ $p->nome }}
+                    </label>
+                </div>
+                @endforeach
+            </div>
+            @error('perfisConviteIds')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
+            @error('perfisConviteIds.*')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
         </div>
 
         @if ($this->convitesPendentes->isNotEmpty())
@@ -1161,7 +1350,7 @@ new class extends Component {
                     @foreach ($this->convitesPendentes as $convite)
                     <tr wire:key="convite-{{ $convite->id }}">
                         <td>{{ $convite->email }}</td>
-                        <td>{{ $convite->perfil->nome }}</td>
+                        <td>{{ $convite->nomesPerfis() }}</td>
                         <td class="small text-muted">
                             {{ $convite->convidadoPor?->first_name }} {{ $convite->convidadoPor?->last_name }}
                         </td>
@@ -1197,6 +1386,53 @@ new class extends Component {
     </div>
 </div>
 @endcan
+
+{{-- FASE 2C, Seção 19/24 — modal de edição multiperfil: clicar em
+     "Editar perfis" abre este drawer, o admin marca/desmarca N perfis, e
+     salva via substituirPerfis() (nunca edição inline complexa na
+     própria linha da tabela). --}}
+@if ($editandoPerfisMembro)
+<div class="modal fade show d-block" tabindex="-1" style="background: rgba(0,0,0,.5)">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Perfis na obra</h5>
+                <button type="button" class="btn-close" wire:click="fecharEdicaoPerfis"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">
+                    Marque quantos perfis fizerem sentido pra este usuário nesta obra — as capacidades
+                    concedidas por QUALQUER um deles somam (nunca é preciso escolher só 1).
+                </p>
+                @foreach ($this->perfisDisponiveis as $p)
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" value="{{ $p->id }}"
+                           id="perfil-edicao-{{ $p->id }}"
+                           wire:model="perfisSelecionadosEdicao">
+                    <label class="form-check-label" for="perfil-edicao-{{ $p->id }}">
+                        {{ $p->nome }}
+                        @if ($p->ehPadrao())<span class="badge bg-label-info ms-1">Padrão DCF.ENG</span>@endif
+                    </label>
+                </div>
+                @endforeach
+
+                @if (empty($perfisSelecionadosEdicao))
+                <div class="alert alert-warning small mb-0">
+                    <i class="bx bx-error-circle me-1"></i>
+                    Este usuário continuará membro da obra, mas ficará sem acesso às funcionalidades protegidas.
+                </div>
+                @endif
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" wire:click="fecharEdicaoPerfis">Cancelar</button>
+                <button type="button" class="btn btn-primary" wire:click="salvarPerfisMembro" wire:loading.attr="disabled">
+                    Salvar perfis
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+@endif
 @endif
 
 {{-- =========================================================================

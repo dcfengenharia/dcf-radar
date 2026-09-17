@@ -222,7 +222,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'Menor preço', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300, $this->user);
 
         $this->assertSame(300.0, (float) $itemAdj->quantidade);
         $this->assertSame($parcela->id, $itemAdj->requisicao_compra_item_parcela_id);
@@ -242,8 +242,8 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $adjX = $this->criarAdjudicacao->execute($rc, $fornecedorX, 'Metade X', null, null, $this->user);
         $adjY = $this->criarAdjudicacao->execute($rc, $fornecedorY, 'Metade Y', null, null, $this->user);
 
-        $this->atualizarAdjudicacao->adicionarItem($adjX, $item, $parcela, 150);
-        $this->atualizarAdjudicacao->adicionarItem($adjY, $item, $parcela, 150);
+        $this->atualizarAdjudicacao->adicionarItem($adjX, $item, $parcela, 150, $this->user);
+        $this->atualizarAdjudicacao->adicionarItem($adjY, $item, $parcela, 150, $this->user);
 
         $this->assertEquals(0.0, $parcela->fresh()->saldoAdjudicavel());
         $this->assertEquals(150.0, $parcela->fresh()->quantidadeAdjudicadaAoFornecedor($fornecedorX->id));
@@ -269,8 +269,8 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc->fresh(), $fornecedor, 'Ganhou tudo', null, null, $this->user);
 
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcelaA->fresh(), 300);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcelaB->fresh(), 300);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcelaA->fresh(), 300, $this->user);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcelaB->fresh(), 300, $this->user);
 
         $this->assertSame(2, $adjudicacao->itens()->count());
     }
@@ -302,7 +302,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
 
         $this->expectException(SaldoAdjudicacaoInsuficienteException::class);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 301);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 301, $this->user);
     }
 
     public function test_f_concorrencia_nao_permite_over_adjudication(): void
@@ -323,10 +323,10 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         // antes de somar, é estruturalmente impossível as duas transações
         // lerem o MESMO saldo "cheio" simultaneamente. Sequencialmente,
         // confirma que o resultado nunca ultrapassa 100 no total.
-        $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 70);
+        $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 70, $this->user);
 
         $this->expectException(SaldoAdjudicacaoInsuficienteException::class);
-        $this->atualizarAdjudicacao->adicionarItem($adjB, $item, $parcela->fresh(), 70);
+        $this->atualizarAdjudicacao->adicionarItem($adjB, $item, $parcela->fresh(), 70, $this->user);
     }
 
     public function test_g_fornecedor_de_outra_obra_e_rejeitado(): void
@@ -380,7 +380,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
 
         // Tenta adjudicar, na adjudicação da RC A, o item/parcela da RC B.
         $this->expectException(RequisicaoCompraAdjudicacaoInvalidaException::class);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacaoDeA, $itemB, $parcelaB, 100);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacaoDeA, $itemB, $parcelaB, 100, $this->user);
     }
 
     public function test_i_parcela_nao_pertencente_ao_item_informado_e_rejeitada(): void
@@ -408,7 +408,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $adjudicacao = $this->criarAdjudicacao->execute($rc->fresh(), $fornecedor, 'X', null, null, $this->user);
 
         $this->expectException(RequisicaoCompraAdjudicacaoInvalidaException::class);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item2->fresh(), $parcelaDoItem1->fresh(), 100);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item2->fresh(), $parcelaDoItem1->fresh(), 100, $this->user);
     }
 
     public function test_j_cancelar_adjudicacao_sem_pedido_libera_saldo(): void
@@ -420,7 +420,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         [$rc, $item, $parcela] = $this->rcEmitidaComParcela($ito, $necessidade, 300, 300);
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300, $this->user);
 
         $this->assertEquals(0.0, $parcela->fresh()->saldoAdjudicavel());
 
@@ -433,7 +433,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         // Uma nova adjudicação pode usar o saldo liberado (Seção 9 —
         // reconsideração é NOVA linha, nunca sobrescreve a antiga).
         $novaAdjudicacao = $this->criarAdjudicacao->execute($rc->fresh(), $this->criarFornecedor(), 'Nova decisão', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($novaAdjudicacao, $item->fresh(), $parcela->fresh(), 300);
+        $this->atualizarAdjudicacao->adicionarItem($novaAdjudicacao, $item->fresh(), $parcela->fresh(), 300, $this->user);
         $this->assertEquals(0.0, $parcela->fresh()->saldoAdjudicavel());
     }
 
@@ -446,7 +446,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         [$rc, $item, $parcela] = $this->rcEmitidaComParcela($ito, $necessidade, 300, 300);
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 300);
@@ -455,7 +455,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $this->emitirPedido->execute($pedido->fresh(), $this->user);
 
         $this->expectException(AdjudicacaoConsumidaPorPedidoException::class);
-        $this->atualizarAdjudicacao->removerItem($itemAdj->fresh());
+        $this->atualizarAdjudicacao->removerItem($itemAdj->fresh(), $this->user);
     }
 
     public function test_k2_adjudicacao_ja_consumida_por_pedido_nao_pode_ser_cancelada(): void
@@ -467,7 +467,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         [$rc, $item, $parcela] = $this->rcEmitidaComParcela($ito, $necessidade, 300, 300);
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 300);
@@ -488,7 +488,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         [$rc, $item, $parcela] = $this->rcEmitidaComParcela($ito, $necessidade, 300, 300);
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'Decisão original', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 300, $this->user);
 
         $this->atualizarAdjudicacao->cancelar($adjudicacao->fresh(), $this->user, 'Reconsiderado');
 
@@ -527,7 +527,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
 
         $this->expectException(RequisicaoCompraAdjudicacaoInvalidaException::class);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300, $this->user);
     }
 
     public function test_o_item_sem_parcelas_exige_adjudicacao_direta_no_item(): void
@@ -539,7 +539,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
 
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300, $this->user);
 
         $this->assertNull($itemAdj->requisicao_compra_item_parcela_id);
         $this->assertSame($item->id, $itemAdj->requisicao_compra_item_id);
@@ -566,7 +566,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $adjudicacao = $this->criarAdjudicacao->execute($rcSemParcela, $fornecedor, 'X', null, null, $this->user);
 
         $this->expectException(RequisicaoCompraAdjudicacaoInvalidaException::class);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $itemSemParcela, $parcelaExistente, 300);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $itemSemParcela, $parcelaExistente, 300, $this->user);
     }
 
     public function test_p_rc_rascunho_nao_pode_ser_adjudicada(): void
@@ -594,8 +594,8 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $fornecedorB = $this->criarFornecedor(nome: 'B');
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedorA, 'A ganha 60', null, null, $this->user);
         $adjB = $this->criarAdjudicacao->execute($rc, $fornecedorB, 'B ganha 40', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 60);
-        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40);
+        $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 60, $this->user);
+        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40, $this->user);
 
         $pedidoA = $this->criarPedido->execute($rc, $fornecedorA, '2027-01-15', null, null, null, $this->user);
         $pedidoItemA = $this->atualizarPedido->adicionarItem($pedidoA, $item->fresh(), 60);
@@ -615,8 +615,8 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $fornecedorB = $this->criarFornecedor(nome: 'B');
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedorA, 'A ganha 60', null, null, $this->user);
         $adjB = $this->criarAdjudicacao->execute($rc, $fornecedorB, 'B ganha 40', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 60);
-        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40);
+        $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 60, $this->user);
+        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40, $this->user);
 
         $pedidoA = $this->criarPedido->execute($rc, $fornecedorA, '2027-01-15', null, null, null, $this->user);
         $pedidoItemA = $this->atualizarPedido->adicionarItem($pedidoA, $item->fresh(), 70);
@@ -636,8 +636,8 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         $fornecedorB = $this->criarFornecedor(nome: 'B');
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedorA, 'A', null, null, $this->user);
         $adjB = $this->criarAdjudicacao->execute($rc, $fornecedorB, 'B', null, null, $this->user);
-        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 60);
-        $itemAdjB = $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40);
+        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 60, $this->user);
+        $itemAdjB = $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40, $this->user);
 
         $pedidoA = $this->criarPedido->execute($rc, $fornecedorA, '2027-01-15', null, null, null, $this->user);
         $pedidoItemA = $this->atualizarPedido->adicionarItem($pedidoA, $item->fresh(), 60);
@@ -665,7 +665,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         [$rc, $item] = $this->rcEmitidaSemParcela($alocacao, 1000);
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'Ganhou 700 de 1000', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 700);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 700, $this->user);
 
         $pedido1 = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem1 = $this->atualizarPedido->adicionarItem($pedido1, $item->fresh(), 600);
@@ -710,7 +710,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         [$rc, $item] = $this->rcEmitidaSemParcela($alocacao, 300);
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 300);
@@ -729,7 +729,7 @@ class AdjudicacaoRequisicaoCompraTest extends TestCase
         [$rc, $item] = $this->rcEmitidaSemParcela($alocacao, 300);
         $fornecedor = $this->criarFornecedor();
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 300, $this->user);
 
         $pedidoRascunho = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $this->atualizarPedido->adicionarItem($pedidoRascunho, $item->fresh(), 300);

@@ -12,6 +12,14 @@ new class extends Component {
     public function mount(Work $obra): void
     {
         $this->obra = $obra;
+    
+    // Fase 2F.CORREÇÃO.3 — propagação do Achado E23: 'ver' é
+    // capability real, configurável por Perfil; precisa ser
+    // reafirmada no backend ao abrir a página diretamente, não
+    // só no menu (CatalogoFuncionalidades::usuarioPodeVer()).
+    // Mesmo padrão já usado pelos 3 Cockpits e por
+    // restricoes.quadro/lookahead/suprimentos.mapa (2F.CORREÇÃO.2).
+    abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.causas', 'ver'), 403);
     }
 
     #[Computed]

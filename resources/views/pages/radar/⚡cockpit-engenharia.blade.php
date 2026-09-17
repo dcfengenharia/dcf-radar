@@ -2,6 +2,7 @@
 
 use App\Models\Work;
 use App\Support\Gestao\CockpitEngenhariaQuery;
+use App\Support\Gestao\RedacaoOperacionalCockpit;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
@@ -45,6 +46,17 @@ new class extends Component {
     public function resumo(): \App\DTOs\Gestao\Cockpit\CockpitEngenharia
     {
         return CockpitEngenhariaQuery::resumo($this->obra, $this->horizontePrincipalDias);
+    }
+
+    /**
+     * Fase 2B, Seção 20-23 — "vê prontidão" (agregado/status/contagem)
+     * continua explicitamente permitido pro Executivo mesmo sem acesso
+     * operacional; só o DETALHE identificador (código/revisão do
+     * documento, deep-link pra GED/GRD) exige `engenharia.pacotes|ver`.
+     */
+    public function podeVerDetalheDocumental(): bool
+    {
+        return RedacaoOperacionalCockpit::podeVerDetalhePorFuncionalidade(Auth::user(), $this->obra->id, 'engenharia.pacotes');
     }
 };
 
@@ -145,8 +157,10 @@ new class extends Component {
                             @endif
                         </div>
                     </div>
-                    @if(!empty($l['deepLink']['rota'] ?? null))
+                    @if(!empty($l['deepLink']['rota'] ?? null) && $this->podeVerDetalheDocumental())
                         <a href="{{ route($l['deepLink']['rota'], $l['deepLink']['parametros'] ?? []) }}" class="btn btn-sm btn-outline-primary">Ver</a>
+                    @elseif(!empty($l['deepLink']['rota'] ?? null))
+                        <span class="badge bg-label-secondary" title="Requer acesso à Lista de Documentos"><i class="bx bx-lock-alt"></i></span>
                     @endif
                 </div>
             @empty
@@ -212,19 +226,23 @@ new class extends Component {
                         </tr>
                         <tr wire:key="matriz-detalhe-{{ $linha->atividadeId }}" x-show="aberto === '{{ $linha->atividadeId }}'" x-cloak>
                             <td colspan="7" class="bg-light">
-                                @forelse ($linha->documentos as $doc)
-                                    <div class="d-flex justify-content-between align-items-center py-1 small">
-                                        <span>
-                                            {{ $doc->codigo }} @if($doc->revisaoTexto) ({{ $doc->revisaoTexto }}) @endif
-                                            @if(!$doc->liberado)
-                                                — {{ $doc->totalRevisoesDocumento > 1 ? 'existe uma revisão mais recente ainda não liberada para construção' : 'aguardando liberação para construção' }}
-                                            @endif
-                                        </span>
-                                        <span class="badge bg-label-{{ $doc->liberado ? 'success' : 'danger' }}">{{ $doc->liberado ? 'Liberado' : 'Bloqueante' }}</span>
-                                    </div>
-                                @empty
-                                    <span class="text-muted">Nenhum documento vinculado a esta atividade (informação insuficiente).</span>
-                                @endforelse
+                                @if(!$this->podeVerDetalheDocumental() && count($linha->documentos) > 0)
+                                    <span class="text-muted"><i class="bx bx-lock-alt me-1"></i>{{ count($linha->documentos) }} documento(s) — código/revisão requer acesso à Lista de Documentos.</span>
+                                @else
+                                    @forelse ($linha->documentos as $doc)
+                                        <div class="d-flex justify-content-between align-items-center py-1 small">
+                                            <span>
+                                                {{ $doc->codigo }} @if($doc->revisaoTexto) ({{ $doc->revisaoTexto }}) @endif
+                                                @if(!$doc->liberado)
+                                                    — {{ $doc->totalRevisoesDocumento > 1 ? 'existe uma revisão mais recente ainda não liberada para construção' : 'aguardando liberação para construção' }}
+                                                @endif
+                                            </span>
+                                            <span class="badge bg-label-{{ $doc->liberado ? 'success' : 'danger' }}">{{ $doc->liberado ? 'Liberado' : 'Bloqueante' }}</span>
+                                        </div>
+                                    @empty
+                                        <span class="text-muted">Nenhum documento vinculado a esta atividade (informação insuficiente).</span>
+                                    @endforelse
+                                @endif
                             </td>
                         </tr>
                     @empty
@@ -268,8 +286,10 @@ new class extends Component {
                                 <tr wire:key="obs-{{ $f->entidadeId }}">
                                     <td>{{ $f->descricao }}</td>
                                     <td>
-                                        @if(!empty($f->deepLink['rota'] ?? null))
+                                        @if(!empty($f->deepLink['rota'] ?? null) && $this->podeVerDetalheDocumental())
                                             <a href="{{ route($f->deepLink['rota'], $f->deepLink['parametros'] ?? []) }}" class="btn btn-sm btn-outline-primary">Recolher</a>
+                                        @elseif(!empty($f->deepLink['rota'] ?? null))
+                                            <span class="badge bg-label-secondary" title="Requer acesso à Lista de Documentos"><i class="bx bx-lock-alt"></i></span>
                                         @endif
                                     </td>
                                 </tr>

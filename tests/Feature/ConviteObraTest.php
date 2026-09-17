@@ -55,7 +55,7 @@ class ConviteObraTest extends TestCase
 
         $this->componente()
             ->set('emailConvite', 'ja-existe@example.com')
-            ->set('perfilConviteId', $engenheiro->id)
+            ->set('perfisConviteIds', [$engenheiro->id])
             ->call('enviarConvite');
 
         $this->assertTrue($this->obra->users()->where('user_id', $existente->id)->exists());
@@ -75,7 +75,7 @@ class ConviteObraTest extends TestCase
 
         $this->componente()
             ->set('emailConvite', 'novo@example.com')
-            ->set('perfilConviteId', $encarregado->id)
+            ->set('perfisConviteIds', [$encarregado->id])
             ->call('enviarConvite');
 
         $convite = Convite::where('email', 'novo@example.com')->first();
@@ -83,6 +83,7 @@ class ConviteObraTest extends TestCase
         $this->assertEquals('pendente', $convite->status);
         $this->assertEquals($this->obra->id, $convite->obra_id);
         $this->assertEquals($encarregado->id, $convite->perfil_id);
+        $this->assertEquals([$encarregado->id], $convite->perfis()->pluck('perfis.id')->all());
 
         Notification::assertSentOnDemand(ConviteObraNotification::class);
     }

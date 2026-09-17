@@ -30,7 +30,11 @@ class ConviteObraNotification extends Notification implements ShouldQueue
         $obra = $this->convite->obra;
         $tenant = $obra->tenant;
         $convidadoPor = $this->convite->convidadoPor;
-        $papel = $this->convite->perfil->nome;
+        // FASE 2C, Seção 4 — convite multiperfil: junta os nomes de
+        // TODOS os perfis concedidos (nunca só o primeiro) no mesmo
+        // placeholder {papel} já usado pelo template customizável do
+        // tenant — nunca um slug/ID técnico.
+        $papel = $this->convite->nomesPerfis();
 
         $assunto = TemplateConvite::substituir(
             $tenant->convite_email_assunto ?: TemplateConvite::assuntoPadrao(),

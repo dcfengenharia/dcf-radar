@@ -11,6 +11,7 @@ use App\Models\RequisicaoPlanejamento;
 use App\Models\RequisicaoPlanejamentoItem;
 use App\Models\User;
 use App\Models\Work;
+use App\Support\Perfis\GarantirAutoridadeNaObra;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -26,11 +27,28 @@ use Illuminate\Support\Facades\DB;
  * na hora, ANTES de escrever qualquer snapshot. Cenário coberto: RP1
  * rascunho reserva A=70 "visualmente"; RP2 emite A=50 no meio tempo; RP1
  * tenta emitir e falha por falta de saldo — sem ter escrito nada.
+ *
+ * **Fase 2E — defesa em profundidade**: reafirma, DENTRO da Action, a
+ * mesma regra que `App\Policies\RequisicaoPlanejamentoPolicy::update()`
+ * já usa (`planejamento.requisicoes|editar`, seção 22 preferencial:
+ * "resolver recurso → autorização → transaction/lock → mutar") — obra
+ * SEMPRE derivada de `$rp->obra_id` (o recurso, nunca a sessão). Nunca
+ * substitui o caller (`⚡requisicoes-planejamento.blade.php` continua
+ * chamando `$this->authorize('update', $rp)` antes de invocar esta
+ * Action) — é a segunda camada contra chamada direta sem passar pela UI.
  */
 class EmitirRequisicaoPlanejamento
 {
     public function execute(RequisicaoPlanejamento $rp, User $usuario): RequisicaoPlanejamento
     {
+        GarantirAutoridadeNaObra::checar(
+            $usuario,
+            $rp->obra_id,
+            'planejamento.requisicoes',
+            'editar',
+            'Você não tem autoridade para emitir esta Requisição do Planejamento.'
+        );
+
         return DB::transaction(function () use ($rp, $usuario) {
             Work::whereKey($rp->obra_id)->lockForUpdate()->firstOrFail();
 

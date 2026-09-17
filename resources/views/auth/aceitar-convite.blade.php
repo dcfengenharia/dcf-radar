@@ -62,7 +62,7 @@ $customizerHidden = 'customizer-hide';
         <p class="text-muted mb-3">
           <strong>{{ $convite->convidadoPor->first_name }} {{ $convite->convidadoPor->last_name }}</strong>
           te enviou um convite para participar da obra <strong>{{ $convite->obra->name }}</strong>
-          como <strong>{{ $convite->perfil->nome }}</strong>.
+          como <strong>{{ $convite->nomesPerfis() }}</strong>.
         </p>
 
         <form id="formAceitarConvite" class="mb-3" action="{{ route('convite.aceitar', $convite->token) }}" method="POST">

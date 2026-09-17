@@ -221,7 +221,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
 
         // Adjudicação A: X=40. Consumida totalmente por P1=40.
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedorX, 'Decisão A', null, null, $this->user);
-        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 40);
+        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, $parcela, 40, $this->user);
 
         $pedido1 = $this->criarPedido->execute($rc, $fornecedorX, '2027-01-15', null, null, null, $this->user);
         $pedidoItem1 = $this->atualizarPedido->adicionarItem($pedido1, $item->fresh(), 40);
@@ -236,7 +236,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         // fechamento: 2 adjudicações Ativas simultâneas do mesmo
         // fornecedor sobre o mesmo alvo.
         $adjB = $this->criarAdjudicacao->execute($rc->fresh(), $fornecedorX, 'Decisão B', null, null, $this->user);
-        $itemAdjB = $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40);
+        $itemAdjB = $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), $parcela->fresh(), 40, $this->user);
 
         $pedido2 = $this->criarPedido->execute($rc->fresh(), $fornecedorX, '2027-02-01', null, null, null, $this->user);
         $pedidoItem2 = $this->atualizarPedido->adicionarItem($pedido2, $item->fresh(), 40);
@@ -265,7 +265,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedor, 'A', null, null, $this->user);
-        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 100);
+        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 100, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 100);
@@ -294,7 +294,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 60);
@@ -304,7 +304,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         // 100 adjudicados, 60 consumidos via bridge — reduzir pra 40 seria
         // deixar 20 do já-consumido sem cobertura. Bloqueado.
         $this->expectException(AdjudicacaoConsumidaPorPedidoException::class);
-        $this->atualizarAdjudicacao->alterarQuantidadeItem($itemAdj->fresh(), 40);
+        $this->atualizarAdjudicacao->alterarQuantidadeItem($itemAdj->fresh(), 40, $this->user);
     }
 
     public function test_c2_adjudicacao_parcialmente_consumida_pode_reduzir_ate_o_consumido(): void
@@ -316,7 +316,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 60);
@@ -325,7 +325,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
 
         // Reduzir exatamente até o consumido (60) é permitido — nunca
         // abaixo dele.
-        $this->atualizarAdjudicacao->alterarQuantidadeItem($itemAdj->fresh(), 60);
+        $this->atualizarAdjudicacao->alterarQuantidadeItem($itemAdj->fresh(), 60, $this->user);
         $this->assertEquals(60.0, $itemAdj->fresh()->quantidade);
     }
 
@@ -338,7 +338,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 60);
@@ -373,7 +373,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
 
         // Adjudicação item-level (sem parcela) já registrada.
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100, $this->user);
 
         // Tentar criar uma RCItemParcela AGORA (RC já Emitida, nunca mais
         // Rascunho) é bloqueado pela própria fronteira de lifecycle da
@@ -394,7 +394,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 100);
+        $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, $parcela, 100, $this->user);
 
         // Remover o detalhamento por Atividade agora (RC já Emitida) é
         // bloqueado pela mesma fronteira — nunca alcançável a ambiguidade
@@ -464,7 +464,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         );
 
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'Baseado na proposta', null, $anexoProposta, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 100);
@@ -496,7 +496,7 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjudicacao = $this->criarAdjudicacao->execute($rc, $fornecedor, 'X', null, null, $this->user);
-        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100);
+        $itemAdj = $this->atualizarAdjudicacao->adicionarItem($adjudicacao, $item, null, 100, $this->user);
 
         $pedido = $this->criarPedido->execute($rc, $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 100);
@@ -519,9 +519,9 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         $fornecedor = $this->criarFornecedor();
 
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedor, 'A=40', null, null, $this->user);
-        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 40);
+        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 40, $this->user);
         $adjB = $this->criarAdjudicacao->execute($rc->fresh(), $fornecedor, 'B=60', null, null, $this->user);
-        $itemAdjB = $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), null, 60);
+        $itemAdjB = $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), null, 60, $this->user);
 
         $pedido = $this->criarPedido->execute($rc->fresh(), $fornecedor, '2027-01-15', null, null, null, $this->user);
         $pedidoItem = $this->atualizarPedido->adicionarItem($pedido, $item->fresh(), 100);
@@ -550,9 +550,9 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         // precisa ser exercitado isoladamente, nunca mascarado pelo teto
         // agregado (que aqui passa normalmente pros 50 de B).
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedorA, 'A', null, null, $this->user);
-        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 50);
+        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 50, $this->user);
         $adjB = $this->criarAdjudicacao->execute($rc->fresh(), $fornecedorB, 'B', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), null, 50);
+        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), null, 50, $this->user);
 
         // Pedido é do fornecedor B (dentro da própria quota de B), mas a
         // adjudicação referenciada na bridge é a do fornecedor A.
@@ -604,9 +604,9 @@ class AdjudicacaoProvenienciaFechamentoTest extends TestCase
         // RCItem inteiro (o teto agregado por fornecedor NUNCA disparado
         // sozinho, de propósito, pra isolar o teto POR LINHA).
         $adjA = $this->criarAdjudicacao->execute($rc, $fornecedor, 'A=40', null, null, $this->user);
-        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 40);
+        $itemAdjA = $this->atualizarAdjudicacao->adicionarItem($adjA, $item, null, 40, $this->user);
         $adjB = $this->criarAdjudicacao->execute($rc->fresh(), $fornecedor, 'B=60', null, null, $this->user);
-        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), null, 60);
+        $this->atualizarAdjudicacao->adicionarItem($adjB, $item->fresh(), null, 60, $this->user);
 
         // P1 = 40, atribuído integralmente a A.
         $pedido1 = $this->criarPedido->execute($rc->fresh(), $fornecedor, '2027-01-15', null, null, null, $this->user);

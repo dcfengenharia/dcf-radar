@@ -648,7 +648,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $recebimento = $this->registrarRecebimento->execute($pedidoItem, 100, Carbon::parse('2026-12-10'), $this->user);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'recebimentos')
+            ->call('selecionarAba', 'recebimentos')
             ->call('abrirModalAssociarMaterial', $recebimento->id)
             ->set('materialSelecionadoId', $material->id)
             ->call('confirmarAssociarMaterial')
@@ -669,7 +669,7 @@ class EstoqueFundacaoCorrecaoTest extends TestCase
         $this->emitirPedido($pedidoItem);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'recebimentos');
+            ->call('selecionarAba', 'recebimentos');
 
         $linhas = $component->instance()->recebimentosPendentes;
         // Sem Recebimento ainda nesta etapa — mas o Pedido já Emitido já

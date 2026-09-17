@@ -43,10 +43,21 @@ class HasObraPapelCacheTest extends TestCase
             $this->assertTrue($user->temPermissaoNaObra($obra, 'restricoes.quadro', 'ver'));
         }
 
+        // Fase 2B (RBAC multiperfil) — 3 queries na primeira checagem, não
+        // mais 2: (1) membresia+espelho legado (obra_user, a mesma query
+        // de sempre), (2) união de perfis na NOVA pivot
+        // (obra_user_perfil, fonte adicional introduzida por esta fase —
+        // nunca existia antes), (3) permissões em lote pra todos os
+        // perfis resolvidos (perfil_permissoes, mesma query de sempre,
+        // agora com whereIn pra suportar N perfis). O que este teste
+        // sempre existiu pra provar continua verdadeiro: 20 repetições no
+        // loop acima custam exatamente o mesmo total que 1 repetição —
+        // nenhuma query nova por checagem, só o baseline de "quantas
+        // fontes distintas existem" mudou de 2 pra 3.
         $this->assertSame(
-            2,
+            3,
             $queryCount,
-            'perfilIdNaObra() consulta o banco uma vez por obra e permissoesDoPerfil() uma vez por perfil — nunca por checagem.'
+            'perfilIdNaObra()/perfisIdsNaObra() consultam o banco uma vez por obra (membresia+legado, depois a nova pivot) e permissoesDoPerfil() uma vez em lote pra todos os perfis — nunca por checagem.'
         );
     }
 

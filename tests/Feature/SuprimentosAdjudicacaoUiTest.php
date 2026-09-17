@@ -194,7 +194,7 @@ class SuprimentosAdjudicacaoUiTest extends TestCase
         [$rc, $item, $parcela, $pacote] = $this->rcEmitidaComParcelaPronta();
         $fornecedorX = Fornecedor::create(['obra_id' => $this->obra->id, 'nome' => 'X']);
         $adjX = (new CriarAdjudicacaoRequisicaoCompra())->execute($rc, $fornecedorX, 'X', null, null, $this->user);
-        (new \App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjX, $item, $parcela, 300);
+        (new \App\Actions\Suprimentos\AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjX, $item, $parcela, 300, $this->user);
 
         $fornecedorY = Fornecedor::create(['obra_id' => $this->obra->id, 'nome' => 'Y']);
         $adjY = (new CriarAdjudicacaoRequisicaoCompra())->execute($rc->fresh(), $fornecedorY, 'Y', null, null, $this->user);

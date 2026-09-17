@@ -3,15 +3,15 @@
 namespace App\Actions\Engenharia;
 
 use App\Exceptions\RevisaoDocumentoNaoVigenteException;
+use App\Models\DocumentoEngenharia;
 use App\Models\DocumentoEngenhariaRevisao;
 use App\Models\User;
+use App\Support\Perfis\GarantirAutoridadeNaObra;
 
 /**
  * Ciclo 18, Etapa 18.3 — único ponto de escrita do histórico de
- * liberação/revogação de uma revisão de Documento de Engenharia. Sem
- * checagem de PERMISSÃO aqui (responsabilidade do chamador, mesmo padrão
- * de App\Actions\Atividade\AnexarArquivoAtividade/MarcarNaoConcluido) —
- * mas, desde a 18.3.CORREÇÃO, com uma checagem de DOMÍNIO própria (ver
+ * liberação/revogação de uma revisão de Documento de Engenharia. Desde
+ * a 18.3.CORREÇÃO, com uma checagem de DOMÍNIO própria (ver
  * garantirRevisaoVigente()).
  *
  * Nunca atualiza uma row existente — cada chamada cria um evento novo em
@@ -40,6 +40,28 @@ use App\Models\User;
  *   idênticos consecutivos; o histórico volta a representar só
  *   TRANSIÇÕES de estado. Um ciclo liberar→revogar→liberar continua
  *   gravando as 3 transições normalmente.
+ *
+ * Fase 2E — defesa em profundidade (revisão da Fase 2B, Seção 36-40):
+ * uma primeira tentativa de checar `temPermissaoEmAlgumaObraDoTenant(
+ * 'engenharia.pacotes', 'liberar_para_construcao')` foi revertida por
+ * quebrar 20 testes de 6 arquivos que usavam esta Action só como
+ * infraestrutura de fixture, com um ator sem vínculo a
+ * `engenharia.pacotes`. A Fase 2E.CORREÇÃO reavaliou essa decisão: a
+ * capacidade `liberar_para_construcao` existe justamente para separar
+ * "quem pode liberar para construção" de "quem pode editar Engenharia"
+ * (perfis padrão colapsam as duas no mesmo tier Admin, mas um Perfil
+ * customizado pode conceder só uma delas) — quebrar fixture não é
+ * motivo suficiente pra deixar essa autoridade sem defesa em
+ * profundidade contra chamada direta (bypass de UI/Job/Command mal
+ * configurado). Os 6 arquivos foram corrigidos (Fase 2E.CORREÇÃO) dando
+ * ao ator de fixture um segundo usuário com autoridade real de
+ * `liberar_para_construcao` na obra, nunca promovendo o ator sob teste
+ * a um tier que contaminaria as próprias asserções daquele teste.
+ *
+ * Obra sempre derivada do Documento REAL da revisão
+ * (`documento_engenharia_id` → `DocumentoEngenharia.obra_id`, consulta
+ * de coluna única, nunca a obra ativa da sessão) — nunca eager-loaded
+ * por confiança, sempre uma query fresca e mínima.
  */
 class AlterarLiberacaoRevisaoDocumento
 {
@@ -55,6 +77,15 @@ class AlterarLiberacaoRevisaoDocumento
 
     private function registrar(DocumentoEngenhariaRevisao $revisao, bool $liberar, User $usuario, ?string $observacao): void
     {
+        $obraId = (string) DocumentoEngenharia::query()
+            ->whereKey($revisao->documento_engenharia_id)
+            ->value('obra_id');
+
+        GarantirAutoridadeNaObra::checar(
+            $usuario, $obraId, 'engenharia.pacotes', 'liberar_para_construcao',
+            'Você não tem autoridade para liberar/revogar esta revisão para construção.'
+        );
+
         $this->garantirRevisaoVigente($revisao);
 
         // Idempotência: consulta o estado atual direto (nunca confia em

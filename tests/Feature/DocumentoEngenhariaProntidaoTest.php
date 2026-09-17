@@ -66,14 +66,23 @@ class DocumentoEngenhariaProntidaoTest extends TestCase
         return $documento->revisoes()->create(['tenant_id' => $documento->tenant_id, 'revisao' => $texto, 'descricao' => 'x'] + $extra);
     }
 
+    /**
+     * Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+     * (engenharia.pacotes); a maioria dos testes deste arquivo nunca
+     * vincula `$this->user` a nenhum Perfil (testam prontidão derivada,
+     * nunca autorização de liberação) — ator dedicado com autoridade
+     * real, derivado da obra do próprio Documento.
+     */
     private function liberar(DocumentoEngenhariaRevisao $r): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $this->user);
+        $obra = Work::findOrFail(DocumentoEngenharia::findOrFail($r->documento_engenharia_id)->obra_id);
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $this->usuarioComAutoridadeAdmin($obra));
     }
 
     private function revogar(DocumentoEngenhariaRevisao $r): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->revogar($r, $this->user);
+        $obra = Work::findOrFail(DocumentoEngenharia::findOrFail($r->documento_engenharia_id)->obra_id);
+        (new AlterarLiberacaoRevisaoDocumento())->revogar($r, $this->usuarioComAutoridadeAdmin($obra));
     }
 
     private function viewDe(Atividade $atividade, ?Work $obra = null)

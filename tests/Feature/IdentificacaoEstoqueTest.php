@@ -490,7 +490,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $this->entradaPronta($material, $local, 100);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($local), 'saidaLocalId', 'local')
             ->call('resolverEAplicarScanMaterialOuUnidade', GeradorCodigoEstoque::codigoMaterial($material), 'saidaMaterialId', 'saidaUnidadeId')
@@ -602,7 +602,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $unidade = UnidadeEstoque::where('codigo_lote', 'B001')->firstOrFail();
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'transferencias')
+            ->call('selecionarAba', 'transferencias')
             ->call('abrirModalTransferencia')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($localA), 'transferenciaLocalOrigemId', 'local')
             ->call('resolverEAplicarScanMaterialOuUnidade', GeradorCodigoEstoque::codigoUnidade($unidade), 'transferenciaMaterialId', 'transferenciaUnidadeId')
@@ -681,7 +681,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $inv = $this->criarEIniciar($local);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', GeradorCodigoEstoque::codigoMaterial($material));
 
@@ -698,7 +698,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $item = InventarioItem::where('inventario_estoque_id', $inv->id)->firstOrFail();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', GeradorCodigoEstoque::codigoMaterial($material))
             ->set('contagemQuantidade', '97')
@@ -719,7 +719,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $item = InventarioItem::where('inventario_estoque_id', $inv->id)->where('unidade_estoque_id', $unidade->id)->firstOrFail();
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', GeradorCodigoEstoque::codigoUnidade($unidade));
 
@@ -756,7 +756,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $this->registrarContagem->execute($item, 92, Carbon::today(), $this->user);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', GeradorCodigoEstoque::codigoMaterial($material))
             ->set('contagemQuantidade', '99')
@@ -777,7 +777,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $inv = $this->iniciarInv->execute($inv, $this->user);
 
         $html = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', GeradorCodigoEstoque::codigoMaterial($material))
             ->html();
@@ -798,7 +798,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $local = $this->criarLocal();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($local), 'saidaLocalId', 'local')
             ->assertSet('saidaLocalId', $local->id)
@@ -812,7 +812,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $local = $this->criarLocal();
 
         $resultado = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($local), 'saidaLocalId', 'local');
 
@@ -822,7 +822,7 @@ class IdentificacaoEstoqueTest extends TestCase
     public function test_af_codigo_invalido_mostra_erro_amigavel_sem_500(): void
     {
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', 'codigo-totalmente-invalido', 'saidaLocalId', 'local')
             ->assertSet('saidaLocalId', null)
@@ -835,7 +835,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $localOutraObra = $this->criarLocal([], $outraObra);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($localOutraObra), 'saidaLocalId', 'local')
             ->assertSet('saidaLocalId', null)
@@ -849,7 +849,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $this->entradaPronta($material, $local, 100);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($local), 'saidaLocalId', 'local')
             ->call('resolverEAplicarScanMaterialOuUnidade', GeradorCodigoEstoque::codigoMaterial($material), 'saidaMaterialId', 'saidaUnidadeId');
@@ -863,7 +863,7 @@ class IdentificacaoEstoqueTest extends TestCase
     {
         $local = $this->criarLocal();
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($local), 'saidaLocalId', 'local')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($local), 'saidaLocalId', 'local');
@@ -875,7 +875,7 @@ class IdentificacaoEstoqueTest extends TestCase
     public function test_ai_camera_readiness_flag_presente_no_html(): void
     {
         $html = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->html();
 
@@ -892,7 +892,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $local = $this->criarLocal();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'saidas')
+            ->call('selecionarAba', 'saidas')
             ->call('abrirModalSaida')
             ->call('resolverEAplicarScan', GeradorCodigoEstoque::codigoLocal($local), 'saidaLocalId', 'local')
             ->assertSet('saidaLocalId', $local->id);
@@ -960,7 +960,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $m3 = $this->criarMaterial();
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'materiais')
+            ->call('selecionarAba', 'materiais')
             ->call('exportarEtiquetasMateriaisLote');
 
         $component->assertFileDownloaded('etiquetas-materiais.pdf');
@@ -1090,7 +1090,7 @@ class IdentificacaoEstoqueTest extends TestCase
         $item = InventarioItem::where('inventario_estoque_id', $inv->id)->firstOrFail();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', GeradorCodigoEstoque::codigoMaterial($material))
             ->set('contagemQuantidade', '97')

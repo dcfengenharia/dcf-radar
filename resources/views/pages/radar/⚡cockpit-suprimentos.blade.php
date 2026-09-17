@@ -2,6 +2,7 @@
 
 use App\Models\Work;
 use App\Support\Gestao\CockpitSuprimentosQuery;
+use App\Support\Gestao\RedacaoOperacionalCockpit;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
@@ -42,6 +43,19 @@ new class extends Component {
     public function resumo(): \App\DTOs\Gestao\Cockpit\CockpitSuprimentos
     {
         return CockpitSuprimentosQuery::resumo($this->obra, $this->horizontePrincipalDias);
+    }
+
+    /**
+     * Fase 2B, Seção 23 — "permissão de Cockpit permite ver painel/
+     * agregado; detalhe operacional sensível (fornecedor, RC, Pedido,
+     * material) respeita a permissão própria de Suprimentos". O
+     * panorama (5 contadores) fica sempre visível pra quem tem
+     * `gestao.suprimentos|ver`; as tabelas de detalhe (fornecedor/
+     * pacote/material) exigem `suprimentos.mapa|ver` também.
+     */
+    public function podeVerDetalheOperacional(): bool
+    {
+        return RedacaoOperacionalCockpit::podeVerDetalhePorFuncionalidade(Auth::user(), $this->obra->id, 'suprimentos.mapa');
     }
 };
 
@@ -128,8 +142,10 @@ new class extends Component {
                             @if($s->quantidade !== null) · Faltam {{ rtrim(rtrim(number_format($s->quantidade, 3, ',', '.'), '0'), ',') }} @endif
                         </div>
                     </div>
-                    @if(!empty($s->deepLink['rota'] ?? null))
+                    @if(!empty($s->deepLink['rota'] ?? null) && $this->podeVerDetalheOperacional())
                         <a href="{{ route($s->deepLink['rota'], $s->deepLink['parametros'] ?? []) }}" class="btn btn-sm btn-outline-primary">Ver</a>
+                    @elseif(!empty($s->deepLink['rota'] ?? null))
+                        <span class="badge bg-label-secondary" title="Requer acesso ao Mapa de Suprimentos"><i class="bx bx-lock-alt"></i></span>
                     @endif
                 </div>
             @empty
@@ -137,6 +153,12 @@ new class extends Component {
             @endforelse
         </div>
     </div>
+
+    {{-- Fase 2B, Seção 20-23 — a partir daqui, todo detalhe identifica
+         fornecedor/pacote/material/RC/Pedido; permissão de Cockpit
+         (gestao.suprimentos|ver) NUNCA implica acesso operacional —
+         exige também suprimentos.mapa|ver. --}}
+    @if($this->podeVerDetalheOperacional())
 
     {{-- "O que chega tarde demais?" --}}
     <div class="card mb-4">
@@ -328,6 +350,14 @@ new class extends Component {
             </div>
         </div>
     </div>
+
+    @else
+        <div class="alert alert-secondary">
+            <i class="bx bx-lock-alt me-1"></i>
+            Detalhe operacional (fornecedor, pacote, material, RC, Pedido) requer acesso ao Mapa de Suprimentos.
+            O painel de contagens acima já reflete tudo que este perfil está autorizado a ver.
+        </div>
+    @endif
 
     @if(!empty($this->resumo->gaps))
         <div class="alert alert-secondary small">

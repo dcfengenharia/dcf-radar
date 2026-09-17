@@ -553,7 +553,7 @@ class EstoqueTransferenciaTest extends TestCase
         $this->entradaPronta($material, $a, 100);
 
         $componente = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'transferencias')
+            ->call('selecionarAba', 'transferencias')
             ->call('abrirModalTransferencia')
             ->set('transferenciaMaterialId', $material->id)
             ->set('transferenciaLocalOrigemId', $a->id)
@@ -599,7 +599,7 @@ class EstoqueTransferenciaTest extends TestCase
         (new RegistrarTransferenciaEstoque())->execute($material, $a, $b, 25, Carbon::today(), $this->user, null, 'Transferência de teste');
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'transferencias')
+            ->call('selecionarAba', 'transferencias')
             ->assertSee('Almoxarifado Central')
             ->assertSee('Pátio')
             ->assertSee('25,000')

@@ -76,6 +76,14 @@ new class extends Component {
   public function mount(Work $obra): void
   {
     $this->obra = $obra;
+  
+  // Fase 2F.CORREÇÃO.3 — propagação do Achado E23: 'ver' é
+  // capability real, configurável por Perfil; precisa ser
+  // reafirmada no backend ao abrir a página diretamente, não
+  // só no menu (CatalogoFuncionalidades::usuarioPodeVer()).
+  // Mesmo padrão já usado pelos 3 Cockpits e por
+  // restricoes.quadro/lookahead/suprimentos.mapa (2F.CORREÇÃO.2).
+  abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'obras.linhas_base', 'ver'), 403);
   }
 
   #[Computed]
@@ -569,7 +577,16 @@ new class extends Component {
 
   public function excluir(string $id): void
   {
-    $lb = LinhaBase::findOrFail($id);
+    // Fase 2A (Hardening) — Achado 3: antes desta correção não havia
+    // NENHUMA checagem (nem de obra, nem de permissão) — qualquer usuário
+    // do tenant podia excluir permanentemente uma Linha de Base de
+    // QUALQUER obra. Resolve só dentro da obra atual (nunca por ID cru —
+    // `findOrFail` falha com 404 pra ID de outra obra, antes de checar
+    // permissão) e autoriza via a permissão já cadastrada no catálogo
+    // pra esta própria página (`obras.linhas_base|excluir`) — nenhuma
+    // capacidade nova inventada.
+    $lb = LinhaBase::where('obra_id', $this->obra->id)->findOrFail($id);
+    abort_unless(auth()->user()->temPermissaoNaObra($this->obra->id, 'obras.linhas_base', 'excluir'), 403);
 
     $this->transacaoSegura(fn() => $lb->delete());
 

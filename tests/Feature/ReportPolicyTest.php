@@ -144,4 +144,48 @@ class ReportPolicyTest extends TestCase
         $this->assertTrue($visiveis->contains($rascunho->id));
         $this->assertTrue($visiveis->contains($emitido->id));
     }
+
+    /**
+     * FASE 2F.CORREÇÃO — Seção 9: "ver sem comentar -> escrita negada".
+     * 'ver' em report.relatorios nunca é gated (REGRAS_ESCRITA não lista
+     * 'ver' pra este slug), mas 'comentar' é capacidade própria (Fase 2B)
+     * que exige uma linha PerfilPermissao explícita. Um Perfil
+     * customizado com 'ver' concedido e 'comentar' nunca concedido prova
+     * Consulta != Colaboração de forma direta (sem depender só dos 5
+     * papéis legados, que sempre têm as duas juntas por herança).
+     */
+    public function test_ver_relatorio_sem_comentar_nega_comentario_perfil_customizado(): void
+    {
+        $emitido = $this->criarReport(StatusReport::Emitido);
+
+        $perfilConsulta = \App\Models\Perfil::create(['tenant_id' => $this->tenant->id, 'nome' => 'Report Consulta']);
+        \App\Models\PerfilPermissao::create([
+            'tenant_id' => $this->tenant->id,
+            'perfil_id' => $perfilConsulta->id,
+            'funcionalidade' => 'report.relatorios',
+            'acao' => 'ver',
+        ]);
+
+        $user = User::factory()->create(['tenant_id' => $this->tenant->id]);
+        $this->obra->users()->attach($user->id, ['perfil_id' => $perfilConsulta->id]);
+        \App\Support\AtribuicaoPerfilObra::definirPerfilUnico($this->obra, $user->id, $perfilConsulta->id);
+        $user = $user->fresh();
+
+        $this->assertTrue($user->can('view', $emitido));
+        $this->assertFalse($user->can('comentar', $emitido));
+    }
+
+    /**
+     * FASE 2F.CORREÇÃO — Seção 9: "sem ver -> comentário nunca vira
+     * canal lateral". Usuário sem NENHUM vínculo com a obra do report
+     * (nem sequer obra_user) não consegue comentar, mesmo que o report
+     * já esteja emitido.
+     */
+    public function test_sem_nenhum_vinculo_nao_consegue_comentar_relatorio_como_canal_lateral(): void
+    {
+        $emitido = $this->criarReport(StatusReport::Emitido);
+        $semVinculo = User::factory()->create(['tenant_id' => $this->tenant->id]);
+
+        $this->assertFalse($semVinculo->can('comentar', $emitido));
+    }
 }

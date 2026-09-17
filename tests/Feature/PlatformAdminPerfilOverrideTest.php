@@ -107,6 +107,13 @@ class PlatformAdminPerfilOverrideTest extends TestCase
         $perfilAdmin = Perfil::porSlugPadrao($this->tenant, 'admin');
         $perfilGerente = Perfil::porSlugPadrao($this->tenant, 'gerente_planejamento');
         $this->obra->users()->updateExistingPivot($gerente->id, ['perfil_id' => $perfilAdmin->id]);
+        // FASE 2B.CORREÇÃO — a nova pivot (obra_user_perfil) já tem uma
+        // associação pra $gerente (de vincularObra() acima) e, uma vez
+        // populada, é autoridade completa: um `updateExistingPivot` cru
+        // só no espelho legado não promove mais o usuário a Admin de
+        // verdade. Sincroniza pelo mesmo caminho que qualquer caller
+        // real (a própria alterarPerfil()) usaria.
+        \App\Support\AtribuicaoPerfilObra::definirPerfilUnico($this->obra, $gerente->id, $perfilAdmin->id);
 
         $this->actingAs($this->donoDaPlataforma);
         ImpersonationContext::start($this->tenant);

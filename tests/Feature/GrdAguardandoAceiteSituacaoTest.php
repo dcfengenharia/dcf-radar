@@ -92,7 +92,12 @@ class GrdAguardandoAceiteSituacaoTest extends TestCase
         $obra ??= $this->obra;
         $usuario ??= $this->user;
         if (! $revisao->fresh()->estaLiberadaParaConstrucao()) {
-            (new AlterarLiberacaoRevisaoDocumento())->liberar($revisao->fresh(), $usuario);
+            // Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+            // (engenharia.pacotes); $usuario aqui é GerentePlanejamento
+            // (usado só pra CriarGrd/EmitirGrd, que não exigem essa
+            // capacidade), então a liberação usa um ator DEDICADO com
+            // autoridade real, nunca $usuario.
+            (new AlterarLiberacaoRevisaoDocumento())->liberar($revisao->fresh(), $this->usuarioComAutoridadeAdmin($obra));
         }
         $dest = $this->destinatario($obra);
         $grd = (new CriarGrd())->execute($obra, $usuario);
@@ -198,6 +203,11 @@ class GrdAguardandoAceiteSituacaoTest extends TestCase
             $obraOutro = Work::factory()->create(['tenant_id' => $outroTenant->id]);
             $doc = DocumentoEngenharia::create(['tenant_id' => $outroTenant->id, 'obra_id' => $obraOutro->id, 'codigo' => 'DOC-OUTRO', 'descricao' => 'x']);
             $rev = $doc->revisoes()->create(['tenant_id' => $outroTenant->id, 'revisao' => 'R1', 'descricao' => 'x'])->fresh();
+            // Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+            // (engenharia.pacotes); $outroUser é só infraestrutura de
+            // fixture pra este teste de isolamento cross-tenant, nunca
+            // o alvo real de nenhuma asserção de permissão.
+            $this->vincularObra($obraOutro, $outroUser, Papel::Admin->value);
             (new AlterarLiberacaoRevisaoDocumento())->liberar($rev->fresh(), $outroUser);
             $dest = Destinatario::create(['tenant_id' => $outroTenant->id, 'obra_id' => $obraOutro->id, 'nome' => 'Dest Outro']);
             $grd = (new CriarGrd())->execute($obraOutro, $outroUser);

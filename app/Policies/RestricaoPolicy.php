@@ -40,6 +40,12 @@ class RestricaoPolicy
         return $user->temPermissaoNaObra($restricao->atividade->obra_id, 'restricoes.quadro', 'excluir');
     }
 
+    /**
+     * Fase 2B, Seção 17/18 — 'resolver' é capacidade própria, separada de
+     * 'editar' (usava o fallback 'editar' antes desta fase). O atalho do
+     * responsável pela restrição continua intocado, independente de
+     * Perfil.
+     */
     public function resolver(User $user, Restricao $restricao): bool
     {
         $obraId = $restricao->atividade->obra_id;
@@ -49,9 +55,13 @@ class RestricaoPolicy
             return $user->temAcessoAObra($obraId);
         }
 
-        return $user->temPermissaoNaObra($obraId, 'restricoes.quadro', 'editar');
+        return $user->temPermissaoNaObra($obraId, 'restricoes.quadro', 'resolver');
     }
 
+    /**
+     * Fase 2B, Seção 17/18 — 'reabrir' é capacidade própria, separada de
+     * 'editar' (usava o fallback 'editar' antes desta fase).
+     */
     public function reabrir(User $user, Restricao $restricao): bool
     {
         $obraId = $restricao->atividade->obra_id;
@@ -61,12 +71,17 @@ class RestricaoPolicy
             return $user->temAcessoAObra($obraId);
         }
 
-        return $user->temPermissaoNaObra($obraId, 'restricoes.quadro', 'editar');
+        return $user->temPermissaoNaObra($obraId, 'restricoes.quadro', 'reabrir');
     }
 
+    /**
+     * Fase 2B, Seção 12/14 — 'comentar' é capacidade própria, separada de
+     * 'criar' (que autorizava isso antes desta fase). Backfill garante
+     * que todo Perfil que hoje tem 'criar' também ganhou 'comentar'.
+     */
     public function comentar(User $user, Restricao $restricao): bool
     {
-        return $user->temPermissaoNaObra($restricao->atividade->obra_id, 'restricoes.quadro', 'criar');
+        return $user->temPermissaoNaObra($restricao->atividade->obra_id, 'restricoes.quadro', 'comentar');
     }
 
     public function notificar(User $user, string $obraId): bool

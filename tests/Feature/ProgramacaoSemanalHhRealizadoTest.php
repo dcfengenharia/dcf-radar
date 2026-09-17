@@ -12,7 +12,9 @@ use App\Models\ProgramacaoSemanalItem;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Work;
+use App\Support\TenantContext;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use InvalidArgumentException;
 use Livewire\Livewire;
@@ -200,14 +202,50 @@ class ProgramacaoSemanalHhRealizadoTest extends TestCase
 
         $outroTenant = Tenant::factory()->create();
         $outroUser = User::factory()->create(['tenant_id' => $outroTenant->id]);
-        $outraObra = Work::factory()->create(['tenant_id' => $outroTenant->id]);
+
+        // Fase 2F.CORREÇÃO.3 — achado real na fixture, exposto (não
+        // causado) pelo Achado E23: $this->user (doutro tenant, do
+        // setUp() da classe) continua autenticado neste ponto, então
+        // Work::factory()->create(['tenant_id' => $outroTenant->id])
+        // tinha seu tenant_id SILENCIOSAMENTE sobrescrito pelo tenant
+        // ATUALMENTE autenticado (BelongsToTenant::creating() sempre
+        // carimba a partir de TenantContext::currentId(), nunca do
+        // valor explícito do array — mesmo achado já documentado
+        // várias vezes no histórico deste projeto, ex.: Fase 3/Etapa 4
+        // do Health Check). $outraObra acabava pertencendo ao tenant
+        // ERRADO (o de $this->user), o que nunca importava pro
+        // asserção antiga (ModelNotFoundException por obra_id, sem
+        // checagem de 'ver') mas agora corrompe a resolução de
+        // permissão do Achado E23. Corrigido com o mesmo padrão já
+        // estabelecido no projeto pra criar fixture de "outro tenant"
+        // enquanto autenticado como um tenant diferente:
+        // TenantContext::actingAs($outroTenant, ...).
+        $outraObra = TenantContext::actingAs(
+            $outroTenant,
+            fn () => Work::factory()->create(['tenant_id' => $outroTenant->id])
+        );
+
+        // vincularObra() também grava na nova pivot multiperfil
+        // (ObraUserPerfil, tenant-scoped desde a Fase 2B) — precisa
+        // rodar com $outroUser já autenticado, senão a linha seria
+        // carimbada com o tenant do ator AINDA autenticado
+        // ($this->user), corrompendo a pivot pra este par.
+        $this->actingAs($outroUser);
         $this->vincularObra($outraObra, $outroUser, Papel::Engenheiro->value);
 
-        $this->actingAs($outroUser);
+        // Fase 2A (Hardening) — antes do Achado 4, abrirDetalhe() nunca
+        // revalidava o ID contra a obra do componente: um programacao_
+        // semanal_id de outro tenant só ficava "invisível" por acidente,
+        // via o global scope de tenant filtrando itensDaProgramacaoDetalhe()
+        // (a lista vinha vazia, mas nenhuma exceção era lançada). Com o
+        // guard novo (ProgramacaoSemanal::where('obra_id', ...)->
+        // findOrFail($id)), um ID de outra obra/tenant agora é bloqueado
+        // de forma explícita — ModelNotFoundException, mesmo padrão já
+        // usado nos demais achados desta fase (Livewire::test()->call()
+        // não surfaça isso como assertStatus(404) de forma confiável).
+        $this->expectException(ModelNotFoundException::class);
 
-        $componente = Livewire::test('pages::radar.programacoes', ['obra' => $outraObra])
+        Livewire::test('pages::radar.programacoes', ['obra' => $outraObra])
             ->call('abrirDetalhe', $item->programacao_semanal_id);
-
-        $this->assertCount(0, $componente->instance()->itensDaProgramacaoDetalhe);
     }
 }

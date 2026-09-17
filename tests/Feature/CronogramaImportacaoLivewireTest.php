@@ -29,6 +29,14 @@ class CronogramaImportacaoLivewireTest extends TestCase
         $this->user = User::factory()->create(['tenant_id' => $tenant->id]);
         $this->actingAs($this->user);
         $this->obra = Work::factory()->create(['tenant_id' => $tenant->id]);
+        // Fase 2F.CORREÇÃO.3 — estas páginas agora reafirmam 'ver'
+        // no backend (Achado E23); este ator sempre foi pensado como
+        // um usuário LEGÍTIMO da página (o teste em si nunca foi sobre
+        // permissão), nunca precisou de vinculação explicita antes
+        // porque nenhum gate real existia. GerentePlanejamento cobre
+        // 've r' (livre por padrão) e qualquer ação de escrita já
+        // exercida por estes testes.
+        $this->vincularObra($this->obra, $this->user, \App\Enums\Papel::GerentePlanejamento->value);
     }
 
     private function arquivoFixture(string $name): UploadedFile

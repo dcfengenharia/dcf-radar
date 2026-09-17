@@ -67,9 +67,17 @@ class GrdPageTest extends TestCase
         return $d->revisoes()->create(['tenant_id' => $this->tenant->id, 'revisao' => $texto, 'descricao' => 'x'])->fresh();
     }
 
+    /**
+     * Fase 2E.CORREÇÃO — liberar_para_construcao exige Admin
+     * (engenharia.pacotes); ator dedicado com autoridade real, derivado
+     * da obra do próprio Documento (nunca $this->user às cegas — cobre
+     * também cenários same-tenant cross-obra, onde $this->user só é
+     * Admin em $this->obra).
+     */
     private function liberar(DocumentoEngenhariaRevisao $r, ?User $usuario = null): void
     {
-        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $usuario ?? $this->user);
+        $obraDoDoc = Work::findOrFail(DocumentoEngenharia::findOrFail($r->documento_engenharia_id)->obra_id);
+        (new AlterarLiberacaoRevisaoDocumento())->liberar($r, $usuario ?? $this->usuarioComAutoridadeAdmin($obraDoDoc));
     }
 
     private function destinatario(array $o = [], ?Work $obra = null): Destinatario

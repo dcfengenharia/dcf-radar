@@ -13,6 +13,7 @@ use App\Models\MovimentacaoEstoque;
 use App\Models\UnidadeEstoque;
 use App\Models\User;
 use App\Support\Estoque\SaldoEstoque;
+use App\Support\Perfis\GarantirAutoridadeNaObra;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -36,7 +37,12 @@ use Illuminate\Support\Facades\DB;
  * acontecem nesta única chamada/transação, mesmo padrão de
  * `App\Models\PlanoAcao::transformarEmRestricoes()` (Ciclo 11): a dupla
  * autorização (estoque.inventario|editar + estoque.movimentacao|editar)
- * é checada no CHAMADOR (Livewire), nunca dentro desta Action.
+ * é checada no CHAMADOR (Livewire,
+ * `garantirPermissaoAprovarAjusteInventario()`) — e, desde a Fase 2E,
+ * REAFIRMADA aqui dentro, na obra derivada do próprio `InventarioEstoque`
+ * travado (nunca da sessão), como segunda camada contra chamada direta
+ * (`app(AprovarAjusteInventario::class)->execute(...)` sem passar pelo
+ * caller). As duas continuam coexistindo — nenhuma substitui a outra.
  *
  * **Serial inesperado (Seção 8)**: um item sem UnidadeEstoque resolvida
  * (`InventarioItem::ehSerialInesperado()`) nunca gera Ajuste automático
@@ -54,6 +60,21 @@ class AprovarAjusteInventario
 
             $itemTravado = InventarioItem::whereKey($item->id)->lockForUpdate()->firstOrFail();
             $inventario = $itemTravado->inventario()->lockForUpdate()->firstOrFail();
+
+            GarantirAutoridadeNaObra::checar(
+                $usuario,
+                $inventario->obra_id,
+                'estoque.inventario',
+                'editar',
+                'Você não tem autoridade para aprovar Ajuste de Inventário nesta obra.'
+            );
+            GarantirAutoridadeNaObra::checar(
+                $usuario,
+                $inventario->obra_id,
+                'estoque.movimentacao',
+                'editar',
+                'Aprovar um Ajuste também exige autoridade sobre a Movimentação de Estoque desta obra.'
+            );
 
             if ($inventario->status !== StatusInventarioEstoque::EmAnalise) {
                 throw new AjusteInventarioInvalidoException('Só é possível aprovar Ajuste com o Inventário Em Análise.');

@@ -412,7 +412,7 @@ class DecomposicaoQuantitativaNecessidadeTest extends TestCase
         (new EmitirRequisicaoCompra())->execute($rc->fresh(), $this->user);
 
         $adjudicacao = (new CriarAdjudicacaoRequisicaoCompra())->execute($rc->fresh(), $this->fornecedor(), 'Decisão', null, null, $this->user);
-        (new AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjudicacao, $item->fresh(), $parcela->fresh(), 100);
+        (new AtualizarAdjudicacaoRequisicaoCompra())->adicionarItem($adjudicacao, $item->fresh(), $parcela->fresh(), 100, $this->user);
 
         $linha = $this->linha($atividade, $necessidade);
         $this->assertInvariante($linha, 100);

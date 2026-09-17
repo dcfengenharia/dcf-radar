@@ -97,6 +97,13 @@ new class extends Component {
   public function mount(Work $obra): void
   {
     $this->obra = $obra;
+
+    // Fase 2F.CORREÇÃO.2 — Achado E23: 'ver' é capability real,
+    // configurável por Perfil; precisa ser reafirmada no backend ao
+    // abrir a página diretamente, não só no menu
+    // (CatalogoFuncionalidades::usuarioPodeVer()). Mesmo padrão já
+    // usado pelos 3 Cockpits (gestao.cockpit/suprimentos/engenharia).
+    abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.quadro', 'ver'), 403);
   }
 
   // =========================================================================
@@ -403,7 +410,14 @@ new class extends Component {
         ->orderByRaw("FIELD(status,'aberta','em_tratamento','aguardando_terceiros','resolvida')")
         ->orderBy('prazo_limite'),
       'pacoteTrabalho:id,nome',
-    ])->find($this->modalAtividadeId);
+    ])
+      // Fase 2A (Hardening) — defesa em profundidade: $modalAtividadeId é
+      // propriedade pública Livewire, pode chegar setada por outro caminho
+      // além de verAtividade() (que já reforça a mesma guarda na escrita).
+      // Nunca resolver por ID cru — só dentro da obra do próprio
+      // componente (mesmo padrão já usado em ⚡lookahead.blade.php).
+      ->where('obra_id', $this->obra->id)
+      ->find($this->modalAtividadeId);
 
     if (!$at) {
       return null;
@@ -608,19 +622,43 @@ new class extends Component {
       return;
     }
     $this->atividadeExpandida = $atividadeId;
+
+    // Fase 2A (Hardening) — Achado 1: a atividade precisa pertencer à
+    // MESMA obra deste componente (nunca resolvida por ID cru — a mesma
+    // regra "ID → entidade → obra REAL da entidade → autorização" vale
+    // aqui mesmo sem mutação de negócio, porque este método já cria
+    // linhas de AtividadeItemProntidao a partir do ID recebido).
+    $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+
     foreach ($this->itensProntidao as $item) {
       AtividadeItemProntidao::firstOrCreate(
-        ['atividade_id' => $atividadeId, 'item_prontidao_id' => $item->id],
+        ['atividade_id' => $atividade->id, 'item_prontidao_id' => $item->id],
         ['concluido' => false]
       );
     }
   }
 
+  /**
+   * Fase 2A (Hardening) — Achado 1: antes desta correção, `$atividadeId`
+   * nunca era validado contra a obra do componente nem contra nenhuma
+   * permissão — qualquer usuário com acesso a QUALQUER obra do tenant
+   * podia marcar/desmarcar o checklist de prontidão de uma atividade de
+   * OUTRA obra. Corrigido com o padrão-ouro já usado em
+   * `AtividadePolicy`/`⚡lookahead.blade.php::verAtividade()`: resolve a
+   * atividade só dentro da obra atual (nunca por ID cru — `findOrFail`
+   * falha com 404 pra ID de outra obra, antes mesmo de checar
+   * permissão), depois autoriza via a MESMA Policy que já governa editar
+   * uma atividade (`AtividadePolicy::update()` → `restricoes.lookahead|
+   * editar`) — nenhuma capacidade nova inventada.
+   */
   public function marcarItemProntidao(string $atividadeId, string $itemId, bool $valor): void
   {
-    $this->transacaoSegura(function () use ($atividadeId, $itemId, $valor) {
+    $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+    $this->authorize('update', $atividade);
+
+    $this->transacaoSegura(function () use ($atividade, $itemId, $valor) {
       AtividadeItemProntidao::updateOrCreate(
-        ['atividade_id' => $atividadeId, 'item_prontidao_id' => $itemId],
+        ['atividade_id' => $atividade->id, 'item_prontidao_id' => $itemId],
         ['concluido' => $valor, 'concluido_por' => $valor ? Auth::id() : null, 'concluido_em' => $valor ? now() : null]
       );
     });
@@ -647,15 +685,29 @@ new class extends Component {
 
   public function verAtividade(string $atividadeId): void
   {
+    // Fase 2A (Hardening) — Achado 5: mesma guarda de
+    // `⚡lookahead.blade.php::verAtividade()` (Ciclo 17, A.7.2.CORREÇÃO),
+    // nunca aplicada aqui até agora — sem ela, o popup abria com o ID de
+    // qualquer atividade de qualquer obra do tenant. `atividadeDetalhe()`
+    // tem a MESMA guarda na leitura, porque `$modalAtividadeId` é
+    // propriedade pública e pode ser setada por outro caminho.
+    Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+
     $this->modalAtividadeId = $atividadeId;
     unset($this->atividadeDetalhe);
   }
 
   public function marcarItemNaDetalhe(string $atividadeId, string $itemId, bool $valor): void
   {
-    $this->transacaoSegura(function () use ($atividadeId, $itemId, $valor) {
+    // Fase 2A (Hardening) — Achado 1, mesma correção de
+    // marcarItemProntidao() acima: resolver dentro da obra atual +
+    // autorizar via AtividadePolicy::update() (restricoes.lookahead|editar).
+    $atividade = Atividade::where('obra_id', $this->obra->id)->findOrFail($atividadeId);
+    $this->authorize('update', $atividade);
+
+    $this->transacaoSegura(function () use ($atividade, $itemId, $valor) {
       AtividadeItemProntidao::updateOrCreate(
-        ['atividade_id' => $atividadeId, 'item_prontidao_id' => $itemId],
+        ['atividade_id' => $atividade->id, 'item_prontidao_id' => $itemId],
         ['concluido' => $valor, 'concluido_por' => $valor ? Auth::id() : null, 'concluido_em' => $valor ? now() : null]
       );
     });

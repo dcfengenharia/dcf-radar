@@ -786,7 +786,10 @@ new class extends Component {
    */
   public function liberarRevisaoVigente(): void
   {
-    $this->garantirPermissaoNaObraAtual('editar');
+    // Fase 2B, Seção 17/18 — 'liberar_para_construcao' virou capacidade
+    // própria, separada de 'editar' (backfill garante que todo Perfil
+    // que hoje tem 'editar' também ganhou a nova chave).
+    $this->garantirPermissaoNaObraAtual('liberar_para_construcao');
     $documento = $this->resolverDocumentoDaObraAtual($this->documentoRevisoesId);
     $revisao = $documento->revisaoVigente();
     abort_if($revisao === null, 404);
@@ -811,7 +814,7 @@ new class extends Component {
 
   public function revogarLiberacaoRevisaoVigente(): void
   {
-    $this->garantirPermissaoNaObraAtual('editar');
+    $this->garantirPermissaoNaObraAtual('liberar_para_construcao');
     $documento = $this->resolverDocumentoDaObraAtual($this->documentoRevisoesId);
     $revisao = $documento->revisaoVigente();
     abort_if($revisao === null, 404);

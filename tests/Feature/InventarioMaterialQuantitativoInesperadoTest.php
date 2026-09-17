@@ -433,7 +433,7 @@ class InventarioMaterialQuantitativoInesperadoTest extends TestCase
         $this->actingAs($semPermissao);
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', 'EX-003')
             ->assertStatus(403);
@@ -526,7 +526,7 @@ class InventarioMaterialQuantitativoInesperadoTest extends TestCase
         $local = $this->criarLocal(['nome' => 'Área 08']);
 
         $component = Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->call('abrirModalNovoInventario')
             ->set('invLocalId', $local->id)
             ->set('invTitulo', 'Inventário inicial - teste')
@@ -576,7 +576,7 @@ class InventarioMaterialQuantitativoInesperadoTest extends TestCase
         $itemOriginal = InventarioItem::where('inventario_estoque_id', $inv->id)->firstOrFail();
 
         Livewire::test('pages::radar.estoque', ['obra' => $this->obra])
-            ->set('abaAtiva', 'inventario')
+            ->call('selecionarAba', 'inventario')
             ->set('inventarioDetalheId', $inv->id)
             ->call('processarScanInventario', 'COM-SALDO')
             ->assertSet('scanErro', null)
