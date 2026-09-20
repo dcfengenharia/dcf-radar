@@ -273,7 +273,7 @@ class RequisicaoCompraTest extends TestCase
 
     public function test_l_emissao_instancia_etapas_com_data_prevista_em_dias_uteis(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-24')); // segunda-feira
+        Carbon::setTestNow(Carbon::parse('2026-08-24 12:00:00')); // segunda-feira
 
         try {
             $pacote = $this->criarPacote();
@@ -301,7 +301,7 @@ class RequisicaoCompraTest extends TestCase
 
     public function test_m_status_de_etapa_e_derivado(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-24'));
+        Carbon::setTestNow(Carbon::parse('2026-08-24 12:00:00'));
 
         try {
             $pacote = $this->criarPacote();
@@ -314,7 +314,7 @@ class RequisicaoCompraTest extends TestCase
 
             $this->assertSame(StatusEtapaRequisicaoCompra::Pendente, $etapa->status());
 
-            Carbon::setTestNow(Carbon::parse('2026-09-10'));
+            Carbon::setTestNow(Carbon::parse('2026-09-10 12:00:00'));
             $this->assertSame(StatusEtapaRequisicaoCompra::Atrasada, $etapa->fresh()->status());
 
             $this->concluirEtapa->execute($etapa->fresh(), $this->user, '2026-09-10');
@@ -531,7 +531,7 @@ class RequisicaoCompraTest extends TestCase
 
     public function test_x_fim_previsto_deriva_da_ultima_etapa_e_nunca_cria_restricao(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-24'));
+        Carbon::setTestNow(Carbon::parse('2026-08-24 12:00:00'));
 
         try {
             $pacote = $this->criarPacote();

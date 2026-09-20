@@ -83,7 +83,7 @@
         <tbody>
             @foreach ($views as $v)
             @foreach ($v->restricoesBloqueantes as $r)
-            @php $vencida = $r->prazoLimite?->isPast() ?? false; @endphp
+            @php $vencida = $r->estaVencida(); @endphp
             <tr>
                 <td>{{ $v->nome }}</td>
                 <td>{{ $r->descricao }}</td>

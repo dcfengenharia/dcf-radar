@@ -46,6 +46,22 @@ class Restricao extends Model
         'resolvida_em' => 'datetime',
     ];
 
+    /**
+     * Auditoria Pré-Produção A2, Seção 4 (Timezone) — substitui
+     * `$restricao->prazo_limite->isPast()` (bug provado: `prazo_limite` é
+     * cast 'date', meia-noite UTC daquele dia; `isPast()` comparava contra
+     * Carbon::now() em UTC, marcando "vencida" a partir das 21h00 do dia
+     * ANTERIOR ao prazo, horário de Brasília — quase 27h cedo demais).
+     * Único ponto de verdade pra "esta Restrição está com prazo vencido",
+     * reaproveitado por todos os pontos que antes faziam o `isPast()` cru
+     * (Central de Prontidão, Relatórios, Restrições, Lookahead, Plano
+     * Semanal) — nunca uma segunda fórmula duplicada.
+     */
+    public function estaVencida(): bool
+    {
+        return \App\Support\Tempo\RelogioNegocio::dataEstaVencida($this->prazo_limite);
+    }
+
     public function atividade(): BelongsTo
     {
         return $this->belongsTo(Atividade::class);

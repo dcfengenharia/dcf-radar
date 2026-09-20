@@ -675,38 +675,118 @@ class WorkManagementTest extends TestCase
 
     public function test_badge_de_prazo_mostra_dias_restantes_quando_dentro_do_prazo(): void
     {
-        $user = $this->createUserWithTenant();
-        $client = $this->createClient($user);
-        $work = Work::factory()->create([
-            'tenant_id' => $user->tenant_id,
-            'client_id' => $client->id,
-            'end_date_baseline' => now()->addDays(28),
-        ]);
-        // Fase 2A (Hardening) — sem vínculo a obra nem aparece na listagem.
-        $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
+        // Auditoria Pré-Produção A2.2, Seção 9 — relógio travado (nunca
+        // now() cru): torna o teste determinístico e independente do
+        // instante real em que a suíte roda, o que já bastava pra expor
+        // o bug de calendário corrigido nesta etapa (RelogioNegocio::
+        // diasEntreDatas()).
+        \Carbon\Carbon::setTestNow(\Carbon\Carbon::parse('2026-09-19 12:00:00'));
+        try {
+            $user = $this->createUserWithTenant();
+            $client = $this->createClient($user);
+            $work = Work::factory()->create([
+                'tenant_id' => $user->tenant_id,
+                'client_id' => $client->id,
+                'end_date_baseline' => now()->addDays(28),
+            ]);
+            // Fase 2A (Hardening) — sem vínculo a obra nem aparece na listagem.
+            $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
 
-        $this->actingAs($user)
-            ->get('/app/gestao/minhas-obras')
-            ->assertOk()
-            ->assertSee('28 DIAS RESTANTES');
+            $this->actingAs($user)
+                ->get('/app/gestao/minhas-obras')
+                ->assertOk()
+                ->assertSee('28 DIAS RESTANTES');
+        } finally {
+            \Carbon\Carbon::setTestNow();
+        }
     }
 
     public function test_badge_de_prazo_mostra_dias_em_atraso_quando_prazo_vencido(): void
     {
-        $user = $this->createUserWithTenant();
-        $client = $this->createClient($user);
-        $work = Work::factory()->create([
-            'tenant_id' => $user->tenant_id,
-            'client_id' => $client->id,
-            'end_date_baseline' => now()->subDays(10),
-        ]);
-        // Fase 2A (Hardening) — sem vínculo a obra nem aparece na listagem.
-        $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
+        \Carbon\Carbon::setTestNow(\Carbon\Carbon::parse('2026-09-19 12:00:00'));
+        try {
+            $user = $this->createUserWithTenant();
+            $client = $this->createClient($user);
+            $work = Work::factory()->create([
+                'tenant_id' => $user->tenant_id,
+                'client_id' => $client->id,
+                'end_date_baseline' => now()->subDays(10),
+            ]);
+            // Fase 2A (Hardening) — sem vínculo a obra nem aparece na listagem.
+            $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
 
-        $this->actingAs($user)
-            ->get('/app/gestao/minhas-obras')
-            ->assertOk()
-            ->assertSee('10 DIAS EM ATRASO');
+            $this->actingAs($user)
+                ->get('/app/gestao/minhas-obras')
+                ->assertOk()
+                ->assertSee('10 DIAS EM ATRASO');
+        } finally {
+            \Carbon\Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * Auditoria Pré-Produção A2.2, Seção 9 — matriz de fronteira UTC x
+     * Brasil: prova que "hoje (Brasil) + 28 dias de calendário" mostra
+     * exatamente 28, em QUALQUER hora do dia em que a suíte rodar,
+     * inclusive nas janelas onde UTC e America/Sao_Paulo discordam sobre
+     * qual calendário-dia é "hoje". A data do prazo é sempre construída
+     * via `RelogioNegocio::hoje()->addDays(28)` (nunca `now()->addDays(28)`
+     * cru) — representa "o usuário de negócio, no Brasil, define um
+     * prazo de 28 dias a partir de hoje", que precisa ser bem definido
+     * em qualquer instante; `now()->addDays(28)` seria ele PRÓPRIO
+     * ambíguo durante a janela de discordância (a UTC já pode estar em
+     * "amanhã" quando o Brasil ainda está em "hoje"), testando um
+     * fixture mal-posto em vez do comportamento de produção.
+     *
+     * Achado real de CONSTRUÇÃO DO TESTE (não de produção), Auditoria
+     * A2.2 — `App\Models\Concerns\BelongsToTenant::bootBelongsToTenant()`
+     * carimba `tenant_id` a partir de `TenantContext::currentId()` no
+     * evento `creating`, IGNORANDO qualquer valor explícito já presente
+     * no array de `create()` (mesma trava de segurança documentada no
+     * topo do CLAUDE.md). `TenantContext::currentId()` resolve pelo
+     * usuário AUTENTICADO no instante da criação — nunca pelo `tenant_id`
+     * do array. Na 1ª versão deste teste, `$this->actingAs($user)` só era
+     * chamado DEPOIS de `Work::factory()->create(...)`; a partir da 2ª
+     * iteração do loop, `Auth::user()` ainda apontava pro usuário da
+     * iteração ANTERIOR (nunca deslogado entre iterações do MESMO método
+     * de teste) — o Work do novo cenário nascia carimbado com o tenant
+     * ERRADO (o do cenário anterior), silenciosamente. `actingAs($user)`
+     * precisa vir ANTES de qualquer `create()` de entidade tenant-scoped
+     * dentro do loop — mesma ordem que qualquer fluxo real de produção já
+     * segue (usuário loga primeiro, só depois cria suas próprias obras).
+     */
+    public function test_badge_de_prazo_dias_restantes_correto_em_qualquer_fronteira_utc_brasil(): void
+    {
+        $instantesUtc = [
+            'antes_da_virada_utc' => '2026-09-19 23:00:00',  // 20:00 BRT (mesmo dia nos dois fusos)
+            'depois_da_virada_utc_ainda_hoje_no_brasil' => '2026-09-20 01:00:00', // 22:00 BRT do dia 19 — UTC já é dia 20, Brasil ainda é dia 19
+            'quase_meia_noite_utc' => '2026-09-19 23:59:59', // 20:59:59 BRT
+            'logo_apos_meia_noite_brasil' => '2026-09-20 03:01:00', // 00:01 BRT do dia 20 — já é "amanhã" nos dois fusos
+        ];
+
+        foreach ($instantesUtc as $rotulo => $instanteUtc) {
+            \Carbon\Carbon::setTestNow(\Carbon\Carbon::parse($instanteUtc, 'UTC'));
+            try {
+                $user = $this->createUserWithTenant();
+                $this->actingAs($user);
+
+                $client = $this->createClient($user);
+                $work = Work::factory()->create([
+                    'tenant_id' => $user->tenant_id,
+                    'client_id' => $client->id,
+                    'end_date_baseline' => \App\Support\Tempo\RelogioNegocio::hoje()->addDays(28),
+                ]);
+                $this->vincularObra($work, $user, Papel::GerentePlanejamento->value);
+
+                $this->get('/app/gestao/minhas-obras')
+                    ->assertOk()
+                    ->assertSee('28 DIAS RESTANTES');
+            } finally {
+                \Carbon\Carbon::setTestNow();
+            }
+        }
+
+        $this->assertTrue(true, 'todas as ' . count($instantesUtc) . ' fronteiras testadas sem falha');
     }
 
     public function test_badge_de_prazo_nao_aparece_sem_data_de_termino(): void

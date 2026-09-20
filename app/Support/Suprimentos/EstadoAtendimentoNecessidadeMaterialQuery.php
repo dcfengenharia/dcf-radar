@@ -80,6 +80,24 @@ use Illuminate\Support\Collection;
  * mais uma consulta por necessidade — mesmo padrão já usado por
  * `CoberturaNecessidadeAtividadeQuery::porAtividade()`, que este
  * serviço continua reaproveitando sem duplicar.
+ *
+ * **Correção P1 pré-produção — API batch real (`porAtividades()`)**: a
+ * garantia acima é O(1) POR ATIVIDADE, não entre atividades — chamar
+ * `porAtividade()` em loop (como `HomeExecutivaQuery::carregarMotorV1()`
+ * fazia) ainda multiplicava esse custo fixo por N atividades. Igual à
+ * classe irmã `CoberturaNecessidadeAtividadeQuery`, `porAtividades(
+ * Collection $atividades)` é agora o NÚCLEO real — mesmas 6 consultas
+ * em lote de sempre, cobrindo TODAS as necessidades de TODAS as
+ * atividades de uma vez (via `whereIn` estendido, nunca 1 conjunto de
+ * queries por atividade) — e `porAtividade()` virou wrapper fino
+ * (`porAtividades(collect([$atividade]))`). `montarLinha()` (a regra em
+ * si) permanece INTOCADA — recebe exatamente os mesmos tipos de dado
+ * de antes, só que fatiados de um pool maior. Isolamento: cada
+ * necessidade tem `atividade_id` próprio (nunca ambíguo) e cada query
+ * em lote é reagrupada por `atividade_necessidade_material_id`
+ * (identidade única, nunca cruza atividade) — a cobertura física
+ * delega a mesma garantia de obra única de `CoberturaNecessidadeAtividadeQuery::
+ * porAtividades()`.
  */
 class EstadoAtendimentoNecessidadeMaterialQuery
 {
@@ -88,8 +106,38 @@ class EstadoAtendimentoNecessidadeMaterialQuery
      */
     public static function porAtividade(Atividade $atividade): Collection
     {
+        return self::porAtividades(collect([$atividade]))->get($atividade->id) ?? collect();
+    }
+
+    /**
+     * Núcleo real — mesma regra de `porAtividade()`, batchada pra N
+     * atividades da MESMA obra (a validação de obra única é delegada a
+     * `CoberturaNecessidadeAtividadeQuery::porAtividades()`, chamada
+     * abaixo — nunca uma segunda checagem paralela).
+     *
+     * @param  Collection<int, Atividade>  $atividades
+     * @return Collection<string, Collection<int, array>> chave = atividade_id
+     */
+    public static function porAtividades(Collection $atividades): Collection
+    {
+        if ($atividades->isEmpty()) {
+            return collect();
+        }
+
+        // Mesmo guard de obra única de `CoberturaNecessidadeAtividadeQuery::
+        // porAtividades()` — checado AQUI TAMBÉM, antes de qualquer query,
+        // pra rejeitar deterministicamente mesmo quando nenhuma atividade
+        // do lote ainda tem necessidade cadastrada (a delegação abaixo só
+        // aconteceria depois do `return collect()` antecipado por
+        // necessidades vazias, o que mascararia o lote inválido).
+        if ($atividades->pluck('obra_id')->unique()->count() > 1) {
+            throw new \InvalidArgumentException(
+                'EstadoAtendimentoNecessidadeMaterialQuery::porAtividades() só aceita atividades da mesma obra.'
+            );
+        }
+
         $necessidades = AtividadeNecessidadeMaterial::query()
-            ->where('atividade_id', $atividade->id)
+            ->whereIn('atividade_id', $atividades->pluck('id'))
             ->get();
 
         if ($necessidades->isEmpty()) {
@@ -98,12 +146,19 @@ class EstadoAtendimentoNecessidadeMaterialQuery
 
         $necessidadeIds = $necessidades->pluck('id');
 
-        $coberturaFisicaPorNecessidade = \App\Support\Estoque\CoberturaNecessidadeAtividadeQuery::porAtividade($atividade)
+        // Lote único, cobrindo TODAS as atividades — CoberturaNecessidadeAtividadeQuery
+        // reafirma a MESMA checagem de obra única (defesa em profundidade,
+        // nunca uma segunda regra: ambas comparam obra_id das mesmas
+        // atividades recebidas).
+        $coberturaFisicaPorNecessidade = \App\Support\Estoque\CoberturaNecessidadeAtividadeQuery::porAtividades($atividades)
+            ->flatten(1)
             ->keyBy(fn (array $linha) => $linha['necessidade']->id);
 
-        $dataNecessidade = self::dataDeNecessidade($atividade);
+        $dataNecessidadePorAtividade = $atividades->mapWithKeys(
+            fn (Atividade $a) => [$a->id => self::dataDeNecessidade($a)]
+        );
 
-        // ---- Lote: parcelas de RC (Etapa 1) desta atividade, com o RC dono já carregado ----
+        // ---- Lote: parcelas de RC (Etapa 1) de TODAS as necessidades, com o RC dono já carregado ----
         $todasParcelasRc = RequisicaoCompraItemParcela::query()
             ->whereIn('atividade_necessidade_material_id', $necessidadeIds)
             ->with('requisicaoCompraItem.requisicaoCompra:id,status')
@@ -157,14 +212,15 @@ class EstadoAtendimentoNecessidadeMaterialQuery
         return $necessidades->map(fn (AtividadeNecessidadeMaterial $n) => self::montarLinha(
             $n,
             $coberturaFisicaPorNecessidade->get($n->id),
-            $dataNecessidade,
+            $dataNecessidadePorAtividade->get($n->atividade_id),
             $parcelasRcPorNecessidade->get($n->id, collect()),
             $adjudicadaPorParcelaRc,
             $parcelasPedidoPorNecessidade->get($n->id, collect()),
             $totalParcelasPorItem,
             $somaParcelasPorItem,
             $distribuicaoExplicitaPorParcela,
-        ))->values();
+        ))->groupBy(fn (array $linha) => $linha['necessidade']->atividade_id)
+            ->map(fn (Collection $grupo) => $grupo->values());
     }
 
     /** Conveniência pra 1 necessidade isolada (ex.: painel do Pedido) — chama porAtividade() e filtra. */

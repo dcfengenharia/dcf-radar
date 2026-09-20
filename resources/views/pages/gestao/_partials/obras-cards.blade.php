@@ -4,8 +4,17 @@
             @php
                 $avanco = (float) ($work->avanco_realizado ?? 0);
                 $prazo = $work->end_date_baseline;
-                $diasPrazo = $prazo ? now()->startOfDay()->diffInDays($prazo, true) : null;
-                $prazoAtrasado = $prazo && $prazo->isPast();
+                // Auditoria Pré-Produção A2.2, Seção 9 — corrigido
+                // definitivamente: `diffInDays()` direto comparava o
+                // INSTANTE de RelogioNegocio::hoje() (fuso America/Sao_Paulo)
+                // contra o INSTANTE do cast `date` de end_date_baseline
+                // (sempre meia-noite UTC), subtraindo as ~3h de diferença
+                // de fuso do resultado — "hoje + 28 dias corridos" virava
+                // "27". RelogioNegocio::diasEntreDatas() compara as DUAS
+                // pontas por DATA DE NEGÓCIO pura (Y-m-d), nunca por
+                // instante — ver docblock do método.
+                $diasPrazo = $prazo ? \App\Support\Tempo\RelogioNegocio::diasEntreDatas(\App\Support\Tempo\RelogioNegocio::hoje(), $prazo) : null;
+                $prazoAtrasado = $work->prazoBaselineEstaVencido();
             @endphp
             <div class="col-md-6 col-xl-4">
                 <div class="card h-100">

@@ -77,7 +77,7 @@ class RecebimentoPedidoTest extends TestCase
         // cenários desta suíte (out-nov/2026) precisam de um "hoje" fixo
         // e sempre posterior a todas elas — mesmo padrão de travar o
         // relógio já documentado no projeto pra fixture data-dependente.
-        Carbon::setTestNow(Carbon::parse('2026-12-15'));
+        Carbon::setTestNow(Carbon::parse('2026-12-15 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);
@@ -442,7 +442,7 @@ class RecebimentoPedidoTest extends TestCase
 
     public function test_t_atraso_atual(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-10-20'));
+        Carbon::setTestNow(Carbon::parse('2026-10-20 12:00:00'));
         try {
             $item = $this->pedidoItemEmitido(100, dataPrevistaEntrega: '2026-10-10');
             $this->registrarRecebimento->execute($item, 40, Carbon::parse('2026-10-18'), $this->user);

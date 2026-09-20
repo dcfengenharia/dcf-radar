@@ -5,6 +5,7 @@ namespace App\Actions\Estoque;
 use App\Enums\ModoRastreabilidadeMaterial;
 use App\Enums\TipoLocalEstoque;
 use App\Enums\TipoMovimentacaoEstoque;
+use App\Exceptions\OperacaoEstoqueDuplicadaException;
 use App\Exceptions\SaidaEstoqueInvalidaException;
 use App\Exceptions\SaldoFisicoInsuficienteException;
 use App\Models\FrenteTrabalho;
@@ -18,6 +19,7 @@ use App\Models\User;
 use App\Support\Estoque\SaldoEstoque;
 use App\Support\Estoque\SaldoReserva;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -92,6 +94,13 @@ use Illuminate\Support\Facades\DB;
  * é travado SEMPRE PRIMEIRO, antes de qualquer SUM de saldo — depois,
  * se a Saída consome uma Reserva, `ReservaEstoque` é travada EM SEGUIDA
  * (mesma ordem: recurso físico antes do recurso lógico que o consome).
+ *
+ * **Auditoria Pré-Produção A2.1, Seções 5-9 (idempotência)**: mesmo
+ * mecanismo/contrato de `RegistrarEntradaEstoque` — `$operationId`
+ * OPCIONAL, ULID gerado UMA VEZ pela UI; retry com mesmo operation_id +
+ * mesmo material/local/quantidade retorna o fato já criado; qualquer
+ * um desses 3 campos divergente vira `OperacaoEstoqueDuplicadaException`.
+ * Garantia real é o `UNIQUE(tenant_id, operation_id)` do banco.
  */
 class RegistrarSaidaEstoque
 {
@@ -108,11 +117,26 @@ class RegistrarSaidaEstoque
         ?User $retiradoPor = null,
         ?string $retiradoPorExterno = null,
         ?string $observacao = null,
+        ?string $operationId = null,
     ): MovimentacaoEstoque {
-        return DB::transaction(function () use (
-            $material, $local, $quantidade, $ocorridoEm, $usuarioRegistro,
-            $reserva, $pacote, $frenteInformada, $unidade, $retiradoPor, $retiradoPorExterno, $observacao
-        ) {
+        // Ver RegistrarEntradaEstoque::execute() pro raciocínio completo
+        // de por que este pré-check fica FORA da transação, e por que o
+        // catch de corrida real também fica fora (nunca dentro do
+        // closure) — mesmo padrão aplicado aqui por uniformidade, mesmo
+        // que a Saída não tenha nenhuma escrita especulativa antes do
+        // INSERT final (nunca cria UnidadeEstoque nova).
+        if ($operationId !== null) {
+            $existente = MovimentacaoEstoque::where('operation_id', $operationId)->first();
+            if ($existente) {
+                return $this->validarOuRetornarExistente($existente, $material, $local, $quantidade);
+            }
+        }
+
+        try {
+            return DB::transaction(function () use (
+                $material, $local, $quantidade, $ocorridoEm, $usuarioRegistro,
+                $reserva, $pacote, $frenteInformada, $unidade, $retiradoPor, $retiradoPorExterno, $observacao, $operationId
+            ) {
             $this->garantirQuantidadePositiva($quantidade);
 
             $dataSaida = Carbon::parse($ocorridoEm)->startOfDay();
@@ -182,6 +206,7 @@ class RegistrarSaidaEstoque
             }
 
             return MovimentacaoEstoque::create([
+                'operation_id' => $operationId,
                 'obra_id' => $local->obra_id,
                 'tipo' => TipoMovimentacaoEstoque::Saida,
                 'material_id' => $material->id,
@@ -197,7 +222,40 @@ class RegistrarSaidaEstoque
                 'retirado_por_externo' => $retiradoPorExternoNormalizado,
                 'observacao' => $observacao,
             ]);
-        });
+            });
+        } catch (QueryException $e) {
+            // Corrida real — mesma lógica de RegistrarEntradaEstoque: a
+            // garantia é o UNIQUE do banco, nunca o exists() de cima.
+            if ($operationId !== null && ($e->errorInfo[1] ?? null) === 1062) {
+                $existente = MovimentacaoEstoque::where('operation_id', $operationId)->first();
+                if ($existente) {
+                    return $this->validarOuRetornarExistente($existente, $material, $local, $quantidade);
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Auditoria Pré-Produção A2.1, Seção 9 — mesmo contrato de
+     * RegistrarEntradaEstoque::validarOuRetornarExistente().
+     */
+    private function validarOuRetornarExistente(
+        MovimentacaoEstoque $existente,
+        Material $material,
+        LocalEstoque $local,
+        float $quantidade,
+    ): MovimentacaoEstoque {
+        $mesmoMaterial = $existente->material_id === $material->id;
+        $mesmoLocal = $existente->local_estoque_id === $local->id;
+        $mesmaQuantidade = abs((float) $existente->quantidade - $quantidade) <= 0.0005;
+
+        if (! $mesmoMaterial || ! $mesmoLocal || ! $mesmaQuantidade) {
+            throw new OperacaoEstoqueDuplicadaException();
+        }
+
+        return $existente;
     }
 
     private function garantirQuantidadePositiva(float $quantidade): void
@@ -209,7 +267,11 @@ class RegistrarSaidaEstoque
 
     private function garantirDataNaoFutura(Carbon $data): void
     {
-        if ($data->gt(Carbon::today())) {
+        // Auditoria Pré-Produção A2.1, Seção 2 — corrigido definitivamente
+        // com data de negócio (America/Sao_Paulo), nunca instante UTC
+        // absoluto. Ver RegistrarEntradaEstoque::execute() pro achado
+        // original completo.
+        if (\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo($data)) {
             throw new SaidaEstoqueInvalidaException('A data da saída não pode estar no futuro.');
         }
     }

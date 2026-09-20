@@ -2015,7 +2015,9 @@ new class extends Component {
     // sistema (mesma convenção de ⚡plano-semanal.blade.php::mount()) —
     // os filtros desta tela (janela de dias, fonte de dados etc.) não
     // têm noção de "semana", só decidem quais atividades são elegíveis.
-    $semanaAlvo = Carbon::now()->startOfWeek()->toDateString();
+    // Auditoria Pré-Produção A2, Seção 4 (Timezone) — ver
+    // ⚡plano-semanal.blade.php::mount() pro mesmo achado/motivo.
+    $semanaAlvo = \App\Support\Tempo\RelogioNegocio::inicioDaSemanaAtual()->toDateString();
 
     $this->transacaoSegura(function () use ($ids, $atividadesAlvo, $semanaAlvo) {
       foreach ($ids as $id) {
@@ -2880,7 +2882,7 @@ new class extends Component {
                                     'aguardando_terceiros' => 'info', 'resolvida' => 'success',
                                     default => 'secondary',
                                 };
-                                $rvencida = $r->prazo_limite && $raberta && $r->prazo_limite->isPast();
+                                $rvencida = $raberta && $r->estaVencida();
                             @endphp
                             <div class="card {{ $r->bloqueante && $raberta ? 'border-danger' : 'border-light' }} mb-3 shadow-none">
                                 <div class="card-body py-2 px-3">

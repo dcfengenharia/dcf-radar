@@ -82,6 +82,18 @@ class Atividade extends Model
         'external_synced_at' => 'datetime',
     ];
 
+    /**
+     * Auditoria Pré-Produção A2, Seção 4 (Timezone) — substitui
+     * `$atividade->data_termino->isPast()` (usado em ⚡plano-semanal.blade.php
+     * pro badge "Atrasada"). Mesmo bug/motivo de `Restricao::estaVencida()`
+     * — `data_termino` é cast 'date', comparação precisa ser por data
+     * calendário no fuso de negócio, nunca por instante absoluto em UTC.
+     */
+    public function terminoEstaVencido(): bool
+    {
+        return \App\Support\Tempo\RelogioNegocio::dataEstaVencida($this->data_termino);
+    }
+
     public function obra(): BelongsTo
     {
         return $this->belongsTo(Work::class, 'obra_id');

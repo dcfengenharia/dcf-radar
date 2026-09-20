@@ -35,6 +35,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * mesmo par já usado em Restricao.responsavel_id/responsavel_externo;
  * nunca confundir com `registrado_por`, que continua sendo só "quem
  * lançou no sistema").
+ *
+ * Auditoria Pré-Produção A2.1, Seções 5-9 — `operation_id` (nullable,
+ * ULID gerado UMA VEZ pela UI quando a intenção nasce) protege contra a
+ * MESMA submissão reenviada (retry/double-click), nunca contra duas
+ * operações legítimas com dados idênticos (essas recebem operation_ids
+ * DIFERENTES e convivem livremente). `UNIQUE(tenant_id, operation_id)`
+ * é a garantia real — nunca só um `exists()` em PHP.
  */
 class MovimentacaoEstoque extends Model
 {
@@ -49,6 +56,7 @@ class MovimentacaoEstoque extends Model
     protected $fillable = [
         'tenant_id',
         'obra_id',
+        'operation_id',
         'tipo',
         'material_id',
         'local_estoque_id',

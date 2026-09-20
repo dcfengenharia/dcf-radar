@@ -88,7 +88,7 @@ class CandidatoLicaoAprendidaTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);

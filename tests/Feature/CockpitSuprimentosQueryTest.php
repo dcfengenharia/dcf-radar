@@ -59,7 +59,7 @@ class CockpitSuprimentosQueryTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-01'));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);
@@ -258,7 +258,7 @@ class CockpitSuprimentosQueryTest extends TestCase
     {
         [, , , $alocacao] = $this->cenarioBase(100, ['inicio_planejado' => Carbon::today()->addDays(90)]); // bem longe
         $this->comprarAte($alocacao, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20')); // atraso real, mas sem urgência de cronograma
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00')); // atraso real, mas sem urgência de cronograma
 
         $resumo = CockpitSuprimentosQuery::resumo($this->obra, 28);
         $pedido = $resumo->pedidosCriticos->first();
@@ -278,7 +278,7 @@ class CockpitSuprimentosQueryTest extends TestCase
         [$atividadePerto, , , $alocacaoPerto] = $this->cenarioBase(100, ['inicio_planejado' => Carbon::today()->addDays(1)]);
         $this->comprarAte($alocacaoPerto, 100, '2026-12-05');
 
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $resumo = CockpitSuprimentosQuery::resumo($this->obra, 28);
         $ordenados = $resumo->pedidosCriticos->pluck('folga_minima_associada')->values();
@@ -374,7 +374,7 @@ class CockpitSuprimentosQueryTest extends TestCase
         $pedidoItem = $this->comprarAte($alocacao, 100);
         $this->receber($pedidoItem, 100, $local);
 
-        Carbon::setTestNow(Carbon::parse('2026-12-01')->addDays(65)); // > threshold de 60d do MaterialParadoQuery
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00')->addDays(65)); // > threshold de 60d do MaterialParadoQuery
 
         $resumo = CockpitSuprimentosQuery::resumo($this->obra, 28);
         $this->assertCount(1, $resumo->estoque['materiais_parados']);
@@ -437,7 +437,7 @@ class CockpitSuprimentosQueryTest extends TestCase
         [, , , $alocacao2] = $this->cenarioBase(50);
         $this->comprarAte($alocacao2, 50, '2026-12-06', $fornecedor);
 
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $resumo = CockpitSuprimentosQuery::resumo($this->obra, 28);
         $linha = $resumo->fornecedores->get($fornecedor->id);

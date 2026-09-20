@@ -277,7 +277,12 @@ new class extends Component {
       })
       ->where('ps.obra_id', $this->obra->id)
       // Exclui a semana corrente/futura — ainda em andamento, mostraria PPC artificialmente baixo.
-      ->where('ps.semana_fim', '<', now()->startOfWeek()->toDateString())
+      // Auditoria Pré-Produção A2, Seção 4 (Timezone) — now() usa o fuso
+      // padrão da app (UTC); "virava a semana" um dia cedo demais durante a
+      // noite de domingo (horário de Brasília), incluindo a semana corrente
+      // (ainda em andamento) no PPC histórico horas antes de ela realmente
+      // terminar.
+      ->where('ps.semana_fim', '<', \App\Support\Tempo\RelogioNegocio::inicioDaSemanaAtual()->toDateString())
       ->when($this->filtroDataInicio, fn($q) => $q->where('ps.semana_inicio', '>=', $this->filtroDataInicio))
       ->when($this->filtroDataFim, fn($q) => $q->where('ps.semana_inicio', '<=', $this->filtroDataFim));
   }

@@ -83,7 +83,7 @@ class EstoqueConciliacaoAplicacaoTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);
@@ -527,7 +527,7 @@ class EstoqueConciliacaoAplicacaoTest extends TestCase
         $this->entradaPronta($material, $local, 1000);
         $saida = $this->saidaSimples($material, $local, 500);
 
-        Carbon::setTestNow(Carbon::parse('2026-12-27'));
+        Carbon::setTestNow(Carbon::parse('2026-12-27 12:00:00'));
         $aplicacao = $this->registrarAplicacao->execute($saida, $this->criarFrente(), 500, Carbon::parse('2026-12-25'), $this->user);
 
         $this->assertSame('2026-12-25', $aplicacao->aplicado_em->toDateString());

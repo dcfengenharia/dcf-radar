@@ -35,6 +35,16 @@ class Work extends Model
         'dia_semana_report' => 'integer',
     ];
 
+    /**
+     * Auditoria Pré-Produção A2, Seção 4 (Timezone) — substitui
+     * `$prazo->isPast()` (usado em obras-cards.blade.php pro badge de
+     * prazo atrasado). Mesmo bug/motivo de `Restricao::estaVencida()`.
+     */
+    public function prazoBaselineEstaVencido(): bool
+    {
+        return \App\Support\Tempo\RelogioNegocio::dataEstaVencida($this->end_date_baseline);
+    }
+
     public function client(): BelongsTo
     {
         return $this->belongsTo(Client::class);

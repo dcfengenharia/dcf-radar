@@ -263,10 +263,13 @@ class PlanoAcaoPainelTest extends TestCase
     {
         $acao = $this->criarAcao();
         $antigo = $this->criarReconciliacao($acao, ['resultado' => ResultadoReconciliacaoPlanoAcao::Persistente]);
-        $antigo->forceFill(['created_at' => now()->subDays(5)])->save();
+        // Auditoria Pré-Produção A1, DB-03 — PlanoAcaoReconciliacaoObserver
+        // agora bloqueia update() via Eloquent (mesmo só de created_at).
+        // Backdatar aqui via Query Builder cru, que nunca dispara Observer.
+        DB::table('plano_acao_reconciliacoes')->where('id', $antigo->id)->update(['created_at' => now()->subDays(5)]);
 
         $recente = $this->criarReconciliacao($acao, ['resultado' => ResultadoReconciliacaoPlanoAcao::Agravado]);
-        $recente->forceFill(['created_at' => now()->subDay()])->save();
+        DB::table('plano_acao_reconciliacoes')->where('id', $recente->id)->update(['created_at' => now()->subDay()]);
 
         $component = Livewire::test('pages::radar.plano-acao', ['obra' => $this->obra]);
         $acaoCarregada = $component->instance()->acoes->first();

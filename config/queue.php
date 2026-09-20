@@ -66,7 +66,19 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => 90,
+            // Auditoria Pré-Produção A2, Seção 5 — achado real: o valor
+            // padrão do Laravel (90s) é MENOR que o timeout do Job mais
+            // longo do sistema (App\Jobs\ImportarCronogramaJob::$timeout =
+            // 600s, único Job sem ShouldBeUnique até esta auditoria) — o
+            // Redis considerava o job "perdido" e o reentregava pra outro
+            // worker enquanto o primeiro AINDA estava legitimamente
+            // processando, um risco real de double-processing de
+            // importação de cronograma. 660 = 600 (maior timeout real,
+            // ImportarCronogramaJob) + 60s de margem operacional — nunca
+            // um número arbitrário. Nenhum outro Job/Notification tem
+            // timeout maior (SincronizarSituacaoObraJob = 120s, demais
+            // usam o default de 60s do worker, sem override).
+            'retry_after' => 660,
             'block_for' => null,
             'after_commit' => false,
         ],

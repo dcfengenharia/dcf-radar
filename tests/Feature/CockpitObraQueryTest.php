@@ -68,7 +68,7 @@ class CockpitObraQueryTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-01'));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);
@@ -281,7 +281,7 @@ class CockpitObraQueryTest extends TestCase
         [, , , $alocacao] = $this->cenarioMaterialCritico(100);
         $this->comprarAte($alocacao, 100, '2026-12-05');
 
-        Carbon::setTestNow(Carbon::parse('2026-12-25')); // 20 dias de atraso -> Critica
+        Carbon::setTestNow(Carbon::parse('2026-12-25 12:00:00')); // 20 dias de atraso -> Critica
 
         $resumo = CockpitObraQuery::resumo($this->obra, 28);
 

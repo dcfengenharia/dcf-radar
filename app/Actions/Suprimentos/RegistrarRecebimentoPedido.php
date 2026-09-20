@@ -68,7 +68,11 @@ class RegistrarRecebimentoPedido
             // Normaliza pra date (recebido_em é sempre um FATO diário, sem
             // hora) antes de comparar — nunca comparação de string frágil.
             $dataRecebimento = Carbon::parse($recebidoEm)->startOfDay();
-            if ($dataRecebimento->gt(Carbon::today())) {
+            // Auditoria Pré-Produção A2.1, Seção 2 — corrigido definitivamente
+            // com data de negócio (America/Sao_Paulo), nunca instante UTC
+            // absoluto. Ver App\Actions\Estoque\RegistrarEntradaEstoque::
+            // execute() pro achado original completo.
+            if (\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo($dataRecebimento)) {
                 throw new RecebimentoPedidoInvalidoException('A data do recebimento não pode estar no futuro.');
             }
 

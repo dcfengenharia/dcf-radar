@@ -59,7 +59,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-01'));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);
@@ -230,7 +230,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
         [, , $material, $alocacao] = $this->cenarioMaterialCritico(100);
         $pedidoItem = $this->comprarAte($alocacao, 100, '2026-12-05');
 
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
         $situacoes = SituacoesGerenciaisQuery::porObra($this->obra);
         $this->assertNotEmpty($this->porTipo($situacoes, TipoSituacaoGerencial::PedidoAtrasado));
 
@@ -406,15 +406,15 @@ class SituacoesGerenciaisQueryTest extends TestCase
     {
         [, , $material, $alocacao] = $this->cenarioMaterialCritico(100);
         $local = $this->criarLocal();
-        Carbon::setTestNow(Carbon::parse('2026-12-01'));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00'));
         $pedidoItem = $this->comprarAte($alocacao, 100);
         $this->receber($pedidoItem, 100, $local);
 
-        Carbon::setTestNow(Carbon::parse('2026-12-01')->addDays(50));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00')->addDays(50));
         $situacoesAntes = SituacoesGerenciaisQuery::porObra($this->obra);
         $this->assertEmpty($this->porTipo($situacoesAntes, TipoSituacaoGerencial::MaterialParado)->where('entidadeId', $material->id));
 
-        Carbon::setTestNow(Carbon::parse('2026-12-01')->addDays(65));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00')->addDays(65));
         $situacoesDepois = SituacoesGerenciaisQuery::porObra($this->obra);
         $this->assertNotEmpty($this->porTipo($situacoesDepois, TipoSituacaoGerencial::MaterialParado)->where('entidadeId', $material->id));
     }
@@ -497,7 +497,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
         [, $pacote1, $material1, $alocacao1] = $this->cenarioMaterialCritico(100);
         $local = $this->criarLocal();
         $pedido1 = $this->comprarAte($alocacao1, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $situacoes = SituacoesGerenciaisQuery::porObra($this->obra);
         $pedidoAtrasado = $this->porTipo($situacoes, TipoSituacaoGerencial::PedidoAtrasado)->first();
@@ -513,7 +513,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
     {
         [, , , $alocacao1] = $this->cenarioMaterialCritico(100);
         $this->comprarAte($alocacao1, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $r1 = SituacoesGerenciaisQuery::porObra($this->obra)->pluck('chaveLogica')->values();
         $r2 = SituacoesGerenciaisQuery::porObra($this->obra)->pluck('chaveLogica')->values();
@@ -529,7 +529,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
     {
         [, , , $alocacao] = $this->cenarioMaterialCritico(100);
         $this->comprarAte($alocacao, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         // Usuário SEM NENHUM vínculo com a obra -- diferente de um Papel
         // "menor": todo perfil com vínculo na obra já tem 'ver' liberado
@@ -551,7 +551,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
     {
         [, , , $alocacao] = $this->cenarioMaterialCritico(100);
         $this->comprarAte($alocacao, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $usuarioInativo = User::factory()->create(['tenant_id' => $this->tenant->id, 'ativo' => false]);
         $this->vincularObra($this->obra, $usuarioInativo, Papel::GerentePlanejamento->value);
@@ -571,7 +571,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
 
         [, , , $alocacao] = $this->cenarioMaterialCritico(100);
         $this->comprarAte($alocacao, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $situacoes = SituacoesGerenciaisQuery::porObra($this->obra);
         $pedidoAtrasado = $this->porTipo($situacoes, TipoSituacaoGerencial::PedidoAtrasado)->first();
@@ -595,18 +595,18 @@ class SituacoesGerenciaisQueryTest extends TestCase
         for ($i = 0; $i < 5; $i++) {
             $criarCenario();
         }
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
         DB::enableQueryLog();
         DB::flushQueryLog();
         $r5 = SituacoesGerenciaisQuery::porObra($this->obra, 28);
         $q5 = count(DB::getQueryLog());
         DB::flushQueryLog();
 
-        Carbon::setTestNow(Carbon::parse('2026-12-01'));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00'));
         for ($i = 0; $i < 45; $i++) {
             $criarCenario();
         }
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
         DB::flushQueryLog();
         $r50 = SituacoesGerenciaisQuery::porObra($this->obra, 28);
         $q50 = count(DB::getQueryLog());
@@ -627,7 +627,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
     {
         [, , , $alocacao] = $this->cenarioMaterialCritico(100);
         $this->comprarAte($alocacao, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         $situacoes = SituacoesGerenciaisQuery::porObra($this->obra);
 
@@ -649,7 +649,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
     {
         [, , , $alocacao] = $this->cenarioMaterialCritico(100);
         $this->comprarAte($alocacao, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
 
         SituacoesGerenciaisQuery::porObra($this->obra);
 
@@ -675,7 +675,7 @@ class SituacoesGerenciaisQueryTest extends TestCase
         [, $pacote, $material, $alocacao] = $this->cenarioMaterialCritico(100);
         $local = $this->criarLocal();
         $pedidoItem = $this->comprarAte($alocacao, 100, '2026-12-05');
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00'));
         $this->receber($pedidoItem, 60, $local);
         (new CriarReservaEstoque())->execute($pacote, $material, $local, 60, null, null, $this->user);
         (new RegistrarSaidaEstoque())->execute($material, $local, 30, Carbon::today(), $this->user, retiradoPor: $this->user);

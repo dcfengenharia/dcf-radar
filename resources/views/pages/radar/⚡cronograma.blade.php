@@ -160,27 +160,46 @@ new class extends Component {
   {
     abort_unless($this->emPrevia && $this->caminhoArquivo !== null, 422);
 
-    $this->importacaoTrackingId = (string) Str::ulid();
-    $this->statusImportacao = 'processando';
-    Cache::put(
-      "cronograma-importacao-status:{$this->importacaoTrackingId}",
-      ['status' => 'processando', 'erro' => null],
-      now()->addMinutes(30)
-    );
+    // Auditoria Pré-Produção A2, Seção 9-10 (double-submit) — lock
+    // server-side curto e exclusivo por obra+tipo: um segundo clique em
+    // "Confirmar importação" antes do primeiro round-trip do Livewire
+    // voltar chega aqui com o MESMO snapshot de estado ($this->emPrevia
+    // ainda true, botão ainda não desabilitado no cliente) e dispararia
+    // um SEGUNDO ImportarCronogramaJob independente — o ShouldBeUnique do
+    // próprio Job não ajuda aqui, ele só protege contra a MESMA entrega de
+    // fila sendo processada 2x, nunca contra 2 dispatches distintos.
+    // wire:loading.attr="disabled" continua existindo como UX
+    // complementar (feedback imediato), nunca como a proteção real.
+    $lock = Cache::lock("cronograma-importar-confirmar:{$this->obra->id}:baseline", 10);
+    if (! $lock->get()) {
+      return;
+    }
 
     try {
-      ImportarCronogramaJob::dispatch(
-        $this->obra,
-        $this->caminhoArquivo,
-        auth()->id(),
-        TipoCronogramaImportacao::Baseline,
-        $this->importacaoTrackingId,
-        $this->healthCheckResultado,
+      $this->importacaoTrackingId = (string) Str::ulid();
+      $this->statusImportacao = 'processando';
+      Cache::put(
+        "cronograma-importacao-status:{$this->importacaoTrackingId}",
+        ['status' => 'processando', 'erro' => null],
+        now()->addMinutes(30)
       );
-    } catch (\Throwable $e) {
-      // Fila síncrona (dev): o job roda inline e uma falha relança a
-      // exceção até aqui. O cache já foi marcado 'erro' dentro do job
-      // antes do rethrow — verificarStatusImportacao() abaixo lê de lá.
+
+      try {
+        ImportarCronogramaJob::dispatch(
+          $this->obra,
+          $this->caminhoArquivo,
+          auth()->id(),
+          TipoCronogramaImportacao::Baseline,
+          $this->importacaoTrackingId,
+          $this->healthCheckResultado,
+        );
+      } catch (\Throwable $e) {
+        // Fila síncrona (dev): o job roda inline e uma falha relança a
+        // exceção até aqui. O cache já foi marcado 'erro' dentro do job
+        // antes do rethrow — verificarStatusImportacao() abaixo lê de lá.
+      }
+    } finally {
+      $lock->release();
     }
 
     // Em fila síncrona (dev), o job acima já rodou por completo — resolve

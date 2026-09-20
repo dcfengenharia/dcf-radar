@@ -183,8 +183,11 @@ class CronogramaHealthCheckTest extends TestCase
         $component->call('confirmar');
 
         // A prévia continua disponível (nada foi limpo) e o erro aparece amigável.
+        // Auditoria Pré-Produção A2, Seção 7 — ImportarCronogramaJob::failed()
+        // agora persiste mensagem genérica e segura, nunca a exceção crua
+        // (ver RelatorioImportarAvancoPollingTest.php pro achado completo).
         $component->assertSet('importado', false)
-            ->assertSee('Falha simulada dentro de aplicar()');
+            ->assertSee('Não foi possível concluir a importação');
 
         $this->assertSame(0, Atividade::count());
         $this->assertSame(0, CronogramaImportacao::count());

@@ -5,6 +5,7 @@ namespace App\Actions\Estoque;
 use App\Enums\DirecaoRemessaIndustrializacao;
 use App\Enums\TipoMovimentacaoEstoque;
 use App\Exceptions\ConsumoIndustrializacaoInvalidaException;
+use App\Exceptions\OperacaoEstoqueDuplicadaException;
 use App\Models\LocalEstoque;
 use App\Models\MovimentacaoEstoque;
 use App\Models\OrdemIndustrializacao;
@@ -13,6 +14,7 @@ use App\Models\ProdutoIndustrializadoConsumo;
 use App\Models\RemessaIndustrializacao;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -31,6 +33,11 @@ use Illuminate\Support\Facades\DB;
  * Over-consumo bloqueado sempre: `SUM(quantidade_consumida)` de UMA
  * Remessa nunca pode ultrapassar sua própria `quantidade` — lock na
  * Remessa antes do SUM, mesmo total order de todo o domínio.
+ *
+ * **Auditoria Pré-Produção A2.2, Seções 3-6 (idempotência)**:
+ * `$operationId` OPCIONAL, mesmo contrato das demais Actions de
+ * Industrialização — `produto_industrializado_consumos` é a identidade
+ * de operação (correlaciona a `MovimentacaoEstoque::Saida` que cria).
  */
 class RegistrarConsumoIndustrializacao
 {
@@ -41,8 +48,17 @@ class RegistrarConsumoIndustrializacao
         \DateTimeInterface $ocorridoEm,
         User $usuario,
         ?string $observacao = null,
+        ?string $operationId = null,
     ): ProdutoIndustrializadoConsumo {
-        return DB::transaction(function () use ($produto, $remessaEnvio, $quantidadeConsumida, $ocorridoEm, $usuario, $observacao) {
+        if ($operationId !== null) {
+            $existente = ProdutoIndustrializadoConsumo::where('operation_id', $operationId)->first();
+            if ($existente) {
+                return $this->validarOuRetornarExistente($existente, $produto, $remessaEnvio, $quantidadeConsumida);
+            }
+        }
+
+        try {
+            return DB::transaction(function () use ($produto, $remessaEnvio, $quantidadeConsumida, $ocorridoEm, $usuario, $observacao, $operationId) {
             $this->garantirQuantidadePositiva($quantidadeConsumida);
 
             $remessaTravada = RemessaIndustrializacao::whereKey($remessaEnvio->id)->lockForUpdate()->firstOrFail();
@@ -87,6 +103,7 @@ class RegistrarConsumoIndustrializacao
             ]);
 
             return ProdutoIndustrializadoConsumo::create([
+                'operation_id' => $operationId,
                 'obra_id' => $ordem->obra_id,
                 'produto_industrializado_id' => $produto->id,
                 'remessa_industrializacao_id' => $remessaTravada->id,
@@ -96,7 +113,38 @@ class RegistrarConsumoIndustrializacao
                 'registrado_por' => $usuario->id,
                 'observacao' => $observacao,
             ]);
-        });
+            });
+        } catch (QueryException $e) {
+            if ($operationId !== null && ($e->errorInfo[1] ?? null) === 1062) {
+                $existente = ProdutoIndustrializadoConsumo::where('operation_id', $operationId)->first();
+                if ($existente) {
+                    return $this->validarOuRetornarExistente($existente, $produto, $remessaEnvio, $quantidadeConsumida);
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Auditoria Pré-Produção A2.2, Seção 5 — retry da MESMA intenção
+     * (mesmo Produto/Remessa/quantidade) retorna o fato já existente.
+     */
+    private function validarOuRetornarExistente(
+        ProdutoIndustrializadoConsumo $existente,
+        ProdutoIndustrializado $produto,
+        RemessaIndustrializacao $remessaEnvio,
+        float $quantidadeConsumida,
+    ): ProdutoIndustrializadoConsumo {
+        $mesmoProduto = $existente->produto_industrializado_id === $produto->id;
+        $mesmaRemessa = $existente->remessa_industrializacao_id === $remessaEnvio->id;
+        $mesmaQuantidade = abs((float) $existente->quantidade_consumida - $quantidadeConsumida) <= 0.0005;
+
+        if (! $mesmoProduto || ! $mesmaRemessa || ! $mesmaQuantidade) {
+            throw new OperacaoEstoqueDuplicadaException();
+        }
+
+        return $existente;
     }
 
     private function garantirQuantidadePositiva(float $quantidade): void

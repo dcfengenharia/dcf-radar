@@ -27,6 +27,7 @@ class RemessaIndustrializacao extends Model
     protected $fillable = [
         'tenant_id',
         'obra_id',
+        'operation_id',
         'ordem_industrializacao_id',
         'material_id',
         'unidade_estoque_id',

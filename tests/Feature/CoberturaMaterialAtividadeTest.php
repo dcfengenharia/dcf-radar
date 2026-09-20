@@ -60,7 +60,7 @@ class CoberturaMaterialAtividadeTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-01'));
+        Carbon::setTestNow(Carbon::parse('2026-12-01 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);

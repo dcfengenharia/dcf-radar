@@ -77,7 +77,7 @@ class EstoqueSaidaTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-20'));
+        Carbon::setTestNow(Carbon::parse('2026-12-20 12:00:00')); // Auditoria A2.1, Secao 3 - meio-dia evita ambiguidade UTC x America/Sao_Paulo
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);

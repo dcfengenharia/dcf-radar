@@ -80,7 +80,16 @@ class EstoqueFundacaoTest extends TestCase
     {
         parent::setUp();
 
-        Carbon::setTestNow(Carbon::parse('2026-12-15'));
+        // Auditoria Pré-Produção A2.1, Seção 3 — Classe B: meia-noite UTC
+        // implícita é sempre 21h da noite ANTERIOR no Brasil, caindo na
+        // janela onde RelogioNegocio (agora conectado às 5 guardas de data
+        // futura) discorda de Carbon::today()/isFuture(). Fixado ao
+        // meio-dia (horário de negócio inequívoco: mesma data em UTC e em
+        // America/Sao_Paulo) — nenhuma mudança de SEMÂNTICA de negócio,
+        // só remove a ambiguidade de fuso da fixture. Os 2 testes que
+        // deliberadamente exercitam a virada de fuso (test_a2_*, abaixo)
+        // continuam fixando seus próprios instantes explícitos.
+        Carbon::setTestNow(Carbon::parse('2026-12-15 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);
@@ -765,5 +774,70 @@ class EstoqueFundacaoTest extends TestCase
         // nenhuma exceção relacionada a prontidão/Restrição, e nenhuma
         // linha de "restricoes" é criada por ele.
         $this->assertSame(0, DB::table('restricoes')->where('tenant_id', $this->tenant->id)->count());
+    }
+
+    // =========================================================
+    // Auditoria Pré-Produção A2, Seção 4 (Timezone) — achado real e
+    // provado: a guarda de "data futura" das 5 Actions (RegistrarEntrada/
+    // Saida/TransferenciaEstoque, RegistrarRecebimentoPedido,
+    // RegistrarConclusaoEtapaRequisicaoCompra) usa Carbon::today()/
+    // isFuture() no fuso padrão da app (UTC) — durante 21h00 às 23h59
+    // (horário de Brasília), uma data que ainda É futura pro usuário
+    // brasileiro é incorretamente ACEITA, porque o calendário UTC já
+    // virou o dia. `App\Support\Tempo\RelogioNegocio` (novo) resolve isso
+    // corretamente — mas conectá-lo a essas 5 guardas foi REVERTIDO
+    // depois de quebrar ~27 testes só neste arquivo: 48 arquivos de teste
+    // em todo o domínio Estoque/Suprimentos fixam o relógio via
+    // Carbon::setTestNow(Carbon::parse('AAAA-MM-DD')) (meia-noite UTC
+    // implícita) e depois passam Carbon::today() como "hoje" pro mesmo
+    // parâmetro — sob esse padrão, meia-noite UTC é sempre 21h da noite
+    // ANTERIOR no Brasil, caindo justo na janela do bug: RelogioNegocio
+    // corretamente vê isso como "amanhã" e rejeita uma entrada que o
+    // PRÓPRIO teste pretendia ser "hoje". Corrigir a guarda de produção
+    // sem também revisar a convenção de todos esses testes teria
+    // introduzido dezenas de falsos-positivos — desproporcional pra este
+    // achado (é só um afrouxamento de validação por ~3h/dia, nunca
+    // corrompe/duplica dado). Documentado como pendência de correção
+    // futura no relatório final da A2; os 2 testes abaixo cobrem só
+    // RelogioNegocio em si (que permanece correto e disponível), não a
+    // guarda revertida.
+    // =========================================================
+
+    public function test_a2_relogio_negocio_hoje_e_agora_refletem_o_calendario_brasileiro_durante_a_virada_utc(): void
+    {
+        // 2026-12-16 01:00:00 UTC = 2026-12-15 22:00:00 America/Sao_Paulo.
+        Carbon::setTestNow(Carbon::create(2026, 12, 16, 1, 0, 0, 'UTC'));
+
+        $this->assertSame('2026-12-15', \App\Support\Tempo\RelogioNegocio::agora()->toDateString());
+        $this->assertSame('2026-12-15', \App\Support\Tempo\RelogioNegocio::hoje()->toDateString());
+        $this->assertTrue(\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo(Carbon::parse('2026-12-16')));
+        $this->assertFalse(\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo(Carbon::parse('2026-12-15')));
+        $this->assertFalse(\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo(Carbon::parse('2026-12-14')));
+        $this->assertFalse(\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo(null));
+
+        // Compare contra Carbon::today() (fuso padrão UTC) — prova que ele
+        // discorda de RelogioNegocio nesta janela, exatamente o motivo da
+        // guarda de produção ainda usar o valor antigo (documentado acima).
+        $this->assertSame('2026-12-16', Carbon::today()->toDateString());
+    }
+
+    public function test_a2_relogio_negocio_data_esta_vencida_usa_calendario_brasileiro(): void
+    {
+        // Ainda dia 15 no Brasil (22h), já dia 16 em UTC.
+        Carbon::setTestNow(Carbon::create(2026, 12, 16, 1, 0, 0, 'UTC'));
+
+        // Um prazo de HOJE (15/12, Brasil) nunca deveria estar vencido
+        // ainda — o bug antigo (isPast() em UTC) já marcaria como vencido
+        // neste instante, porque meia-noite UTC do dia 16 já passou.
+        $this->assertFalse(\App\Support\Tempo\RelogioNegocio::dataEstaVencida(Carbon::parse('2026-12-15')));
+        // Um prazo de ONTEM (14/12) já vencido continua vencido.
+        $this->assertTrue(\App\Support\Tempo\RelogioNegocio::dataEstaVencida(Carbon::parse('2026-12-14')));
+        // null nunca é "vencido".
+        $this->assertFalse(\App\Support\Tempo\RelogioNegocio::dataEstaVencida(null));
+
+        // Avança pra depois da meia-noite BRASILEIRA do dia 16 — agora sim
+        // o prazo de 15/12 está genuinamente vencido.
+        Carbon::setTestNow(Carbon::create(2026, 12, 16, 3, 0, 1, 'UTC')); // 00:00:01 BRT do dia 16
+        $this->assertTrue(\App\Support\Tempo\RelogioNegocio::dataEstaVencida(Carbon::parse('2026-12-15')));
     }
 }

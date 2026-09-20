@@ -189,8 +189,17 @@ class RelatorioImportarAvancoPollingTest extends TestCase
 
         $component->call('confirmar');
 
+        // Auditoria Pré-Produção A2, Seção 7 (Importação Presa) —
+        // ImportarCronogramaJob::failed() agora persiste uma mensagem
+        // GENÉRICA e segura (nunca $exception->getMessage() cru — Seção
+        // 7: "não expor stack trace ao usuário"); a exceção técnica real
+        // vai pro log via report(), nunca pra tela. A asserção original
+        // aqui ('Falha simulada dentro de aplicar()') testava só que
+        // ALGUM feedback de erro chegava à UI — o propósito real deste
+        // teste (rollback completo sem Health Check órfão) está nas
+        // asserções acima, intocado.
         $component->assertSet('importado', false)
-            ->assertSee('Falha simulada dentro de aplicar()');
+            ->assertSee('Não foi possível concluir a importação');
 
         $this->assertSame(0, CronogramaImportacao::where('obra_id', $this->obra->id)->count());
         $this->assertSame(0, CronogramaImportacaoHealthCheck::count());

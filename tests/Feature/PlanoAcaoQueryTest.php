@@ -80,7 +80,13 @@ class PlanoAcaoQueryTest extends TestCase
             'impacto_anterior' => null,
             'impacto_atual' => null,
         ]);
-        $reconciliacao->forceFill(['created_at' => $createdAt])->save();
+        // Auditoria Pré-Produção A1, DB-03 — PlanoAcaoReconciliacaoObserver
+        // agora bloqueia qualquer update() via Eloquent (mesmo só de
+        // created_at). Backdatar aqui só pra controlar ordenação no teste,
+        // via Query Builder cru (nunca dispara Observer/evento Eloquent) —
+        // exatamente o limite já documentado da proteção (nível de
+        // aplicação, não de banco).
+        DB::table('plano_acao_reconciliacoes')->where('id', $reconciliacao->id)->update(['created_at' => $createdAt]);
 
         return $reconciliacao->fresh();
     }

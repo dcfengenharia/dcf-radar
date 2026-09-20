@@ -200,7 +200,12 @@ new class extends Component {
     abort_unless(Auth::user()->temPermissaoNaObra($this->obra->id, 'restricoes.plano_semanal', 'ver'), 403);
 
         if ($this->semanaInicio === '') {
-            $this->semanaInicio = Carbon::now()->startOfWeek()->toDateString();
+            // Auditoria Pré-Produção A2, Seção 4 (Timezone) — Carbon::now()
+            // usa o fuso padrão da app (UTC); "virava a semana" um dia cedo
+            // demais durante a noite de domingo (horário de Brasília), 21h00
+            // às 23h59, fazendo a página abrir por padrão na semana ERRADA
+            // (a próxima, em vez da atual).
+            $this->semanaInicio = \App\Support\Tempo\RelogioNegocio::inicioDaSemanaAtual()->toDateString();
         } else {
             // Link direto (?semana=) sempre normalizado pro início da
             // semana (segunda-feira), igual a qualquer navegação interna.
@@ -224,7 +229,22 @@ new class extends Component {
     #[Computed]
     public function estaVisualizandoSemanaPassada(): bool
     {
-        return Carbon::parse($this->semanaInicio)->lt(Carbon::now()->startOfWeek());
+        // Auditoria Pré-Produção A2.2, Seção 10 — achado real e permanente
+        // (não só de horário-limite): `Carbon::parse($this->semanaInicio)`
+        // (string 'Y-m-d', sem fuso — hidrata sempre à meia-noite no fuso
+        // PADRÃO da app, UTC) comparado via `.lt()` (instante absoluto)
+        // contra `RelogioNegocio::inicioDaSemanaAtual()` (meia-noite no
+        // fuso America/Sao_Paulo = 03:00 UTC) subtraía ~3h SEMPRE, pra
+        // QUALQUER segunda-feira — nunca só numa janela de virada de dia.
+        // Resultado: a semana ATUAL era classificada como "passada" o
+        // tempo todo, contrariando o próprio contrato documentado logo
+        // abaixo ("a semana ATUAL nunca é tratada como congelada"). Uma
+        // Programação já existente (`programacaoDaSemana !== null`) pra
+        // semana corrente já nascia com `semanaEstaCongelada = true` em
+        // produção. Corrigido comparando só DATA DE CALENDÁRIO — as duas
+        // pontas já são/derivam de strings 'Y-m-d' (ordem lexicográfica
+        // ISO 8601 == ordem cronológica), nunca um instante Carbon.
+        return $this->semanaInicio < \App\Support\Tempo\RelogioNegocio::inicioDaSemanaAtual()->toDateString();
     }
 
     /**
@@ -2432,7 +2452,7 @@ new class extends Component {
                                 <small>{{ $at->inicio_planejado?->format('d/m') ?? '—' }}</small>
                             </td>
                             <td class="text-center">
-                                @php $atrasada = $at->data_termino && $at->data_termino->isPast() && $statusVal !== 'concluido'; @endphp
+                                @php $atrasada = $at->terminoEstaVencido() && $statusVal !== 'concluido'; @endphp
                                 <small class="{{ $atrasada ? 'text-danger fw-bold' : '' }}">
                                     {{ $at->data_termino?->format('d/m') ?? '—' }}
                                 </small>
@@ -2806,7 +2826,7 @@ new class extends Component {
                                         'aguardando_terceiros' => 'info', 'resolvida' => 'success',
                                         default => 'secondary',
                                     };
-                                    $rvencidaPlano = $rPlano->prazo_limite && $rabertaPlano && $rPlano->prazo_limite->isPast();
+                                    $rvencidaPlano = $rabertaPlano && $rPlano->estaVencida();
                                 @endphp
                                 <div class="card {{ $rPlano->bloqueante && $rabertaPlano ? 'border-danger' : 'border-light' }} mb-3 shadow-none" wire:key="restricao-plano-{{ $rPlano->id }}">
                                     <div class="card-body py-2 px-3">

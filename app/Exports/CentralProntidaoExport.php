@@ -2,9 +2,11 @@
 
 namespace App\Exports;
 
+use App\Exports\Concerns\PrevineInjecaoDeFormulaExcel;
 use App\Support\CentralProntidao\AtividadeProntidaoView;
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\FromArray;
+use Maatwebsite\Excel\Concerns\WithCustomValueBinder;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMultipleSheets;
 use Maatwebsite\Excel\Concerns\WithTitle;
@@ -99,7 +101,9 @@ class CentralProntidaoExport implements WithMultipleSheets
         $linhas = [];
         foreach ($this->views() as $v) {
             foreach ($v->restricoesBloqueantes as $r) {
-                $vencida = $r->prazoLimite?->isPast() ?? false;
+                // Auditoria Pré-Produção A2, Seção 4 (Timezone) — ver
+                // App\Models\Restricao::estaVencida() pro achado/motivo.
+                $vencida = $r->estaVencida();
                 $linhas[] = [
                     $v->nome,
                     $r->descricao,
@@ -245,7 +249,9 @@ class CentralProntidaoExport implements WithMultipleSheets
 
     private function folha(string $titulo, array $cabecalho, array $linhas)
     {
-        return new class ($titulo, $cabecalho, $linhas) implements FromArray, WithHeadings, WithTitle {
+        return new class ($titulo, $cabecalho, $linhas) implements FromArray, WithHeadings, WithTitle, WithCustomValueBinder {
+            use PrevineInjecaoDeFormulaExcel;
+
             public function __construct(
                 private readonly string $titulo,
                 private readonly array $cabecalho,

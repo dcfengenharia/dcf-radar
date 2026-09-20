@@ -211,14 +211,18 @@ class HomeExecutivaQuery
     // =========================================================================
 
     /**
-     * Só chama `EstadoAtendimentoNecessidadeMaterialQuery::porAtividade()`
-     * (custo fixo por atividade, já batch-safe internamente — ver
-     * docblock da própria classe) para atividades que REALMENTE têm
-     * `AtividadeNecessidadeMaterial` cadastrada — nunca para toda
-     * atividade do horizonte. Numa obra real, o subconjunto com
-     * necessidade de material cadastrada é tipicamente pequeno frente ao
-     * total de atividades do horizonte (2 semanas) — o custo cresce com
-     * esse subconjunto, não com o total de atividades da obra.
+     * Correção P1 pré-produção (N+1 confirmado por auditoria): chama
+     * `EstadoAtendimentoNecessidadeMaterialQuery::porAtividades()` **uma
+     * única vez** para TODAS as atividades do horizonte que têm
+     * `AtividadeNecessidadeMaterial` cadastrada — nunca mais uma chamada
+     * de `porAtividade()` por atividade dentro de um loop/`mapWithKeys`
+     * (a versão anterior desta linha, que produzia 3-6 conjuntos de
+     * queries em lote REPETIDOS uma vez por atividade — o próprio custo
+     * fixo "por atividade" da classe, multiplicado por N). O retorno de
+     * `porAtividades()` já vem no mesmo formato `Collection<atividadeId,
+     * Collection<necessidade>>` que este método sempre retornou —
+     * nenhum chamador (`montarSuprimentosExecucao`/`montarCausas`/
+     * `montarAmeacas`/`montarAcoesRecomendadas`) precisou mudar.
      *
      * @return Collection<string, Collection<int, array>> chave = atividade_id
      */
@@ -240,9 +244,7 @@ class HomeExecutivaQuery
 
         $atividades = Atividade::whereIn('id', $idsComNecessidade)->get();
 
-        return $atividades->mapWithKeys(
-            fn (Atividade $atividade) => [$atividade->id => EstadoAtendimentoNecessidadeMaterialQuery::porAtividade($atividade)]
-        );
+        return EstadoAtendimentoNecessidadeMaterialQuery::porAtividades($atividades);
     }
 
     /** Ordinal de apresentação (nunca uma regra de negócio nova) — do mais grave pro mais protegido. */

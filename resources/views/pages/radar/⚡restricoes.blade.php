@@ -727,7 +727,14 @@ new class extends Component {
 
   public function abrirModalEdicao(string $id): void
   {
+    // Auditoria Pré-Produção A1, TEN-04 — antes, os dados da restrição
+    // (descrição/prazo/responsável/categoria) eram populados no estado do
+    // Livewire ANTES de qualquer autorização, igual salvarRestricao() já
+    // fazia corretamente (authorize() antes de update()). Isso vazava
+    // leitura de restrição de outra obra do mesmo tenant, mesmo quando o
+    // salvamento seguinte seria corretamente negado.
     $r = Restricao::findOrFail($id);
+    $this->authorize('update', $r);
     $this->resetModalNova();
     $this->editandoId = $id;
     $this->atividadesIdsNova = [$r->atividade_id];
@@ -975,6 +982,16 @@ new class extends Component {
 
   public function abrirModalComentarios(string $id): void
   {
+    // Auditoria Pré-Produção A1.1, TEN-05 — mesmo padrão de TEN-04:
+    // autoriza ANTES de qualquer atribuição de estado. Aqui a intenção é
+    // só LEITURA (ver descrição/histórico de comentários), nunca mutação
+    // — por isso a capacidade correta é 'view' (RestricaoPolicy::view(),
+    // já baseada em temAcessoAObra()), nunca 'update'/'editar'. Adicionar
+    // um comentário de fato continua exigindo a capacidade própria
+    // 'comentar' (já checada em adicionarComentario(), intocada).
+    $restricao = Restricao::findOrFail($id);
+    $this->authorize('view', $restricao);
+
     $this->comentandoId = $id;
     $this->comentarioTexto = '';
     $this->resetErrorBag();
@@ -987,9 +1004,21 @@ new class extends Component {
       return null;
     }
 
-    return Restricao::with(['acoes' => fn($q) => $q->with('autor:id,first_name,last_name')->latest()])->find(
+    $restricao = Restricao::with(['acoes' => fn($q) => $q->with('autor:id,first_name,last_name')->latest()])->find(
       $this->comentandoId
     );
+
+    // Defesa em profundidade (TEN-05) — nunca confiar só na checagem de
+    // abrirModalComentarios(): mesmo que $comentandoId chegue até aqui
+    // por outro caminho, o computed nunca expõe descrição/ações/autores
+    // de uma Restrição que o usuário autenticado não pode ver. Retorna
+    // null (nunca lança), pois este é um getter consumido direto no
+    // Blade — o modal já trata $rc === null como "carregando".
+    if (!$restricao || Auth::user()->cannot('view', $restricao)) {
+      return null;
+    }
+
+    return $restricao;
   }
 
   public function adicionarComentario(): void
@@ -1204,7 +1233,7 @@ new class extends Component {
             @php
                 $sv      = $r->status instanceof \App\Enums\StatusRestricao ? $r->status->value : $r->status;
                 $aberta  = in_array($sv, ['aberta','em_tratamento','aguardando_terceiros']);
-                $vencida = $r->prazo_limite && $r->prazo_limite->isPast() && $aberta;
+                $vencida = $r->estaVencida() && $aberta;
                 $risco   = ($r->probabilidade ?? 0) * ($r->impacto ?? 0);
                 $rcor    = $risco >= 50 ? 'danger' : ($risco >= 25 ? 'warning' : 'success');
                 $scfg    = match($sv) {
@@ -1789,7 +1818,7 @@ new class extends Component {
                                         <small class="text-muted">
                                             <i class="bx bx-calendar me-1"></i>
                                             {{ $r->prazo_limite->format('d/m/Y') }}
-                                            @if($r->prazo_limite->isPast() && $raberta)
+                                            @if($r->estaVencida() && $raberta)
                                             <span class="text-danger">(vencida)</span>
                                             @endif
                                         </small>

@@ -55,7 +55,7 @@ class SincronizarRestricaoCadeiaSuprimentoTest extends TestCase
         parent::setUp();
         Notification::fake();
 
-        Carbon::setTestNow(Carbon::parse('2026-12-15'));
+        Carbon::setTestNow(Carbon::parse('2026-12-15 12:00:00'));
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);

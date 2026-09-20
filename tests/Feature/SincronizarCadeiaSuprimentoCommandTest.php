@@ -50,7 +50,7 @@ class SincronizarCadeiaSuprimentoCommandTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-15'));
+        Carbon::setTestNow(Carbon::parse('2026-12-15 12:00:00'));
 
         // Mesmo achado/técnica de AlertaCadeiaSuprimentoTest: as 3
         // Notifications fixam connection='redis' — sem worker rodando no
@@ -128,7 +128,7 @@ class SincronizarCadeiaSuprimentoCommandTest extends TestCase
 
     public function test_ak_al_passagem_do_tempo_cria_restricao_via_scheduler(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-11-01'));
+        Carbon::setTestNow(Carbon::parse('2026-11-01 12:00:00'));
         $pacote = $this->criarPacote();
         $atividade = Atividade::factory()->create(['obra_id' => $this->obra->id, 'inicio_planejado' => '2026-12-01']);
         $pacote->atividades()->attach($atividade->id);
@@ -139,7 +139,7 @@ class SincronizarCadeiaSuprimentoCommandTest extends TestCase
         $this->assertNull($this->restricaoDe($pacote, $atividade));
 
         // Só o RELÓGIO avança — zero mutação de Atividade/Pedido/Pacote.
-        Carbon::setTestNow(Carbon::parse('2026-12-05'));
+        Carbon::setTestNow(Carbon::parse('2026-12-05 12:00:00'));
         $this->artisan('suprimentos:sincronizar-cadeia-formal')->assertExitCode(0);
 
         $this->assertSame(StatusRestricao::Aberta, $this->restricaoDe($pacote, $atividade)->status);
@@ -292,7 +292,7 @@ class SincronizarCadeiaSuprimentoCommandTest extends TestCase
 
     public function test_critico_ponta_a_ponta(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-10-15'));
+        Carbon::setTestNow(Carbon::parse('2026-10-15 12:00:00'));
 
         $pacote = $this->criarPacote();
         $atividade = Atividade::factory()->create(['obra_id' => $this->obra->id, 'inicio_planejado' => '2026-10-20']);
@@ -309,13 +309,13 @@ class SincronizarCadeiaSuprimentoCommandTest extends TestCase
         $this->assertSame(0, $this->notificacoesDoTipo(\App\Notifications\SuprimentosPedidoAtrasadoNotification::class));
 
         // Avança pra 19/10 — necessidade ainda não chegou, Pedido ainda não atrasado.
-        Carbon::setTestNow(Carbon::parse('2026-10-19'));
+        Carbon::setTestNow(Carbon::parse('2026-10-19 12:00:00'));
         $this->artisan('suprimentos:sincronizar-cadeia-formal')->assertExitCode(0);
         $this->assertNull($this->restricaoDe($pacote, $atividade));
         $this->assertSame(0, $this->notificacoesDoTipo(\App\Notifications\SuprimentosPedidoAtrasadoNotification::class));
 
         // Avança pra 20/10 — necessidade chegou, saldo 100% pendente.
-        Carbon::setTestNow(Carbon::parse('2026-10-20'));
+        Carbon::setTestNow(Carbon::parse('2026-10-20 12:00:00'));
         $this->artisan('suprimentos:sincronizar-cadeia-formal')->assertExitCode(0);
         $restricao = $this->restricaoDe($pacote, $atividade);
         $this->assertSame(StatusRestricao::Aberta, $restricao->status);

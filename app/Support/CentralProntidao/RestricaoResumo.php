@@ -19,4 +19,15 @@ final readonly class RestricaoResumo
         public OrigemRestricaoProntidao $origem,
     ) {
     }
+
+    /**
+     * Auditoria Pré-Produção A2, Seção 4 (Timezone) — substitui
+     * `$r->prazoLimite?->isPast()`, usado sem esse método em 3 pontos
+     * (export Excel, PDF, partial de detalhe da Central de Prontidão).
+     * Mesma correção/motivo de `App\Models\Restricao::estaVencida()`.
+     */
+    public function estaVencida(): bool
+    {
+        return \App\Support\Tempo\RelogioNegocio::dataEstaVencida($this->prazoLimite);
+    }
 }

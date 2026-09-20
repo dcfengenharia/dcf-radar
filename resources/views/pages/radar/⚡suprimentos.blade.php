@@ -1647,7 +1647,11 @@ new class extends Component {
     // ser soft-deletado (achado C da auditoria adversarial da 19.3).
     try {
       \Illuminate\Support\Facades\DB::transaction(function () use ($id) {
-        $item = ItemSuprimento::whereKey($id)->lockForUpdate()->firstOrFail();
+        // Auditoria Pré-Produção A1, TEN-01 — nunca confiar só no ID vindo
+        // do Livewire: sem o filtro por obra_id, um pacote de outra obra do
+        // mesmo tenant podia ser excluído por quem tem permissão só na obra
+        // atual. Mesmo resolver obra-scoped já usado no resto do arquivo.
+        $item = ItemSuprimento::where('obra_id', $this->obra->id)->whereKey($id)->lockForUpdate()->firstOrFail();
         SincronizarRestricaoSuprimento::resolverTudo($item, Auth::id());
         $item->delete();
       });
@@ -2520,7 +2524,16 @@ new class extends Component {
       return null;
     }
 
-    $recebimento = \App\Models\RecebimentoPedido::with('pedidoCompraItem')->find($this->distribuicaoRecebimentoAbertoId);
+    // Auditoria Pré-Produção A1, TEN-02 — este computed populava o painel
+    // (necessidades/parcelas/saldos) sem nenhum filtro de obra, apesar de
+    // confirmarDistribuicaoRecebimento()/removerDistribuicaoRecebimento()
+    // já usarem resolverRecebimentoDaObraAtual(). Um recebimentoId de outra
+    // obra do mesmo tenant vazava dado de leitura mesmo sem conseguir
+    // mutar nada. Mesmo escopo do resolver, só trocando findOrFail por
+    // find (computed precisa retornar null, nunca lançar exceção).
+    $recebimento = \App\Models\RecebimentoPedido::with('pedidoCompraItem')
+      ->whereHas('pedidoCompraItem.pedidoCompra', fn ($q) => $q->where('obra_id', $this->obra->id))
+      ->find($this->distribuicaoRecebimentoAbertoId);
     if (! $recebimento) {
       return null;
     }

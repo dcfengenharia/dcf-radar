@@ -56,8 +56,21 @@ class RegistrarConclusaoEtapaRequisicaoCompra
                 );
             }
 
-            $data = $dataRealizada ? \Carbon\Carbon::parse($dataRealizada) : now();
-            if ($data->isFuture()) {
+            // Auditoria Pré-Produção A2.1, Seção 2 — corrigido definitivamente:
+            // o default (sem data informada) passou a ser RelogioNegocio::
+            // hoje() (dia de negócio, America/Sao_Paulo), nunca now()/
+            // Carbon::today() puros — o antigo `$data->isFuture()` comparava
+            // um instante absoluto contra `now()`, o que podia rejeitar "hoje"
+            // do ponto de vista do usuário brasileiro durante a janela de
+            // 21h-23h59 (o mesmo achado das outras 4 Actions, aqui manifesto
+            // via comparação de instante em vez de comparação de data-string).
+            // A validação em si agora reaproveita RelogioNegocio::
+            // dataEstaNoFuturo(), comparando SÓ a data calendário — coerente
+            // com `data_realizada` sendo sempre gravada via toDateString().
+            $data = $dataRealizada
+                ? \Carbon\Carbon::parse($dataRealizada)->startOfDay()
+                : \App\Support\Tempo\RelogioNegocio::hoje();
+            if (\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo($data)) {
                 throw new InvalidArgumentException('A data de conclusão não pode estar no futuro.');
             }
 

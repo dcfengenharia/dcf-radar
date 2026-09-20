@@ -2,9 +2,11 @@
 
 namespace App\Exports;
 
+use App\Exports\Concerns\PrevineInjecaoDeFormulaExcel;
 use App\Models\Report;
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\FromCollection;
+use Maatwebsite\Excel\Concerns\WithCustomValueBinder;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
 use Maatwebsite\Excel\Concerns\WithTitle;
@@ -14,8 +16,10 @@ use Maatwebsite\Excel\Concerns\WithTitle;
  * report — os mesmos números já congelados em ReportDesvio na geração
  * (ver App\Services\ReportGerador), nunca recalculados aqui.
  */
-class ReportDesviosExport implements FromCollection, WithHeadings, WithMapping, WithTitle
+class ReportDesviosExport implements FromCollection, WithHeadings, WithMapping, WithTitle, WithCustomValueBinder
 {
+    use PrevineInjecaoDeFormulaExcel;
+
     public function __construct(private readonly Report $report)
     {
     }

@@ -52,7 +52,7 @@ class AlertaCadeiaSuprimentoTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-15'));
+        Carbon::setTestNow(Carbon::parse('2026-12-15 12:00:00'));
 
         // As 3 Notifications desta etapa fixam $this->connection = 'redis'
         // (mesmo padrão de ProntidaoSemanalNotification) — sem worker
@@ -349,7 +349,7 @@ class AlertaCadeiaSuprimentoTest extends TestCase
         // chave de idempotência, dedup correto mas indistinguível do bug).
         $atividade->update(['inicio_planejado' => '2027-01-10']);
         \App\Support\SincronizarRestricaoCadeiaSuprimento::sincronizarPacote($pacote->fresh(), $this->user->id);
-        Carbon::setTestNow(Carbon::parse('2026-12-16'));
+        Carbon::setTestNow(Carbon::parse('2026-12-16 12:00:00'));
         $atividade->update(['inicio_planejado' => '2026-11-01']);
         \App\Support\SincronizarRestricaoCadeiaSuprimento::sincronizarPacote($pacote->fresh(), $this->user->id);
         $this->alerta->dispararRestricaoCriada($restricao->fresh(), $pacote->fresh(), $atividade->fresh());

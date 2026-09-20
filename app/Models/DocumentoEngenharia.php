@@ -174,7 +174,14 @@ class DocumentoEngenharia extends Model
 
     public function estaAtrasado(): bool
     {
-        return !$this->estaEmitido() && (bool) $this->data_planejada?->isPast();
+        // Auditoria Pré-Produção A2, Seção 4 (Timezone) — data_planejada é
+        // cast 'date' (meia-noite UTC daquele dia); ->isPast() comparava
+        // contra Carbon::now() (UTC), marcando "atrasado" a partir das
+        // 21h00 do dia ANTERIOR ao planejado (horário de Brasília) — quase
+        // 27h cedo demais. RelogioNegocio::dataEstaVencida() compara só a
+        // data calendário, no fuso de negócio — nunca altera a coluna em
+        // si, só o instante de comparação.
+        return !$this->estaEmitido() && \App\Support\Tempo\RelogioNegocio::dataEstaVencida($this->data_planejada);
     }
 
     /**

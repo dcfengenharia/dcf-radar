@@ -12,6 +12,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * material entre dois Locais PRÓPRIOS da mesma obra. Ver docblock da
  * migration pra fundamentos completos (identidade de operação, nunca
  * envolve Local Terceiro).
+ *
+ * Auditoria Pré-Produção A2.1, Seções 5-9 — `operation_id` (nullable,
+ * ULID gerado UMA VEZ pela UI) é o PRÓPRIO identificador de idempotência
+ * desta Transferência (nunca reaproveita o das 2 `MovimentacaoEstoque`
+ * internas, que permanecem sem operation_id próprio) — retry da mesma
+ * intenção nunca duplica a dupla Saída+Entrada.
  */
 class TransferenciaEstoque extends Model
 {
@@ -26,6 +32,7 @@ class TransferenciaEstoque extends Model
     protected $fillable = [
         'tenant_id',
         'obra_id',
+        'operation_id',
         'material_id',
         'unidade_estoque_id',
         'local_origem_id',

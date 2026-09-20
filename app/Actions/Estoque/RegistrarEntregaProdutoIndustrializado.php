@@ -5,6 +5,7 @@ namespace App\Actions\Estoque;
 use App\Enums\ModalidadeEntregaProduto;
 use App\Enums\TipoMovimentacaoEstoque;
 use App\Exceptions\EntregaProdutoIndustrializadoInvalidaException;
+use App\Exceptions\OperacaoEstoqueDuplicadaException;
 use App\Models\EntregaProdutoIndustrializado;
 use App\Models\FrenteTrabalho;
 use App\Models\ItemSuprimento;
@@ -17,6 +18,7 @@ use App\Models\ProdutoIndustrializado;
 use App\Models\UnidadeEstoque;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -36,6 +38,15 @@ use Illuminate\Support\Facades\DB;
  * `entregas_produto_industrializado` sob lock do próprio
  * `ProdutoIndustrializado` (recurso lógico compartilhado por todas as
  * entregas concorrentes do mesmo produto).
+ *
+ * **Auditoria Pré-Produção A2.2, Seções 3-7 (idempotência)**:
+ * `$operationId` OPCIONAL, mesmo contrato das demais Actions de
+ * Industrialização — `entregas_produto_industrializado` é a identidade
+ * de operação (correlaciona Saida-terceiro+Entrada-destino e, quando
+ * aplicável, a Saida-campo). O MESMO `$operationId` também é repassado
+ * pra `RegistrarSaidaEstoque` na entrega direta ao campo (identidade
+ * única, defesa em profundidade — nunca colide entre as 2 tabelas
+ * distintas que cada uma protege).
  */
 class RegistrarEntregaProdutoIndustrializado
 {
@@ -52,11 +63,20 @@ class RegistrarEntregaProdutoIndustrializado
         ?User $retiradoPor = null,
         ?string $retiradoPorExterno = null,
         ?string $observacao = null,
+        ?string $operationId = null,
     ): EntregaProdutoIndustrializado {
-        return DB::transaction(function () use (
-            $produto, $quantidade, $modalidade, $localDestino, $ocorridoEm, $usuario,
-            $unidade, $frenteCampo, $pacoteCampo, $retiradoPor, $retiradoPorExterno, $observacao
-        ) {
+        if ($operationId !== null) {
+            $existente = EntregaProdutoIndustrializado::where('operation_id', $operationId)->first();
+            if ($existente) {
+                return $this->validarOuRetornarExistente($existente, $produto, $quantidade, $modalidade);
+            }
+        }
+
+        try {
+            return DB::transaction(function () use (
+                $produto, $quantidade, $modalidade, $localDestino, $ocorridoEm, $usuario,
+                $unidade, $frenteCampo, $pacoteCampo, $retiradoPor, $retiradoPorExterno, $observacao, $operationId
+            ) {
             $this->garantirQuantidadePositiva($quantidade);
 
             $produtoTravado = ProdutoIndustrializado::whereKey($produto->id)->lockForUpdate()->firstOrFail();
@@ -135,10 +155,12 @@ class RegistrarEntregaProdutoIndustrializado
                     retiradoPor: $retiradoPor,
                     retiradoPorExterno: $retiradoPorExterno,
                     observacao: $observacao,
+                    operationId: $operationId,
                 );
             }
 
             return EntregaProdutoIndustrializado::create([
+                'operation_id' => $operationId,
                 'obra_id' => $ordem->obra_id,
                 'produto_industrializado_id' => $produtoTravado->id,
                 'quantidade' => $quantidade,
@@ -154,7 +176,38 @@ class RegistrarEntregaProdutoIndustrializado
                 'registrado_por' => $usuario->id,
                 'observacao' => $observacao,
             ]);
-        });
+            });
+        } catch (QueryException $e) {
+            if ($operationId !== null && ($e->errorInfo[1] ?? null) === 1062) {
+                $existente = EntregaProdutoIndustrializado::where('operation_id', $operationId)->first();
+                if ($existente) {
+                    return $this->validarOuRetornarExistente($existente, $produto, $quantidade, $modalidade);
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Auditoria Pré-Produção A2.2, Seção 5 — retry da MESMA intenção
+     * (mesmo Produto/quantidade/modalidade) retorna o fato já existente.
+     */
+    private function validarOuRetornarExistente(
+        EntregaProdutoIndustrializado $existente,
+        ProdutoIndustrializado $produto,
+        float $quantidade,
+        ModalidadeEntregaProduto $modalidade,
+    ): EntregaProdutoIndustrializado {
+        $mesmoProduto = $existente->produto_industrializado_id === $produto->id;
+        $mesmaQuantidade = abs((float) $existente->quantidade - $quantidade) <= 0.0005;
+        $mesmaModalidade = $existente->modalidade === $modalidade;
+
+        if (! $mesmoProduto || ! $mesmaQuantidade || ! $mesmaModalidade) {
+            throw new OperacaoEstoqueDuplicadaException();
+        }
+
+        return $existente;
     }
 
     private function garantirQuantidadePositiva(float $quantidade): void

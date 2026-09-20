@@ -362,7 +362,8 @@ new class extends Component {
         $nomeArquivo = "detalhe-periodo-{$this->obra->id}-{$this->periodoDetalhado}.xlsx";
 
         return Excel::download(
-            new class($dados) implements \Maatwebsite\Excel\Concerns\FromArray, \Maatwebsite\Excel\Concerns\WithHeadings {
+            new class($dados) implements \Maatwebsite\Excel\Concerns\FromArray, \Maatwebsite\Excel\Concerns\WithHeadings, \Maatwebsite\Excel\Concerns\WithCustomValueBinder {
+                use \App\Exports\Concerns\PrevineInjecaoDeFormulaExcel;
                 public function __construct(private array $rows) {}
                 public function array(): array { return array_slice($this->rows, 1); }
                 public function headings(): array { return $this->rows[0]; }
@@ -463,7 +464,8 @@ new class extends Component {
         $nomeArquivo = "curva-s-{$this->obra->id}-{$this->linhaBaseId}-{$this->granularidade}.xlsx";
 
         return Excel::download(
-            new class($dados) implements \Maatwebsite\Excel\Concerns\FromArray, \Maatwebsite\Excel\Concerns\WithHeadings {
+            new class($dados) implements \Maatwebsite\Excel\Concerns\FromArray, \Maatwebsite\Excel\Concerns\WithHeadings, \Maatwebsite\Excel\Concerns\WithCustomValueBinder {
+                use \App\Exports\Concerns\PrevineInjecaoDeFormulaExcel;
                 public function __construct(private array $rows) {}
                 public function array(): array { return array_slice($this->rows, 1); }
                 public function headings(): array { return $this->rows[0]; }

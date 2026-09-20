@@ -5,6 +5,7 @@ namespace App\Actions\Estoque;
 use App\Enums\ModoRastreabilidadeMaterial;
 use App\Enums\TipoLocalEstoque;
 use App\Enums\TipoMovimentacaoEstoque;
+use App\Exceptions\OperacaoEstoqueDuplicadaException;
 use App\Exceptions\SaldoFisicoInsuficienteException;
 use App\Exceptions\TransferenciaEstoqueInvalidaException;
 use App\Models\LocalEstoque;
@@ -15,6 +16,7 @@ use App\Models\UnidadeEstoque;
 use App\Models\User;
 use App\Support\Estoque\SaldoEstoque;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -58,6 +60,16 @@ use Illuminate\Support\Facades\DB;
  * `RegistrarRemessaIndustrializacao`. Isso é o que garante que duas
  * transferências concorrentes e opostas (A→B e B→A) nunca causem
  * deadlock: as duas travam os mesmos 2 Locais na MESMA ordem.
+ *
+ * **Auditoria Pré-Produção A2.1, Seções 5-9 (idempotência)**:
+ * `$operationId` é OPCIONAL — a Transferência JÁ É a "identidade de
+ * operação" da dupla Saída+Entrada que cria (docblock da migration), por
+ * isso o `operation_id` vive na PRÓPRIA `TransferenciaEstoque` (nunca
+ * nas 2 `MovimentacaoEstoque` internas, que continuam sem operation_id
+ * próprio). Retry com o mesmo operation_id + mesmo material/origem/
+ * destino/quantidade retorna a Transferência já criada; qualquer um
+ * desses campos divergente vira `OperacaoEstoqueDuplicadaException`.
+ * Garantia real é o `UNIQUE(tenant_id, operation_id)` do banco.
  */
 class RegistrarTransferenciaEstoque
 {
@@ -70,10 +82,28 @@ class RegistrarTransferenciaEstoque
         User $usuario,
         ?UnidadeEstoque $unidade = null,
         ?string $observacao = null,
+        ?string $operationId = null,
     ): TransferenciaEstoque {
-        return DB::transaction(function () use (
-            $material, $localOrigem, $localDestino, $quantidade, $ocorridoEm, $usuario, $unidade, $observacao
-        ) {
+        // Ver RegistrarEntradaEstoque::execute() pro raciocínio completo.
+        // Aqui é ainda mais crítico: o pré-check e o catch de corrida real
+        // ficam FORA da transação porque esta Action já cria 2
+        // MovimentacaoEstoque especulativas ANTES do INSERT final que
+        // carrega o operation_id (TransferenciaEstoque) — só uma exceção
+        // NÃO capturada dentro do closure desfaz as duas junto, evitando
+        // uma Saída+Entrada órfãs (sem TransferenciaEstoque correlata) se
+        // a tentativa perdedora de uma corrida fosse apenas engolida
+        // internamente.
+        if ($operationId !== null) {
+            $existente = TransferenciaEstoque::where('operation_id', $operationId)->first();
+            if ($existente) {
+                return $this->validarOuRetornarExistente($existente, $material, $localOrigem, $localDestino, $quantidade);
+            }
+        }
+
+        try {
+            return DB::transaction(function () use (
+                $material, $localOrigem, $localDestino, $quantidade, $ocorridoEm, $usuario, $unidade, $observacao, $operationId
+            ) {
             $this->garantirQuantidadePositiva($quantidade);
 
             $dataTransferencia = Carbon::parse($ocorridoEm)->startOfDay();
@@ -141,6 +171,7 @@ class RegistrarTransferenciaEstoque
             ]);
 
             return TransferenciaEstoque::create([
+                'operation_id' => $operationId,
                 'obra_id' => $localOrigem->obra_id,
                 'material_id' => $material->id,
                 'unidade_estoque_id' => $unidadeTravada?->id,
@@ -153,7 +184,46 @@ class RegistrarTransferenciaEstoque
                 'registrado_por' => $usuario->id,
                 'observacao' => $observacao,
             ]);
-        });
+            });
+        } catch (QueryException $e) {
+            // Corrida real — mesma lógica de RegistrarEntradaEstoque: a
+            // garantia é o UNIQUE(tenant_id, operation_id) de
+            // transferencias_estoque, nunca o exists() de cima. A
+            // transação inteira (incluindo as 2 MovimentacaoEstoque
+            // especulativas) já foi revertida antes de chegarmos aqui.
+            if ($operationId !== null && ($e->errorInfo[1] ?? null) === 1062) {
+                $existente = TransferenciaEstoque::where('operation_id', $operationId)->first();
+                if ($existente) {
+                    return $this->validarOuRetornarExistente($existente, $material, $localOrigem, $localDestino, $quantidade);
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Auditoria Pré-Produção A2.1, Seção 9 — mesmo contrato de
+     * RegistrarEntradaEstoque::validarOuRetornarExistente(), aplicado
+     * aos 4 campos que identificam a intenção de uma Transferência.
+     */
+    private function validarOuRetornarExistente(
+        TransferenciaEstoque $existente,
+        Material $material,
+        LocalEstoque $localOrigem,
+        LocalEstoque $localDestino,
+        float $quantidade,
+    ): TransferenciaEstoque {
+        $mesmoMaterial = $existente->material_id === $material->id;
+        $mesmaOrigem = $existente->local_origem_id === $localOrigem->id;
+        $mesmoDestino = $existente->local_destino_id === $localDestino->id;
+        $mesmaQuantidade = abs((float) $existente->quantidade - $quantidade) <= 0.0005;
+
+        if (! $mesmoMaterial || ! $mesmaOrigem || ! $mesmoDestino || ! $mesmaQuantidade) {
+            throw new OperacaoEstoqueDuplicadaException();
+        }
+
+        return $existente;
     }
 
     private function garantirQuantidadePositiva(float $quantidade): void
@@ -165,7 +235,11 @@ class RegistrarTransferenciaEstoque
 
     private function garantirDataNaoFutura(Carbon $data): void
     {
-        if ($data->gt(Carbon::today())) {
+        // Auditoria Pré-Produção A2.1, Seção 2 — corrigido definitivamente
+        // com data de negócio (America/Sao_Paulo), nunca instante UTC
+        // absoluto. Ver RegistrarEntradaEstoque::execute() pro achado
+        // original completo.
+        if (\App\Support\Tempo\RelogioNegocio::dataEstaNoFuturo($data)) {
             throw new TransferenciaEstoqueInvalidaException('A data da transferência não pode estar no futuro.');
         }
     }

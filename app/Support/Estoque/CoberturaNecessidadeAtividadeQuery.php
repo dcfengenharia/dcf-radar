@@ -42,6 +42,21 @@ use Illuminate\Support\Collection;
  * porMateriaisNaObra()`/`SaldoReserva::porMateriaisNaObra()` (já batch,
  * 1 query cada) + 1 agregação própria de "reservado por necessidade"
  * (`GROUP BY necessidade_atividade_id`), nunca 1 query por linha.
+ *
+ * **Correção P1 pré-produção — API batch real (`porAtividades()`)**: a
+ * garantia de O(1) acima é POR CHAMADA — chamar `porAtividade()` uma vez
+ * por atividade num loop externo (como `HomeExecutivaQuery::
+ * carregarMotorV1()` fazia, indiretamente, via
+ * `EstadoAtendimentoNecessidadeMaterialQuery::porAtividade()`) ainda
+ * produzia 3×N queries. `porAtividades(Collection $atividades)` é agora
+ * o NÚCLEO real (3 queries fixas pra QUALQUER número de atividades, DA
+ * MESMA OBRA); `porAtividade()` virou um wrapper fino
+ * (`porAtividades(collect([$atividade]))`) — nunca duas implementações
+ * da mesma regra. Isolamento: `SaldoEstoque`/`SaldoReserva::
+ * porMateriaisNaObra()` já exigem um único `$obraId` — `porAtividades()`
+ * rejeita deterministicamente (`InvalidArgumentException`) um lote com
+ * atividades de obras diferentes, nunca parte silenciosamente nem
+ * mistura saldo de obras distintas.
  */
 class CoberturaNecessidadeAtividadeQuery
 {
@@ -50,8 +65,32 @@ class CoberturaNecessidadeAtividadeQuery
      */
     public static function porAtividade(Atividade $atividade): Collection
     {
+        return self::porAtividades(collect([$atividade]))->get($atividade->id) ?? collect();
+    }
+
+    /**
+     * Núcleo real — mesma regra de `porAtividade()`, batchada pra N
+     * atividades da MESMA obra. 3 queries fixas no total, nunca 3×N.
+     *
+     * @param  Collection<int, Atividade>  $atividades
+     * @return Collection<string, Collection<int, array>> chave = atividade_id
+     */
+    public static function porAtividades(Collection $atividades): Collection
+    {
+        if ($atividades->isEmpty()) {
+            return collect();
+        }
+
+        $obraIds = $atividades->pluck('obra_id')->unique();
+        if ($obraIds->count() > 1) {
+            throw new \InvalidArgumentException(
+                'CoberturaNecessidadeAtividadeQuery::porAtividades() só aceita atividades da mesma obra.'
+            );
+        }
+        $obraId = $obraIds->first();
+
         $necessidades = AtividadeNecessidadeMaterial::query()
-            ->where('atividade_id', $atividade->id)
+            ->whereIn('atividade_id', $atividades->pluck('id'))
             ->with([
                 'itemTakeOff.material.unidadeMedida',
                 'materialDireto.unidadeMedida',
@@ -70,8 +109,8 @@ class CoberturaNecessidadeAtividadeQuery
 
         $materialIds = $materiaisPorNecessidade->filter()->map(fn ($m) => $m->id)->unique()->values()->all();
 
-        $fisicoPorMaterial = SaldoEstoque::porMateriaisNaObra($materialIds, $atividade->obra_id);
-        $reservadoObraPorMaterial = SaldoReserva::porMateriaisNaObra($materialIds, $atividade->obra_id);
+        $fisicoPorMaterial = SaldoEstoque::porMateriaisNaObra($materialIds, $obraId);
+        $reservadoObraPorMaterial = SaldoReserva::porMateriaisNaObra($materialIds, $obraId);
 
         $reservadoAtividadePorNecessidade = ReservaEstoque::query()
             ->whereIn('necessidade_atividade_id', $necessidades->pluck('id'))
@@ -132,7 +171,8 @@ class CoberturaNecessidadeAtividadeQuery
                 'deficit' => $deficit,
                 'estado' => self::classificar($faltanteParaReservar, $livreObra, $reservadoAtividade),
             ];
-        })->values();
+        })->groupBy(fn (array $linha) => $linha['necessidade']->atividade_id)
+            ->map(fn (Collection $grupo) => $grupo->values());
     }
 
     /**

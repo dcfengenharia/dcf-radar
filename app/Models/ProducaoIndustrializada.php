@@ -25,6 +25,7 @@ class ProducaoIndustrializada extends Model
     protected $fillable = [
         'tenant_id',
         'obra_id',
+        'operation_id',
         'produto_industrializado_id',
         'quantidade',
         'unidade_estoque_id',

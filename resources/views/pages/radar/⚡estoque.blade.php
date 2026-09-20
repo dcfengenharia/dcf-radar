@@ -46,6 +46,7 @@ use App\Exceptions\DestinacaoPlanejadaInvalidaException;
 use App\Exceptions\EntradaEstoqueInvalidaException;
 use App\Exceptions\EntregaProdutoIndustrializadoInvalidaException;
 use App\Exceptions\ItemTakeOffMaterialImutavelException;
+use App\Exceptions\OperacaoEstoqueDuplicadaException;
 use App\Exceptions\OrdemIndustrializacaoImutavelException;
 use App\Exceptions\OrdemIndustrializacaoInvalidaException;
 use App\Exceptions\ProducaoIndustrializadaInvalidaException;
@@ -192,6 +193,17 @@ new class extends Component {
     public string $entradaSerialUnico = '';
     public string $entradaIdentificadorLogistico = '';
     public string $entradaObservacao = '';
+    /**
+     * Auditoria Pré-Produção A2.1, Seção 15 — gerado UMA VEZ quando o
+     * modal abre (a intenção nasce aqui), reenviado sem mudar em
+     * qualquer retry/duplo-clique daquela MESMA intenção; um novo
+     * `abrirModalEntrada()` rotaciona pra um ULID novo (nova intenção).
+     * NUNCA a garantia real (isso é o UNIQUE(tenant_id, operation_id) do
+     * banco, RegistrarEntradaEstoque::execute()) — só evita que dois
+     * cliques rápidos no mesmo formulário cheguem como 2 intenções
+     * distintas.
+     */
+    public ?string $entradaOperationId = null;
 
     // ---- Modal Associar Material (20.1.CORREÇÃO) ----
     public bool $modalAssociarAberto = false;
@@ -236,6 +248,8 @@ new class extends Component {
     public ?string $saidaRetiradoPorId = null;
     public string $saidaRetiradoPorExterno = '';
     public string $saidaObservacao = '';
+    /** Auditoria Pré-Produção A2.1, Seção 15 — mesmo contrato de $entradaOperationId. */
+    public ?string $saidaOperationId = null;
 
     // ---- Transferência entre Locais (Ciclo 20, Etapa 20.6) ----
     public bool $modalTransferenciaAberto = false;
@@ -245,6 +259,8 @@ new class extends Component {
     public ?string $transferenciaUnidadeId = null;
     public ?float $transferenciaQuantidade = null;
     public string $transferenciaData = '';
+    /** Auditoria Pré-Produção A2.1, Seção 15 — mesmo contrato de $entradaOperationId. */
+    public ?string $transferenciaOperationId = null;
     public string $transferenciaObservacao = '';
 
     // ---- Conciliação / Aplicação (Ciclo 20, Etapa 20.4) ----
@@ -785,6 +801,7 @@ new class extends Component {
         $this->scanAviso = null;
 
         $this->recebimentoEntradaId = $recebimentoId;
+        $this->entradaOperationId = (string) \Illuminate\Support\Str::ulid();
         $this->entradaLocalId = null;
         $this->entradaQuantidade = null;
         $this->entradaData = now()->toDateString();
@@ -842,12 +859,13 @@ new class extends Component {
                 $this->entradaSerialUnico !== '' ? $this->entradaSerialUnico : null,
                 $this->entradaIdentificadorLogistico !== '' ? $this->entradaIdentificadorLogistico : null,
                 $this->entradaObservacao !== '' ? $this->entradaObservacao : null,
+                $this->entradaOperationId,
             );
 
             $this->modalEntradaAberto = false;
             unset($this->recebimentosPendentes, $this->movimentacoes, $this->materiais);
             $this->dispatch('show-toast', message: 'Entrada registrada em estoque.', type: 'success');
-        } catch (EntradaEstoqueInvalidaException|SaldoRecebimentoInsuficienteException $e) {
+        } catch (EntradaEstoqueInvalidaException|SaldoRecebimentoInsuficienteException|OperacaoEstoqueDuplicadaException $e) {
             $this->addError('entradaGeral', $e->getMessage());
         }
     }
@@ -1474,6 +1492,7 @@ new class extends Component {
         $this->scanErro = null;
         $this->scanAviso = null;
 
+        $this->saidaOperationId = (string) \Illuminate\Support\Str::ulid();
         $this->saidaReservaId = null;
         $this->saidaPacoteId = null;
         $this->saidaMaterialId = null;
@@ -1615,12 +1634,13 @@ new class extends Component {
                 $retiradoPor,
                 $this->saidaRetiradoPorExterno !== '' ? $this->saidaRetiradoPorExterno : null,
                 $this->saidaObservacao !== '' ? $this->saidaObservacao : null,
+                $this->saidaOperationId,
             );
 
             $this->modalSaidaAberto = false;
             unset($this->movimentacoes, $this->reservasEstoque, $this->reservasAtivasParaSaida, $this->materiais);
             $this->dispatch('show-toast', message: 'Saída registrada em estoque.', type: 'success');
-        } catch (SaidaEstoqueInvalidaException|SaldoFisicoInsuficienteException $e) {
+        } catch (SaidaEstoqueInvalidaException|SaldoFisicoInsuficienteException|OperacaoEstoqueDuplicadaException $e) {
             $this->addError('saidaGeral', $e->getMessage());
         }
     }
@@ -1636,6 +1656,7 @@ new class extends Component {
         $this->scanErro = null;
         $this->scanAviso = null;
 
+        $this->transferenciaOperationId = (string) \Illuminate\Support\Str::ulid();
         $this->transferenciaMaterialId = null;
         $this->transferenciaLocalOrigemId = null;
         $this->transferenciaLocalDestinoId = null;
@@ -1798,12 +1819,13 @@ new class extends Component {
                 Auth::user(),
                 $unidade,
                 $this->transferenciaObservacao !== '' ? $this->transferenciaObservacao : null,
+                $this->transferenciaOperationId,
             );
 
             $this->modalTransferenciaAberto = false;
             unset($this->movimentacoes, $this->transferenciasEstoque);
             $this->dispatch('show-toast', message: 'Transferência registrada.', type: 'success');
-        } catch (TransferenciaEstoqueInvalidaException|SaldoFisicoInsuficienteException $e) {
+        } catch (TransferenciaEstoqueInvalidaException|SaldoFisicoInsuficienteException|OperacaoEstoqueDuplicadaException $e) {
             $this->addError('transferenciaGeral', $e->getMessage());
         }
     }
@@ -2060,6 +2082,8 @@ new class extends Component {
     public string $remessaIndustrData = '';
     public ?string $remessaIndustrUnidadeId = null;
     public string $remessaIndustrObservacao = '';
+    /** Auditoria Pré-Produção A2.2, Seção 7 — mesmo contrato de $entradaOperationId (A2.1). */
+    public ?string $remessaIndustrOperationId = null;
 
     public bool $modalProducaoIndustrAberto = false;
     public ?string $producaoIndustrProdutoId = null;
@@ -2068,6 +2092,7 @@ new class extends Component {
     public string $producaoIndustrCodigoLote = '';
     public string $producaoIndustrSerialUnico = '';
     public string $producaoIndustrObservacao = '';
+    public ?string $producaoIndustrOperationId = null;
 
     public bool $modalConsumoIndustrAberto = false;
     public ?string $consumoIndustrProdutoId = null;
@@ -2075,6 +2100,7 @@ new class extends Component {
     public ?float $consumoIndustrQuantidade = null;
     public string $consumoIndustrData = '';
     public string $consumoIndustrObservacao = '';
+    public ?string $consumoIndustrOperationId = null;
 
     public bool $modalEntregaIndustrAberto = false;
     public ?string $entregaIndustrProdutoId = null;
@@ -2087,6 +2113,7 @@ new class extends Component {
     public string $entregaIndustrRetiradoPorExterno = '';
     public string $entregaIndustrData = '';
     public string $entregaIndustrObservacao = '';
+    public ?string $entregaIndustrOperationId = null;
 
     private function garantirPermissaoIndustrializacao(string $acao): void
     {
@@ -2395,6 +2422,7 @@ new class extends Component {
     public function abrirModalRemessaIndustr(string $direcao = 'envio'): void
     {
         $this->garantirPermissaoIndustrializacao('criar');
+        $this->remessaIndustrOperationId = (string) \Illuminate\Support\Str::ulid();
         $this->remessaIndustrMaterialId = null;
         $this->remessaIndustrLocalProprioId = null;
         $this->remessaIndustrDirecao = $direcao;
@@ -2438,12 +2466,13 @@ new class extends Component {
                 $ordem, $material, (float) $this->remessaIndustrQuantidade, $direcao, $localProprio,
                 Carbon::parse($this->remessaIndustrData), Auth::user(), $unidade,
                 $this->remessaIndustrObservacao !== '' ? $this->remessaIndustrObservacao : null,
+                $this->remessaIndustrOperationId,
             );
 
             $this->fecharModalRemessaIndustr();
             unset($this->ordemIndustrDetalhe, $this->saldoMateriaPrimaOrdemDetalhe, $this->remessasEnvioParaConsumo);
             $this->dispatch('show-toast', message: 'Remessa registrada.', type: 'success');
-        } catch (RemessaIndustrializacaoInvalidaException $e) {
+        } catch (RemessaIndustrializacaoInvalidaException|OperacaoEstoqueDuplicadaException $e) {
             $this->addError('remessaIndustrGeral', $e->getMessage());
         }
     }
@@ -2451,6 +2480,7 @@ new class extends Component {
     public function abrirModalProducaoIndustr(string $produtoId): void
     {
         $this->garantirPermissaoIndustrializacao('criar');
+        $this->producaoIndustrOperationId = (string) \Illuminate\Support\Str::ulid();
         $this->producaoIndustrProdutoId = $produtoId;
         $this->producaoIndustrQuantidade = null;
         $this->producaoIndustrData = now()->toDateString();
@@ -2484,12 +2514,13 @@ new class extends Component {
                 $this->producaoIndustrSerialUnico !== '' ? $this->producaoIndustrSerialUnico : null,
                 null,
                 $this->producaoIndustrObservacao !== '' ? $this->producaoIndustrObservacao : null,
+                $this->producaoIndustrOperationId,
             );
 
             $this->fecharModalProducaoIndustr();
             unset($this->ordemIndustrDetalhe, $this->produtosDaOrdemDetalheComSaldo);
             $this->dispatch('show-toast', message: 'Produção registrada.', type: 'success');
-        } catch (\App\Exceptions\ProducaoIndustrializadaInvalidaException $e) {
+        } catch (\App\Exceptions\ProducaoIndustrializadaInvalidaException|OperacaoEstoqueDuplicadaException $e) {
             $this->addError('producaoIndustrGeral', $e->getMessage());
         }
     }
@@ -2497,6 +2528,7 @@ new class extends Component {
     public function abrirModalConsumoIndustr(string $produtoId): void
     {
         $this->garantirPermissaoIndustrializacao('criar');
+        $this->consumoIndustrOperationId = (string) \Illuminate\Support\Str::ulid();
         $this->consumoIndustrProdutoId = $produtoId;
         $this->consumoIndustrRemessaId = null;
         $this->consumoIndustrQuantidade = null;
@@ -2528,12 +2560,13 @@ new class extends Component {
             app(RegistrarConsumoIndustrializacao::class)->execute(
                 $produto, $remessa, (float) $this->consumoIndustrQuantidade, Carbon::parse($this->consumoIndustrData), Auth::user(),
                 $this->consumoIndustrObservacao !== '' ? $this->consumoIndustrObservacao : null,
+                $this->consumoIndustrOperationId,
             );
 
             $this->fecharModalConsumoIndustr();
             unset($this->ordemIndustrDetalhe, $this->saldoMateriaPrimaOrdemDetalhe, $this->remessasEnvioParaConsumo);
             $this->dispatch('show-toast', message: 'Consumo registrado.', type: 'success');
-        } catch (ConsumoIndustrializacaoInvalidaException $e) {
+        } catch (ConsumoIndustrializacaoInvalidaException|OperacaoEstoqueDuplicadaException $e) {
             $this->addError('consumoIndustrGeral', $e->getMessage());
         }
     }
@@ -2541,6 +2574,7 @@ new class extends Component {
     public function abrirModalEntregaIndustr(string $produtoId): void
     {
         $this->garantirPermissaoIndustrializacao('criar');
+        $this->entregaIndustrOperationId = (string) \Illuminate\Support\Str::ulid();
         $this->entregaIndustrProdutoId = $produtoId;
         $this->entregaIndustrQuantidade = null;
         $this->entregaIndustrModalidade = 'retorno_estoque_obra';
@@ -2597,12 +2631,13 @@ new class extends Component {
                 Carbon::parse($this->entregaIndustrData), Auth::user(),
                 frenteCampo: $frente, retiradoPor: $retiradoPor, retiradoPorExterno: $retiradoPorExterno,
                 observacao: $this->entregaIndustrObservacao !== '' ? $this->entregaIndustrObservacao : null,
+                operationId: $this->entregaIndustrOperationId,
             );
 
             $this->fecharModalEntregaIndustr();
             unset($this->ordemIndustrDetalhe, $this->produtosDaOrdemDetalheComSaldo);
             $this->dispatch('show-toast', message: 'Entrega registrada.', type: 'success');
-        } catch (EntregaProdutoIndustrializadoInvalidaException|SaidaEstoqueInvalidaException $e) {
+        } catch (EntregaProdutoIndustrializadoInvalidaException|SaidaEstoqueInvalidaException|OperacaoEstoqueDuplicadaException $e) {
             $this->addError('entregaIndustrGeral', $e->getMessage());
         }
     }

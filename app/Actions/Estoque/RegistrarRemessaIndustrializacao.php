@@ -5,6 +5,7 @@ namespace App\Actions\Estoque;
 use App\Enums\DirecaoRemessaIndustrializacao;
 use App\Enums\ModoRastreabilidadeMaterial;
 use App\Enums\TipoMovimentacaoEstoque;
+use App\Exceptions\OperacaoEstoqueDuplicadaException;
 use App\Exceptions\RemessaIndustrializacaoInvalidaException;
 use App\Models\LocalEstoque;
 use App\Models\Material;
@@ -15,6 +16,7 @@ use App\Models\UnidadeEstoque;
 use App\Models\User;
 use App\Support\Estoque\SaldoEstoque;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -45,6 +47,16 @@ use Illuminate\Support\Facades\DB;
  * via `App\Support\Estoque\SaldoEstoque::porUnidadeLocal()` — a Saida
  * (origem) + Entrada (destino) já registram isso corretamente por si só,
  * sem precisar de nenhum ponteiro de "localização atual".
+ *
+ * **Auditoria Pré-Produção A2.2, Seções 3-6 (idempotência, fecha o
+ * risco histórico de estoque fantasma por retry de retorno/envio)**:
+ * `$operationId` OPCIONAL — mesmo contrato de `RegistrarTransferenciaEstoque`
+ * (A2.1): a própria `RemessaIndustrializacao` já é a identidade de
+ * operação (correlaciona a dupla Saida+Entrada), o `operation_id` vive
+ * nela, nunca nas 2 `MovimentacaoEstoque` internas. Cobre as DUAS
+ * direções (Envio e RetornoSobra são o MESMO comando de domínio,
+ * discriminado só por `direcao`). Reproduzido empiricamente ANTES desta
+ * correção em `tests/Feature/Auditoria/IndustrializacaoReproducaoRiscoTest.php`.
  */
 class RegistrarRemessaIndustrializacao
 {
@@ -58,10 +70,24 @@ class RegistrarRemessaIndustrializacao
         User $usuario,
         ?UnidadeEstoque $unidade = null,
         ?string $observacao = null,
+        ?string $operationId = null,
     ): RemessaIndustrializacao {
-        return DB::transaction(function () use (
-            $ordem, $material, $quantidade, $direcao, $localProprio, $ocorridoEm, $usuario, $unidade, $observacao
-        ) {
+        // Pré-check e catch de corrida real ficam FORA da transação —
+        // mesmo raciocínio de RegistrarTransferenciaEstoque::execute()
+        // (A2.1): esta Action cria 2 MovimentacaoEstoque especulativas
+        // antes do INSERT final que carrega o operation_id; só uma
+        // exceção NÃO capturada dentro do closure desfaz as duas junto.
+        if ($operationId !== null) {
+            $existente = RemessaIndustrializacao::where('operation_id', $operationId)->first();
+            if ($existente) {
+                return $this->validarOuRetornarExistente($existente, $ordem, $material, $quantidade, $direcao);
+            }
+        }
+
+        try {
+            return DB::transaction(function () use (
+                $ordem, $material, $quantidade, $direcao, $localProprio, $ocorridoEm, $usuario, $unidade, $observacao, $operationId
+            ) {
             $this->garantirQuantidadePositiva($quantidade);
 
             $ordemTravada = OrdemIndustrializacao::whereKey($ordem->id)->lockForUpdate()->firstOrFail();
@@ -139,6 +165,7 @@ class RegistrarRemessaIndustrializacao
             // física passa a ter saldo simultâneo em origem e destino.
 
             return RemessaIndustrializacao::create([
+                'operation_id' => $operationId,
                 'obra_id' => $ordemTravada->obra_id,
                 'ordem_industrializacao_id' => $ordemTravada->id,
                 'material_id' => $material->id,
@@ -151,7 +178,47 @@ class RegistrarRemessaIndustrializacao
                 'registrado_por' => $usuario->id,
                 'observacao' => $observacao,
             ]);
-        });
+            });
+        } catch (QueryException $e) {
+            // Corrida real — mesma lógica de RegistrarTransferenciaEstoque
+            // (A2.1): a garantia é o UNIQUE(tenant_id, operation_id) de
+            // remessas_industrializacao, nunca o exists() de cima. A
+            // transação inteira (incluindo as 2 MovimentacaoEstoque
+            // especulativas) já foi revertida antes de chegarmos aqui.
+            if ($operationId !== null && ($e->errorInfo[1] ?? null) === 1062) {
+                $existente = RemessaIndustrializacao::where('operation_id', $operationId)->first();
+                if ($existente) {
+                    return $this->validarOuRetornarExistente($existente, $ordem, $material, $quantidade, $direcao);
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Auditoria Pré-Produção A2.2, Seção 5 — retry da MESMA intenção
+     * (mesma Ordem/Material/quantidade/direção) retorna o fato já
+     * existente, sem duplicar; qualquer um desses campos divergente vira
+     * conflito, nunca sobrescrito silenciosamente.
+     */
+    private function validarOuRetornarExistente(
+        RemessaIndustrializacao $existente,
+        OrdemIndustrializacao $ordem,
+        Material $material,
+        float $quantidade,
+        DirecaoRemessaIndustrializacao $direcao,
+    ): RemessaIndustrializacao {
+        $mesmaOrdem = $existente->ordem_industrializacao_id === $ordem->id;
+        $mesmoMaterial = $existente->material_id === $material->id;
+        $mesmaQuantidade = abs((float) $existente->quantidade - $quantidade) <= 0.0005;
+        $mesmaDirecao = $existente->direcao === $direcao;
+
+        if (! $mesmaOrdem || ! $mesmoMaterial || ! $mesmaQuantidade || ! $mesmaDirecao) {
+            throw new OperacaoEstoqueDuplicadaException();
+        }
+
+        return $existente;
     }
 
     private function garantirQuantidadePositiva(float $quantidade): void

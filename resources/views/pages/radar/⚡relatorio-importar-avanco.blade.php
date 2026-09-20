@@ -116,27 +116,40 @@ new class extends Component {
     {
         abort_unless($this->emPrevia && $this->caminhoArquivo !== null, 422);
 
-        $this->importacaoTrackingId = (string) Str::ulid();
-        $this->statusImportacao = 'processando';
-        Cache::put(
-            "cronograma-importacao-status:{$this->importacaoTrackingId}",
-            ['status' => 'processando', 'erro' => null],
-            now()->addMinutes(30)
-        );
+        // Auditoria Pré-Produção A2, Seção 9-10 (double-submit) — mesmo
+        // lock server-side de ⚡cronograma.blade.php::confirmar() (ver lá
+        // pro achado/motivo completo), escopado por obra+tipo pra nunca
+        // bloquear um Baseline e um Avanço legitimamente concorrentes.
+        $lock = Cache::lock("cronograma-importar-confirmar:{$this->obra->id}:avanco", 10);
+        if (! $lock->get()) {
+            return;
+        }
 
         try {
-            ImportarCronogramaJob::dispatch(
-                $this->obra,
-                $this->caminhoArquivo,
-                auth()->id(),
-                TipoCronogramaImportacao::Avanco,
-                $this->importacaoTrackingId,
-                $this->healthCheckResultado,
+            $this->importacaoTrackingId = (string) Str::ulid();
+            $this->statusImportacao = 'processando';
+            Cache::put(
+                "cronograma-importacao-status:{$this->importacaoTrackingId}",
+                ['status' => 'processando', 'erro' => null],
+                now()->addMinutes(30)
             );
-        } catch (\Throwable $e) {
-            // Fila síncrona (dev/testes): o job já rodou inline e uma falha
-            // relança a exceção até aqui — o cache já foi marcado 'erro'
-            // dentro do job antes do rethrow (mesmo padrão de ⚡cronograma.blade.php).
+
+            try {
+                ImportarCronogramaJob::dispatch(
+                    $this->obra,
+                    $this->caminhoArquivo,
+                    auth()->id(),
+                    TipoCronogramaImportacao::Avanco,
+                    $this->importacaoTrackingId,
+                    $this->healthCheckResultado,
+                );
+            } catch (\Throwable $e) {
+                // Fila síncrona (dev/testes): o job já rodou inline e uma falha
+                // relança a exceção até aqui — o cache já foi marcado 'erro'
+                // dentro do job antes do rethrow (mesmo padrão de ⚡cronograma.blade.php).
+            }
+        } finally {
+            $lock->release();
         }
 
         // Em fila síncrona o job acima já rodou por completo — resolve na

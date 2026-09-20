@@ -45,7 +45,7 @@
                 </thead>
                 <tbody>
                     @foreach ($view->restricoesBloqueantes as $r)
-                    @php $vencida = $r->prazoLimite?->isPast() ?? false; @endphp
+                    @php $vencida = $r->estaVencida(); @endphp
                     <tr wire:key="cp-restr-bloq-{{ $view->atividadeId }}-{{ $r->id }}" class="{{ $vencida ? 'table-danger' : '' }}">
                         <td>{{ $r->descricao }}</td>
                         <td>{{ $r->responsavel ?? '—' }}</td>

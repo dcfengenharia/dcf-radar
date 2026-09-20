@@ -12,6 +12,10 @@ use App\Models\EntregaProdutoIndustrializado;
 use App\Models\DocumentoEngenhariaRevisao;
 use App\Models\Grd;
 use App\Models\GrdAceiteEntrega;
+use App\Models\GrdRecolhimento;
+use App\Observers\GrdRecolhimentoObserver;
+use App\Models\PlanoAcaoReconciliacao;
+use App\Observers\PlanoAcaoReconciliacaoObserver;
 use App\Models\ItemTakeOff;
 use App\Models\ItemSuprimento;
 use App\Models\LicaoAprendida;
@@ -101,6 +105,10 @@ class AppServiceProvider extends ServiceProvider
         Restricao::observe(RestricaoObserver::class);
         Grd::observe(GrdObserver::class);
         GrdAceiteEntrega::observe(GrdAceiteEntregaObserver::class);
+        // Auditoria Pré-Produção A1, DB-03 — os dois já eram documentados
+        // como append-only, mas sem nenhuma barreira real.
+        GrdRecolhimento::observe(GrdRecolhimentoObserver::class);
+        PlanoAcaoReconciliacao::observe(PlanoAcaoReconciliacaoObserver::class);
         DocumentoEngenhariaRevisao::observe(DocumentoEngenhariaRevisaoObserver::class);
         RevisaoLiberacao::observe(RevisaoLiberacaoObserver::class);
         ListaEngenharia::observe(ListaEngenhariaObserver::class);

@@ -2,13 +2,17 @@
 
 namespace App\Exports;
 
+use App\Exports\Concerns\PrevineInjecaoDeFormulaExcel;
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\FromCollection;
+use Maatwebsite\Excel\Concerns\WithCustomValueBinder;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
 
-class LookaheadExport implements FromCollection, WithHeadings, WithMapping
+class LookaheadExport implements FromCollection, WithHeadings, WithMapping, WithCustomValueBinder
 {
+    use PrevineInjecaoDeFormulaExcel;
+
     public function __construct(
         private readonly Collection $linhas,
         private readonly bool $temImportacaoAvanco = true,

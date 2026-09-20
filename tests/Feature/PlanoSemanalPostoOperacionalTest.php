@@ -65,7 +65,7 @@ class PlanoSemanalPostoOperacionalTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Carbon::setTestNow(Carbon::parse('2026-12-15')); // uma terça-feira
+        Carbon::setTestNow(Carbon::parse('2026-12-15 12:00:00')); // uma terça-feira
 
         $this->tenant = Tenant::factory()->create();
         $this->user = User::factory()->create(['tenant_id' => $this->tenant->id]);

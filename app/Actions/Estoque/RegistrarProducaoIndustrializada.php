@@ -4,6 +4,7 @@ namespace App\Actions\Estoque;
 
 use App\Enums\ModoRastreabilidadeMaterial;
 use App\Enums\TipoMovimentacaoEstoque;
+use App\Exceptions\OperacaoEstoqueDuplicadaException;
 use App\Exceptions\ProducaoIndustrializadaInvalidaException;
 use App\Models\LocalEstoque;
 use App\Models\Material;
@@ -14,6 +15,7 @@ use App\Models\ProdutoIndustrializado;
 use App\Models\UnidadeEstoque;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -31,6 +33,14 @@ use Illuminate\Support\Facades\DB;
  * **Sem limite de over-produção nesta fase** (decisão de implementação
  * documentada na migration) — a UI só exibe a divergência entre
  * previsto e produzido, nunca bloqueia.
+ *
+ * **Auditoria Pré-Produção A2.2, Seções 3-6 (idempotência, fecha o risco
+ * histórico de estoque fantasma por retry de produção)**: `$operationId`
+ * OPCIONAL, mesmo contrato de `RegistrarEntradaEstoque` (A2.1) — o
+ * pré-check e o catch de corrida real ficam FORA da transação porque
+ * `resolverOuCriarUnidade()` pode criar uma `UnidadeEstoque` de lote
+ * especulativa antes do INSERT final. Reproduzido empiricamente ANTES
+ * desta correção em `tests/Feature/Auditoria/IndustrializacaoReproducaoRiscoTest.php`.
  */
 class RegistrarProducaoIndustrializada
 {
@@ -43,8 +53,17 @@ class RegistrarProducaoIndustrializada
         ?string $serialUnico = null,
         ?string $identificadorLogistico = null,
         ?string $observacao = null,
+        ?string $operationId = null,
     ): ProducaoIndustrializada {
-        return DB::transaction(function () use ($produto, $quantidade, $ocorridoEm, $usuario, $codigoLote, $serialUnico, $identificadorLogistico, $observacao) {
+        if ($operationId !== null) {
+            $existente = ProducaoIndustrializada::where('operation_id', $operationId)->first();
+            if ($existente) {
+                return $this->validarOuRetornarExistente($existente, $produto, $quantidade);
+            }
+        }
+
+        try {
+            return DB::transaction(function () use ($produto, $quantidade, $ocorridoEm, $usuario, $codigoLote, $serialUnico, $identificadorLogistico, $observacao, $operationId) {
             $this->garantirQuantidadePositiva($quantidade);
 
             $ordem = OrdemIndustrializacao::findOrFail($produto->ordem_industrializacao_id);
@@ -73,6 +92,7 @@ class RegistrarProducaoIndustrializada
             ]);
 
             return ProducaoIndustrializada::create([
+                'operation_id' => $operationId,
                 'obra_id' => $ordem->obra_id,
                 'produto_industrializado_id' => $produto->id,
                 'quantidade' => $quantidade,
@@ -82,7 +102,34 @@ class RegistrarProducaoIndustrializada
                 'registrado_por' => $usuario->id,
                 'observacao' => $observacao,
             ]);
-        });
+            });
+        } catch (QueryException $e) {
+            if ($operationId !== null && ($e->errorInfo[1] ?? null) === 1062) {
+                $existente = ProducaoIndustrializada::where('operation_id', $operationId)->first();
+                if ($existente) {
+                    return $this->validarOuRetornarExistente($existente, $produto, $quantidade);
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Auditoria Pré-Produção A2.2, Seção 5 — retry da MESMA intenção
+     * (mesmo Produto/quantidade) retorna o fato já existente, sem
+     * duplicar; quantidade divergente vira conflito.
+     */
+    private function validarOuRetornarExistente(ProducaoIndustrializada $existente, ProdutoIndustrializado $produto, float $quantidade): ProducaoIndustrializada
+    {
+        $mesmoProduto = $existente->produto_industrializado_id === $produto->id;
+        $mesmaQuantidade = abs((float) $existente->quantidade - $quantidade) <= 0.0005;
+
+        if (! $mesmoProduto || ! $mesmaQuantidade) {
+            throw new OperacaoEstoqueDuplicadaException();
+        }
+
+        return $existente;
     }
 
     private function garantirQuantidadePositiva(float $quantidade): void
